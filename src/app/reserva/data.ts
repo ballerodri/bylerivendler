@@ -104,6 +104,12 @@ export const parseYmd = (s: string) => {
   return new Date(y, m - 1, d)
 }
 
+export const combineDateTime = (ymdStr: string, hm: string): Date => {
+  const [y, m, d] = ymdStr.split("-").map(Number)
+  const [hh, mm] = hm.split(":").map(Number)
+  return new Date(y, m - 1, d, hh, mm, 0, 0)
+}
+
 export type ClientForm = {
   firstName: string
   lastName: string
