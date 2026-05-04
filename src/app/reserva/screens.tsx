@@ -3,19 +3,20 @@
 import { useEffect, useState } from "react"
 import {
   AVAILABILITY,
-  CATEGORIES,
   DOW_NAMES,
   DOW_SHORT,
   MONTH_NAMES,
   PROFESSIONALS,
+  combineDateTime,
   fmtDuration,
   fmtPrice,
   pad2,
   parseYmd,
   ymd,
 } from "./data"
-import type { BookingState, Service } from "./data"
+import type { BookingState, Category, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
+import { createBooking } from "./actions"
 
 type Variant = "mobile" | "desktop"
 
@@ -29,8 +30,16 @@ type ScreenProps = {
 }
 
 // ---------- Screen 1: Services ----------
-export function Screen1Services({ state, setState, onNext, onClose, variant }: ScreenProps) {
-  const [activeCat, setActiveCat] = useState(state.activeCat || "facial")
+export function Screen1Services({
+  state,
+  setState,
+  onNext,
+  onClose,
+  variant,
+  categories,
+}: ScreenProps & { categories: Category[] }) {
+  const fallbackCat = categories[0]?.id ?? "facial"
+  const [activeCat, setActiveCat] = useState(state.activeCat || fallbackCat)
   const selected = state.services || []
 
   const toggle = (svc: Service) => {
@@ -41,7 +50,17 @@ export function Screen1Services({ state, setState, onNext, onClose, variant }: S
 
   const total = selected.reduce((a, s) => a + s.price, 0)
   const totalMin = selected.reduce((a, s) => a + s.duration, 0)
-  const activeCategory = CATEGORIES.find((c) => c.id === activeCat)!
+  const activeCategory =
+    categories.find((c) => c.id === activeCat) ?? categories[0]
+  if (!activeCategory) {
+    return (
+      <div className="screen">
+        <div className="screen__body">
+          <p className="lede">No hay tratamientos disponibles en este momento.</p>
+        </div>
+      </div>
+    )
+  }
 
   const Hero = () => (
     <div className="hero">
@@ -61,7 +80,7 @@ export function Screen1Services({ state, setState, onNext, onClose, variant }: S
 
   const CatTabs = () => (
     <div className="cattabs" role="tablist">
-      {CATEGORIES.map((c) => (
+      {categories.map((c) => (
         <button
           key={c.id}
           role="tab"
@@ -837,12 +856,53 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
   const pro = PROFESSIONALS.find((p) => p.id === (state.pro || "auto"))!
 
   const [paying, setPaying] = useState(false)
-  const pay = () => {
+  const [error, setError] = useState<string | null>(null)
+
+  const pay = async () => {
+    if (!state.form || !state.selectedDate || !state.selectedTime) {
+      setError("Faltan datos del turno. Volvé a los pasos anteriores.")
+      return
+    }
     setPaying(true)
-    setTimeout(() => {
-      setPaying(false)
+    setError(null)
+
+    const startsAt = combineDateTime(state.selectedDate, state.selectedTime)
+
+    const result = await createBooking({
+      serviceIds: services.map((s) => s.id),
+      startsAt: startsAt.toISOString(),
+      proHint: state.pro || "auto",
+      client: {
+        firstName: state.form.firstName,
+        lastName: state.form.lastName,
+        email: state.form.email,
+        phone: state.form.phone,
+        dob: state.form.dob,
+        marketingConsent: state.form.consent,
+        isExisting: state.clientMode === "existing",
+      },
+      medical:
+        state.clientMode === "existing"
+          ? null
+          : state.medical
+            ? {
+                allergies: state.medical.allergies,
+                allergiesOther: state.medical.allergiesOther,
+                meds: state.medical.meds,
+                medsNote: state.medical.medsNote,
+                pregnancy: state.medical.pregnancy,
+                skin: state.medical.skin,
+                consent: state.medical.consent,
+              }
+            : null,
+    })
+
+    setPaying(false)
+    if (result.ok) {
       onNext()
-    }, 1400)
+    } else {
+      setError(result.error)
+    }
   }
 
   const Body = () => (
@@ -852,7 +912,8 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
         Casi <em>listo</em>.
       </h1>
       <p className="lede">
-        Revisá los detalles y aboná la seña del 30% para confirmar el turno.
+        Revisá los detalles. Te coordinamos el pago de la seña del 30% por
+        WhatsApp para dejar el turno confirmado.
       </p>
 
       <div className="summary">
@@ -935,6 +996,23 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
 
   const FooterCTA = () => (
     <div className="footer">
+      {error && (
+        <div
+          style={{
+            background: "var(--rose-wash)",
+            color: "var(--ink)",
+            padding: "10px 12px",
+            borderRadius: 8,
+            fontSize: 12,
+            lineHeight: 1.4,
+            marginBottom: 10,
+            border: "1px solid var(--nude)",
+          }}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
       <div className="footer__row">
         <div>
           <div className="footer__summary">Seña</div>
@@ -942,10 +1020,10 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
         </div>
         <button className="btn btn--primary" disabled={paying} onClick={pay}>
           {paying ? (
-            "Procesando…"
+            "Confirmando…"
           ) : (
             <>
-              Pagar y confirmar
+              Confirmar reserva
               <span className="btn__arrow">
                 <Icon.Arrow />
               </span>
