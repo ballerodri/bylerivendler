@@ -7,7 +7,7 @@ export default function Home() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/assets/logo-crop.png" alt="By Leri Vendler" className="h-24 w-auto" />
         <p className="text-[10px] uppercase tracking-[0.22em] text-[#7a6e64]">
-          Estética profesional · Buenos Aires
+          Estética profesional · Pilar · Bs. As.
         </p>
         <h1
           className="text-5xl leading-tight tracking-tight"
@@ -18,8 +18,9 @@ export default function Home() {
           a tu medida.
         </h1>
         <p className="max-w-md text-base leading-relaxed text-[#4a423d]">
-          Tratamientos faciales, corporales y masajes en Palermo. Reservá tu
-          turno online en pocos minutos.
+          Tratamientos faciales, corporales y masajes.
+          <br />
+          Reservá tu turno online en pocos minutos.
         </p>
         <Link
           href="/reserva"

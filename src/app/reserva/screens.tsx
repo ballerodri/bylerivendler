@@ -582,13 +582,27 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
   const Body = () => (
     <>
       <p className="eyebrow">Paso 03 — Tus datos</p>
-      <h1 className="headline">
-        Un gusto <em>conocerte</em>.
-      </h1>
-      <p className="lede">
-        Completamos tu ficha una sola vez. En las próximas reservas ingresás
-        con un link al email.
-      </p>
+      {mode === "new" ? (
+        <>
+          <h1 className="headline">
+            Un gusto <em>conocerte</em>.
+          </h1>
+          <p className="lede">
+            Completamos tu ficha una sola vez. En las próximas reservas
+            ingresás con un link al email.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1 className="headline">
+            Te <em>estábamos</em> esperando.
+          </h1>
+          <p className="lede">
+            Ingresá tu email y te enviamos un link para confirmar el turno.
+            Sin contraseñas.
+          </p>
+        </>
+      )}
       <Segmented />
       {mode === "new" ? <NewForm /> : <ExistingForm />}
     </>
