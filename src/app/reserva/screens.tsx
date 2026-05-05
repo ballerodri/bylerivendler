@@ -2,15 +2,16 @@
 
 import { useEffect, useState } from "react"
 import {
-  AVAILABILITY,
   DOW_NAMES,
   DOW_SHORT,
   MONTH_NAMES,
   PROFESSIONALS,
   combineDateTime,
+  filterFutureSlots,
   fmtDuration,
   fmtPrice,
   formatDob,
+  generateAvailability,
   pad2,
   parseYmd,
   ymd,
@@ -18,6 +19,7 @@ import {
 import type { BookingState, Category, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking } from "./actions"
+import { sendMagicLink } from "../login/actions"
 
 type Variant = "mobile" | "desktop"
 
@@ -206,7 +208,16 @@ export function Screen1Services({
 
 // ---------- Screen 2: Date & Time ----------
 export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant }: ScreenProps) {
-  const today = new Date(2026, 3, 20) // April 20, 2026 — same as design
+  // `today` snapped to midnight so we compare just dates, not times.
+  const [today] = useState(() => {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    return d
+  })
+  // Generate availability dynamically for the next ~60 days. Eventually this
+  // will come from a server query that respects staff schedules + booked slots.
+  const [availability] = useState(() => generateAvailability(60))
+
   const initialDate = state.selectedDate ? parseYmd(state.selectedDate) : today
   const [viewYear, setViewYear] = useState(initialDate.getFullYear())
   const [viewMonth, setViewMonth] = useState(initialDate.getMonth())
@@ -228,7 +239,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const selectTime = (t: string) => setState({ ...state, selectedTime: t })
 
-  const slotsForDay = selectedDate ? AVAILABILITY[selectedDate] || [] : []
+  const rawSlotsForDay = selectedDate ? availability[selectedDate] || [] : []
+  const slotsForDay = selectedDate
+    ? filterFutureSlots(selectedDate, rawSlotsForDay)
+    : []
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
   const Cal = () => (
@@ -273,11 +287,15 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         {Array.from({ length: daysInMonth }).map((_, i) => {
           const day = i + 1
           const dateStr = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`
-          const hasSlots = !!AVAILABILITY[dateStr]
           const isSel = selectedDate === dateStr
           const isToday = dateStr === ymd(today)
           const dateObj = new Date(viewYear, viewMonth, day)
           const isPast = dateObj < today && !isToday
+          // Only show slots if there's still future availability for that day
+          const hasSlots =
+            !!availability[dateStr] &&
+            !isPast &&
+            filterFutureSlots(dateStr, availability[dateStr]).length > 0
           return (
             <button
               key={day}
@@ -455,9 +473,22 @@ const EMPTY_FORM = {
 export function Screen3Details({ state, setState, onNext, onBack, onClose, variant }: ScreenProps) {
   const [mode, setMode] = useState<"new" | "existing">(state.clientMode || "new")
   const f = state.form || EMPTY_FORM
+  const [linkStatus, setLinkStatus] = useState<"idle" | "sending" | "sent">("idle")
+  const [linkError, setLinkError] = useState<string | null>(null)
 
   const setF = (patch: Partial<typeof EMPTY_FORM>) =>
     setState({ ...state, form: { ...f, ...patch }, clientMode: mode })
+
+  const requestMagicLink = async () => {
+    setLinkStatus("sending")
+    setLinkError(null)
+    const r = await sendMagicLink({ email: f.email, next: "/portal" })
+    if (r.ok) setLinkStatus("sent")
+    else {
+      setLinkStatus("idle")
+      setLinkError(r.error)
+    }
+  }
 
   const isValid =
     mode === "new"
@@ -557,32 +588,73 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
     </>
   )
 
-  const ExistingForm = () => (
-    <div className="magic">
-      <p className="eyebrow">Acceso rápido</p>
-      <h3 className="magic__title">Te enviamos un link al correo.</h3>
-      <p className="magic__desc">
-        Sin contraseñas. Al abrir el email desde tu celular, entrás
-        directamente al turno.
-      </p>
-      <div className="field" style={{ marginBottom: 12 }}>
-        <input
-          className="field__input"
-          type="email"
-          value={f.email}
-          onChange={(e) => setF({ email: e.target.value })}
-          placeholder="email@ejemplo.com"
-        />
+  const ExistingForm = () => {
+    if (linkStatus === "sent") {
+      return (
+        <div className="magic">
+          <p className="eyebrow">Listo</p>
+          <h3 className="magic__title">Revisá tu email.</h3>
+          <p className="magic__desc">
+            Te enviamos un link a <strong>{f.email}</strong>. Al abrirlo entrás
+            directamente a tu portal y podés reservar tu próximo turno con tus
+            datos ya cargados.
+          </p>
+          <button
+            className="linkbtn"
+            onClick={() => {
+              setLinkStatus("idle")
+            }}
+          >
+            Usar otro email
+          </button>
+        </div>
+      )
+    }
+
+    return (
+      <div className="magic">
+        <p className="eyebrow">Acceso rápido</p>
+        <h3 className="magic__title">Te enviamos un link al correo.</h3>
+        <p className="magic__desc">
+          Sin contraseñas. Al abrir el email desde tu celular, entrás a tu
+          portal y reservás en pocos clicks.
+        </p>
+        <div className="field" style={{ marginBottom: 12 }}>
+          <input
+            className="field__input"
+            type="email"
+            value={f.email}
+            onChange={(e) => setF({ email: e.target.value })}
+            placeholder="email@ejemplo.com"
+          />
+        </div>
+        {linkError && (
+          <div
+            role="alert"
+            style={{
+              background: "var(--rose-wash)",
+              border: "1px solid var(--nude)",
+              color: "var(--ink)",
+              padding: "10px 12px",
+              borderRadius: 8,
+              fontSize: 12,
+              lineHeight: 1.4,
+              marginBottom: 12,
+            }}
+          >
+            {linkError}
+          </div>
+        )}
+        <button
+          className="btn btn--primary btn--full"
+          disabled={!f.email || linkStatus === "sending"}
+          onClick={requestMagicLink}
+        >
+          {linkStatus === "sending" ? "Enviando…" : "Enviar enlace"}
+        </button>
       </div>
-      <button
-        className="btn btn--primary btn--full"
-        disabled={!f.email}
-        onClick={onNext}
-      >
-        Enviar enlace
-      </button>
-    </div>
-  )
+    )
+  }
 
   const FooterCTA = () => (
     <div className="footer">
@@ -960,7 +1032,7 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
           <span className="summary__label">Dónde</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
             By Leri Vendler
-            <small>Soler 3892, Palermo · Buenos Aires</small>
+            <small>Sanguinetti 297, Pilar · Buenos Aires</small>
           </div>
         </div>
       </div>
@@ -1131,7 +1203,7 @@ export function Screen6Success({
             · {state.selectedTime}hs · {fmtDuration(totalMin)}
             <br />
             <span style={{ color: "var(--ink-mute)" }}>
-              Soler 3892 · Palermo, Buenos Aires
+              Sanguinetti 297 · Pilar, Buenos Aires
             </span>
           </div>
         </div>

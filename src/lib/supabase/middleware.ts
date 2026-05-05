@@ -31,10 +31,14 @@ export async function updateSession(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Proteger rutas /admin
-  if (!user && request.nextUrl.pathname.startsWith("/admin")) {
+  // Rutas que requieren sesión
+  const path = request.nextUrl.pathname
+  const requiresAuth = path.startsWith("/admin") || path.startsWith("/portal")
+
+  if (!user && requiresAuth) {
     const url = request.nextUrl.clone()
-    url.pathname = "/auth/login"
+    url.pathname = "/login"
+    url.searchParams.set("next", path)
     return NextResponse.redirect(url)
   }
 

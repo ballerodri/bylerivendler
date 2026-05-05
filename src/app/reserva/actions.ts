@@ -1,5 +1,6 @@
 "use server"
 
+import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
@@ -163,6 +164,30 @@ export async function createBooking(
     .insert(apptServices)
 
   if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+
+  // 7) Send magic link so the clienta gets her portal access automatically.
+  // Use a plain (non-SSR) client to avoid touching the current request's
+  // session cookies. Non-fatal: a failure here doesn't undo the booking.
+  try {
+    const h = await headers()
+    const proto = h.get("x-forwarded-proto") ?? "http"
+    const host = h.get("host")
+    const origin = `${proto}://${host}`
+    const plain = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { auth: { persistSession: false, autoRefreshToken: false } }
+    )
+    await plain.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: `${origin}/auth/callback?next=/portal`,
+        shouldCreateUser: true,
+      },
+    })
+  } catch {
+    // ignore — booking is saved; staff can resend the link later.
+  }
 
   return { ok: true, appointmentId: appt.id }
 }
