@@ -50,7 +50,10 @@ export default async function PortalPage() {
     appointments = (data ?? []) as AppointmentRow[]
   }
 
-  const greeting = client?.first_name ? `Hola, ${client.first_name}.` : "Bienvenida."
+  const greeting = client?.first_name
+    ? `Hola, ${client.first_name}.`
+    : "Te esperamos."
+  const subtitle = user.email ?? ""
 
   return (
     <div className="blv" style={{ minHeight: "100vh", padding: "32px 20px" }}>
@@ -72,18 +75,29 @@ export default async function PortalPage() {
           <LogoutButton />
         </div>
 
-        <p className="eyebrow">Tu portal</p>
+        <p className="eyebrow">
+          Tu portal · {subtitle}
+        </p>
         <h1 className="headline">{greeting}</h1>
 
         {!client && (
           <p className="lede">
-            Todavía no tenemos una ficha tuya. <a href="/reserva" style={{ color: "var(--gold)" }}>Reservá tu primer turno</a> para crearla.
+            Te dimos de alta con tu cuenta de Google, pero todavía no tenés un
+            turno reservado.{" "}
+            <a href="/reserva" style={{ color: "var(--gold)" }}>
+              Reservá tu primer turno
+            </a>{" "}
+            y completamos tu ficha.
           </p>
         )}
 
         {client && appointments.length === 0 && (
           <p className="lede">
-            No tenés turnos próximos. <a href="/reserva" style={{ color: "var(--gold)" }}>Reservá uno</a>.
+            No tenés turnos próximos.{" "}
+            <a href="/reserva" style={{ color: "var(--gold)" }}>
+              Reservá uno
+            </a>
+            .
           </p>
         )}
 

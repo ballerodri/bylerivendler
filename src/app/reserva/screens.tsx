@@ -40,7 +40,8 @@ export function Screen1Services({
   onClose,
   variant,
   categories,
-}: ScreenProps & { categories: Category[] }) {
+  knownFirstName,
+}: ScreenProps & { categories: Category[]; knownFirstName: string | null }) {
   const fallbackCat = categories[0]?.id ?? "facial"
   const [activeCat, setActiveCat] = useState(state.activeCat || fallbackCat)
   const selected = state.services || []
@@ -69,9 +70,19 @@ export function Screen1Services({
     <div className="hero">
       <div className="hero__img" />
       <div className="hero__content">
-        <p className="eyebrow">Reservá tu turno</p>
+        <p className="eyebrow">
+          {knownFirstName ? `Hola, ${knownFirstName}` : "Reservá tu turno"}
+        </p>
         <h1 className="headline">
-          Un <em>ritual</em> a tu medida.
+          {knownFirstName ? (
+            <>
+              ¿Qué te <em>regalás</em> hoy?
+            </>
+          ) : (
+            <>
+              Un <em>ritual</em> a tu medida.
+            </>
+          )}
         </h1>
         <p className="lede">
           Elegí uno o varios tratamientos. Podés combinar categorías; ajustamos
@@ -170,9 +181,21 @@ export function Screen1Services({
     return (
       <div className="dmain">
         <div className="dmain__inner">
-          <p className="eyebrow">Paso 01 — Tratamiento</p>
+          <p className="eyebrow">
+            {knownFirstName
+              ? `Hola, ${knownFirstName}`
+              : "Paso 01 — Tratamiento"}
+          </p>
           <h1 className="headline">
-            Diseñá tu <em>ritual</em>.
+            {knownFirstName ? (
+              <>
+                ¿Qué te <em>regalás</em> hoy?
+              </>
+            ) : (
+              <>
+                Diseñá tu <em>ritual</em>.
+              </>
+            )}
           </h1>
           <p className="lede">
             Elegí uno o varios tratamientos. Podés combinar categorías; el
@@ -470,7 +493,16 @@ const EMPTY_FORM = {
   consent: true,
 }
 
-export function Screen3Details({ state, setState, onNext, onBack, onClose, variant }: ScreenProps) {
+export function Screen3Details({
+  state,
+  setState,
+  onNext,
+  onBack,
+  onClose,
+  variant,
+  isAuthenticated,
+  authEmail,
+}: ScreenProps & { isAuthenticated: boolean; authEmail: string | null }) {
   const [mode, setMode] = useState<"new" | "existing">(state.clientMode || "new")
   const f = state.form || EMPTY_FORM
   const [linkStatus, setLinkStatus] = useState<"idle" | "sending" | "sent">("idle")
@@ -547,6 +579,8 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
           value={f.email}
           onChange={(e) => setF({ email: e.target.value })}
           placeholder="maria@ejemplo.com"
+          readOnly={isAuthenticated}
+          style={isAuthenticated ? { background: "var(--paper-deep)", cursor: "not-allowed" } : undefined}
         />
       </div>
       <div className="field__row">
@@ -674,34 +708,55 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
     </div>
   )
 
-  const Body = () => (
-    <>
-      <p className="eyebrow">Paso 03 — Tus datos</p>
-      {mode === "new" ? (
+  const Body = () => {
+    if (isAuthenticated) {
+      // Logged-in. We already know who they are — just confirm the data.
+      return (
         <>
+          <p className="eyebrow">Paso 03 — Tus datos</p>
           <h1 className="headline">
-            Un gusto <em>conocerte</em>.
+            Confirmá tus <em>datos</em>.
           </h1>
           <p className="lede">
-            Completamos tu ficha una sola vez. En las próximas reservas
-            ingresás con un link al email.
+            Te logueaste con <strong>{authEmail}</strong>. Revisá que el resto
+            esté al día.
           </p>
+          {NewForm()}
         </>
-      ) : (
-        <>
-          <h1 className="headline">
-            Te <em>estábamos</em> esperando.
-          </h1>
-          <p className="lede">
-            Ingresá tu email y te enviamos un link para confirmar el turno.
-            Sin contraseñas.
-          </p>
-        </>
-      )}
-      {Segmented()}
-      {mode === "new" ? NewForm() : ExistingForm()}
-    </>
-  )
+      )
+    }
+    return (
+      <>
+        <p className="eyebrow">Paso 03 — Tus datos</p>
+        {mode === "new" ? (
+          <>
+            <h1 className="headline">
+              Un gusto <em>conocerte</em>.
+            </h1>
+            <p className="lede">
+              Completamos tu ficha una sola vez. En las próximas reservas
+              ingresás con un link al email.
+            </p>
+          </>
+        ) : (
+          <>
+            <h1 className="headline">
+              Te <em>estábamos</em> esperando.
+            </h1>
+            <p className="lede">
+              Ingresá tu email y te enviamos un link para confirmar el turno.
+              Sin contraseñas.
+            </p>
+          </>
+        )}
+        {Segmented()}
+        {mode === "new" ? NewForm() : ExistingForm()}
+      </>
+    )
+  }
+
+  // Si está autenticada, siempre mostramos el footer (no hay modo "existing").
+  const showFooter = isAuthenticated || mode === "new"
 
   if (variant === "desktop") {
     return (
@@ -709,7 +764,7 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
         <div className="dmain__inner dmain--narrow">
           {Body()}
         </div>
-        {mode === "new" && FooterCTA()}
+        {showFooter && FooterCTA()}
       </div>
     )
   }
@@ -721,7 +776,7 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
       <div className="screen__body">
         {Body()}
       </div>
-      {mode === "new" && FooterCTA()}
+      {showFooter && FooterCTA()}
     </div>
   )
 }
