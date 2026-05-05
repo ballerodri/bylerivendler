@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { ensureStaffLink } from "@/lib/staff"
 
 export async function GET(request: Request) {
   const url = new URL(request.url)
@@ -39,20 +40,28 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=invalid_code`)
   }
 
-  // Link an existing client (created via the booking flow) to this auth user
-  // by matching the email.
+  let isStaff = false
   if (userId && userEmail) {
     const admin = createAdminClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
       { auth: { persistSession: false, autoRefreshToken: false } }
     )
+    // Link existing client (created via the booking flow) to this auth user.
     await admin
       .from("clients")
       .update({ user_id: userId })
       .eq("email", userEmail.toLowerCase())
       .is("user_id", null)
+
+    // Bootstrap staff row si corresponde y reportar si es staff.
+    const result = await ensureStaffLink(userId, userEmail)
+    isStaff = result.isStaff
   }
 
-  return NextResponse.redirect(`${origin}${next}`)
+  // Si entraron sin un `next` explícito, mandamos a admin a su panel y a
+  // las clientas a su portal.
+  const finalNext = url.searchParams.get("next") ? next : isStaff ? "/admin" : "/portal"
+
+  return NextResponse.redirect(`${origin}${finalNext}`)
 }
