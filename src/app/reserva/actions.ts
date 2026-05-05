@@ -201,9 +201,12 @@ export async function createBooking(
     // ignore — la reserva ya está; el equipo puede reenviar manualmente.
   }
 
-  // 8) Magic link para portal (solo si la persona no está autenticada todavía).
-  // Si ya tiene sesión, no le mandamos un link adicional.
-  if (!authUser) {
+  // 8) Magic link para portal — solo si:
+  //   - no hay sesión activa
+  //   - Y el clients row no está ya linkeado a un auth user (si lo está,
+  //     la persona ya tiene cuenta; magic link sería duplicado)
+  const alreadyLinked = !!(existing && existing.user_id)
+  if (!authUser && !alreadyLinked) {
     try {
       const h = await headers()
       const proto = h.get("x-forwarded-proto") ?? "http"
