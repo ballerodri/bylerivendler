@@ -62,44 +62,7 @@ export default async function Home() {
 
   return (
     <div className="flex flex-1 flex-col bg-[#f2ede6] text-[#2b2623]">
-      <header className="flex items-center justify-between px-6 py-5">
-        <Link href="/" className="flex items-center">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/assets/logo-crop.png"
-            alt="By Leri Vendler"
-            className="h-12 w-auto"
-          />
-        </Link>
-        <nav className="flex items-center gap-4 text-sm">
-          {user ? (
-            staff ? (
-              <Link
-                href="/admin"
-                className="rounded-full border border-[rgba(43,38,35,0.2)] bg-white px-5 py-2 text-xs font-medium uppercase tracking-[0.12em] transition hover:bg-[#eae2d7]"
-              >
-                Panel admin
-              </Link>
-            ) : (
-              <Link
-                href="/portal"
-                className="rounded-full border border-[rgba(43,38,35,0.2)] bg-white px-5 py-2 text-xs font-medium uppercase tracking-[0.12em] transition hover:bg-[#eae2d7]"
-              >
-                Mi portal
-              </Link>
-            )
-          ) : (
-            <Link
-              href="/login"
-              className="text-[#7a6e64] hover:text-[#2b2623]"
-            >
-              Ingresar
-            </Link>
-          )}
-        </nav>
-      </header>
-
-      <main className="flex flex-1 flex-col items-center justify-center px-6 py-12">
+      <main className="flex flex-1 flex-col items-center justify-center px-6 py-16">
         {user && firstName && !staff ? (
           <LoggedInView firstName={firstName} nextAppt={nextAppt} />
         ) : (
