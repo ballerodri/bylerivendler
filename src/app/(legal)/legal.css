@@ -1,0 +1,130 @@
+.legal {
+  --ink: #2b2623;
+  --ink-soft: #4a423d;
+  --ink-mute: #7a6e64;
+  --paper: #f2ede6;
+  --line: rgba(43, 38, 35, 0.1);
+  --gold: #b68a5f;
+
+  font-family: var(--font-sans), -apple-system, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  min-height: 100vh;
+  padding: 48px 24px 96px;
+}
+
+.legal__inner {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.legal__header {
+  margin-bottom: 40px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.legal__brand {
+  display: inline-block;
+  margin-bottom: 24px;
+}
+
+.legal__brand img {
+  height: 56px;
+  width: auto;
+  display: block;
+}
+
+.legal__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin: 0 0 8px;
+}
+
+.legal__title {
+  font-family: var(--font-serif), serif;
+  font-size: 40px;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  margin: 0 0 12px;
+}
+
+.legal__title em {
+  font-style: italic;
+  color: var(--gold);
+}
+
+.legal__updated {
+  font-size: 12px;
+  color: var(--ink-mute);
+}
+
+.legal__content h2 {
+  font-family: var(--font-serif), serif;
+  font-size: 22px;
+  font-weight: 500;
+  margin: 36px 0 12px;
+  letter-spacing: -0.01em;
+}
+
+.legal__content h3 {
+  font-family: var(--font-serif), serif;
+  font-size: 17px;
+  font-weight: 500;
+  margin: 20px 0 8px;
+}
+
+.legal__content p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+  margin: 0 0 14px;
+}
+
+.legal__content ul,
+.legal__content ol {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-soft);
+  padding-left: 24px;
+  margin: 0 0 14px;
+}
+
+.legal__content li {
+  margin-bottom: 6px;
+}
+
+.legal__content strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.legal__content a {
+  color: var(--gold);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal__footer {
+  margin-top: 56px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-mute);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.legal__footer a {
+  color: var(--ink-mute);
+  text-decoration: none;
+}
+
+.legal__footer a:hover {
+  color: var(--ink);
+}
