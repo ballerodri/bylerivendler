@@ -3,6 +3,7 @@
 import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -71,11 +72,18 @@ export async function createBooking(
   const startsAt = new Date(input.startsAt)
   const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
 
-  // 2) Find or create client (by email)
+  // 2) Find or create client (by email). Si la persona está autenticada,
+  // linkeamos el row al auth.user para que las próximas reservas la
+  // reconozcan automáticamente como clienta conocida.
+  const ssr = await createSsrClient()
+  const {
+    data: { user: authUser },
+  } = await ssr.auth.getUser()
+
   const email = input.client.email.trim().toLowerCase()
   const { data: existing, error: findErr } = await supabase
     .from("clients")
-    .select("id")
+    .select("id, user_id")
     .eq("email", email)
     .maybeSingle()
   if (findErr) return { ok: false, error: `Clientes: ${findErr.message}` }
@@ -83,11 +91,23 @@ export async function createBooking(
   let clientId: string
   if (existing) {
     clientId = existing.id
+    // Si el row existe sin user_id y la persona está autenticada con el
+    // mismo email, lo linkeamos ahora.
+    if (authUser && !existing.user_id && authUser.email?.toLowerCase() === email) {
+      await supabase
+        .from("clients")
+        .update({ user_id: authUser.id })
+        .eq("id", clientId)
+    }
   } else {
     const dob = parseDob(input.client.dob)
     const { data: created, error: insErr } = await supabase
       .from("clients")
       .insert({
+        user_id:
+          authUser && authUser.email?.toLowerCase() === email
+            ? authUser.id
+            : null,
         first_name: input.client.firstName.trim(),
         last_name: input.client.lastName.trim(),
         email,
