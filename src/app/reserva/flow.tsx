@@ -156,6 +156,13 @@ export default function ReservaFlow({
     if (hydrated) localStorage.setItem(STEP_KEY, String(i))
   }
 
+  // Scroll al inicio en cada cambio de paso. Sin esto, al volver de la
+  // pantalla de éxito (que es alta), la persona aparece scrolleada al final
+  // y ve la página "en blanco".
+  useEffect(() => {
+    if (typeof window !== "undefined") window.scrollTo(0, 0)
+  }, [step])
+
   const next = () => goto(Math.min(screenOrder.length - 1, step + 1))
   const back = () => goto(Math.max(0, step - 1))
   const close = () => router.push("/")
