@@ -1,8 +1,13 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { STEP_LABELS, type BookingState, type Category } from "./data"
+import {
+  SCREEN_LABEL,
+  type BookingState,
+  type Category,
+  type ScreenId,
+} from "./data"
 import { DesktopSteps } from "./primitives"
 import {
   Screen1Services,
@@ -38,6 +43,28 @@ function dbDateToUi(d: string | null): string {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : ""
 }
 
+/**
+ * Decide qué pantallas se muestran y en qué orden, según lo que ya sabemos
+ * de la persona. La idea: primero la identidad (datos + ficha) si falta algo,
+ * después las cuestiones del turno.
+ */
+function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
+  const hasFullData =
+    !!currentClient &&
+    !!currentClient.firstName &&
+    !!currentClient.phone &&
+    !!currentClient.dateOfBirth
+  const hasRecord = currentClient?.hasMedicalRecord ?? false
+
+  if (hasFullData && hasRecord) {
+    return ["services", "date", "confirm", "success"]
+  }
+  if (hasFullData && !hasRecord) {
+    return ["medical", "services", "date", "confirm", "success"]
+  }
+  return ["details", "medical", "services", "date", "confirm", "success"]
+}
+
 export default function ReservaFlow({
   categories,
   currentClient,
@@ -53,7 +80,12 @@ export default function ReservaFlow({
   const [state, setStateRaw] = useState<BookingState>({ services: [] })
   const [hydrated, setHydrated] = useState(false)
 
-  // Hydrate from localStorage and pre-fill from auth/client when applicable.
+  const screenOrder = useMemo(
+    () => buildScreenOrder(currentClient),
+    [currentClient]
+  )
+  const totalSteps = screenOrder.length - 1 // exclude "success"
+
   useEffect(() => {
     let initialState: BookingState = { services: [] }
     try {
@@ -69,11 +101,13 @@ export default function ReservaFlow({
         initialState = s
       }
       const stepRaw = localStorage.getItem(STEP_KEY)
-      if (stepRaw) setStep(parseInt(stepRaw, 10) || 0)
+      if (stepRaw) {
+        const parsed = parseInt(stepRaw, 10) || 0
+        // Saneamos: que el step persistido no exceda los pasos actuales.
+        setStep(Math.min(parsed, screenOrder.length - 1))
+      }
     } catch {}
 
-    // Pre-fill data from the authenticated user. Always overrides any localStorage
-    // form to keep things in sync with the actual client record.
     if (currentClient) {
       initialState.form = {
         firstName: currentClient.firstName,
@@ -99,7 +133,7 @@ export default function ReservaFlow({
 
     setStateRaw(initialState)
     setHydrated(true)
-  }, [categories, currentClient, authProfile])
+  }, [categories, currentClient, authProfile, screenOrder])
 
   const setState = (s: BookingState) => {
     setStateRaw(s)
@@ -111,11 +145,10 @@ export default function ReservaFlow({
     if (hydrated) localStorage.setItem(STEP_KEY, String(i))
   }
 
-  const next = () => goto(Math.min(5, step + 1))
+  const next = () => goto(Math.min(screenOrder.length - 1, step + 1))
   const back = () => goto(Math.max(0, step - 1))
   const close = () => router.push("/")
   const restart = () => {
-    // Después de reservar, el cliente queda con ficha; reusamos los datos.
     if (currentClient) {
       setState({
         services: [],
@@ -135,48 +168,23 @@ export default function ReservaFlow({
     goto(0)
   }
 
-  // Conocido (con ficha vigente): saltar pasos 2 (datos) y 3 (ficha).
-  const knownClient = !!currentClient && currentClient.hasMedicalRecord
-
-  const handleNext = () => {
-    // Después de elegir fecha y hora (paso 1), si ya conocemos todo de la
-    // clienta saltamos directo a confirmación (paso 4).
-    if (step === 1 && knownClient) {
-      goto(4)
-      return
-    }
-    // Si vinieron de "Ya soy clienta" (existing mode), saltamos la ficha.
-    if (step === 2 && state.clientMode === "existing") {
-      goto(4)
-      return
-    }
-    next()
-  }
-
-  const handleBack = () => {
-    if (step === 4 && knownClient) {
-      goto(1)
-      return
-    }
-    if (step === 4 && state.clientMode === "existing") {
-      goto(2)
-      return
-    }
-    back()
-  }
+  const screenId = screenOrder[step]
+  const stepNumber = step + 1
 
   const screenProps = {
     state,
     setState,
-    onNext: handleNext,
-    onBack: handleBack,
+    onNext: next,
+    onBack: back,
     onClose: close,
     variant,
+    stepNumber,
+    totalSteps,
   }
 
   const renderScreen = () => {
-    switch (step) {
-      case 0:
+    switch (screenId) {
+      case "services":
         return (
           <Screen1Services
             {...screenProps}
@@ -184,9 +192,9 @@ export default function ReservaFlow({
             knownFirstName={currentClient?.firstName ?? null}
           />
         )
-      case 1:
+      case "date":
         return <Screen2DateTime {...screenProps} />
-      case 2:
+      case "details":
         return (
           <Screen3Details
             {...screenProps}
@@ -194,11 +202,11 @@ export default function ReservaFlow({
             authEmail={currentClient?.email ?? authProfile?.email ?? null}
           />
         )
-      case 3:
+      case "medical":
         return <Screen4Medical {...screenProps} />
-      case 4:
+      case "confirm":
         return <Screen5Confirm {...screenProps} />
-      case 5:
+      case "success":
         return (
           <Screen6Success state={state} onClose={close} onRestart={restart} />
         )
@@ -207,21 +215,15 @@ export default function ReservaFlow({
     }
   }
 
-  // Pasos visibles en la sidebar de desktop (los saltados se ocultan).
-  const sidebarSteps = knownClient
-    ? [STEP_LABELS[0], STEP_LABELS[1], STEP_LABELS[4]]
-    : STEP_LABELS.slice(0, 5)
-  const sidebarCurrent = knownClient
-    ? step === 0
-      ? 0
-      : step === 1
-        ? 1
-        : 2
-    : Math.min(step, 4)
+  // Sidebar de desktop: lista los pasos previos al "success".
+  const sidebarSteps = screenOrder
+    .filter((id) => id !== "success")
+    .map((id) => SCREEN_LABEL[id])
+  const sidebarCurrent = Math.min(step, sidebarSteps.length - 1)
 
   return (
     <div className="blv">
-      {variant === "desktop" && step !== 5 ? (
+      {variant === "desktop" && screenId !== "success" ? (
         <div className="dlayout">
           <aside className="dside">
             <div className="dside__wordmark">
@@ -231,7 +233,7 @@ export default function ReservaFlow({
             <DesktopSteps
               steps={sidebarSteps}
               current={sidebarCurrent}
-              onGo={() => {}}
+              onGo={(i) => i <= step && goto(i)}
             />
             <div className="dside__foot">
               <strong>¿Alguna duda?</strong>
