@@ -29,8 +29,39 @@ const mono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "By Leri Vendler",
-  description: "Estética profesional · Reservá tu turno",
+  metadataBase: new URL("https://bylerivendler.com"),
+  title: {
+    default: "By Leri Vendler · Estética profesional",
+    template: "%s · By Leri Vendler",
+  },
+  description:
+    "Estética profesional en Buenos Aires. Tratamientos faciales, corporales y masajes. Reservá tu turno online en pocos minutos.",
+  applicationName: "By Leri Vendler",
+  authors: [{ name: "By Leri Vendler" }],
+  keywords: [
+    "estética",
+    "tratamientos faciales",
+    "tratamientos corporales",
+    "masajes",
+    "Buenos Aires",
+    "Pilar",
+    "By Leri Vendler",
+  ],
+  openGraph: {
+    type: "website",
+    locale: "es_AR",
+    url: "https://bylerivendler.com",
+    title: "By Leri Vendler · Estética profesional",
+    description:
+      "Tratamientos faciales, corporales y masajes en Buenos Aires. Reservá tu turno online.",
+    siteName: "By Leri Vendler",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "By Leri Vendler · Estética profesional",
+    description:
+      "Tratamientos faciales, corporales y masajes en Buenos Aires. Reservá tu turno online.",
+  },
 }
 
 export default function RootLayout({
