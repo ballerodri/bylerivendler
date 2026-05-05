@@ -59,9 +59,17 @@ export async function GET(request: Request) {
     isStaff = result.isStaff
   }
 
-  // Si entraron sin un `next` explícito, mandamos a admin a su panel y a
-  // las clientas a su portal.
-  const finalNext = url.searchParams.get("next") ? next : isStaff ? "/admin" : "/portal"
+  // Routing post-login:
+  //   - Staff: respeta cualquier ruta /admin/* explícita; sino va a /admin.
+  //   - No staff: si intentaron /admin (no permitido) los mandamos a /portal;
+  //     sino respeta el next.
+  const finalNext = isStaff
+    ? next.startsWith("/admin")
+      ? next
+      : "/admin"
+    : next.startsWith("/admin")
+      ? "/portal"
+      : next
 
   return NextResponse.redirect(`${origin}${finalNext}`)
 }
