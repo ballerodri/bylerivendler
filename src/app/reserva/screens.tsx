@@ -175,10 +175,10 @@ export function Screen1Services({
             Elegí uno o varios tratamientos. Podés combinar categorías; el
             equipo ajusta la secuencia en cabina.
           </p>
-          <CatTabs />
-          <ServiceList />
+          {CatTabs()}
+          {ServiceList()}
         </div>
-        <FooterCTA />
+        {FooterCTA()}
       </div>
     )
   }
@@ -194,11 +194,11 @@ export function Screen1Services({
       </div>
       <Progress step={1} />
       <div className="screen__body">
-        <Hero />
-        <CatTabs />
-        <ServiceList />
+        {Hero()}
+        {CatTabs()}
+        {ServiceList()}
       </div>
-      <FooterCTA />
+      {FooterCTA()}
     </div>
   )
 }
@@ -407,14 +407,14 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             Horario de Buenos Aires (GMT-3). Los días con punto dorado son hoy.
           </p>
           <div className="dcol-2">
-            <Cal />
+            {Cal()}
             <div>
-              <Slots />
-              <ProPicker />
+              {Slots()}
+              {ProPicker()}
             </div>
           </div>
         </div>
-        <FooterCTA />
+        {FooterCTA()}
       </div>
     )
   }
@@ -432,11 +432,11 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           Horario de Buenos Aires. Los días con turnos disponibles son
           seleccionables.
         </p>
-        <Cal />
-        <Slots />
-        <ProPicker />
+        {Cal()}
+        {Slots()}
+        {ProPicker()}
       </div>
-      <FooterCTA />
+      {FooterCTA()}
     </div>
   )
 }
@@ -622,8 +622,8 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
           </p>
         </>
       )}
-      <Segmented />
-      {mode === "new" ? <NewForm /> : <ExistingForm />}
+      {Segmented()}
+      {mode === "new" ? NewForm() : ExistingForm()}
     </>
   )
 
@@ -631,9 +631,9 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
     return (
       <div className="dmain">
         <div className="dmain__inner dmain--narrow">
-          <Body />
+          {Body()}
         </div>
-        {mode === "new" && <FooterCTA />}
+        {mode === "new" && FooterCTA()}
       </div>
     )
   }
@@ -643,9 +643,9 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
       <TopBar onBack={onBack} onClose={onClose} />
       <Progress step={3} />
       <div className="screen__body">
-        <Body />
+        {Body()}
       </div>
-      {mode === "new" && <FooterCTA />}
+      {mode === "new" && FooterCTA()}
     </div>
   )
 }
@@ -824,9 +824,9 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
     return (
       <div className="dmain">
         <div className="dmain__inner dmain--narrow">
-          <Body />
+          {Body()}
         </div>
-        <FooterCTA />
+        {FooterCTA()}
       </div>
     )
   }
@@ -836,9 +836,9 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
       <TopBar onBack={onBack} onClose={onClose} />
       <Progress step={4} />
       <div className="screen__body">
-        <Body />
+        {Body()}
       </div>
-      <FooterCTA />
+      {FooterCTA()}
     </div>
   )
 }
@@ -1038,9 +1038,9 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
     return (
       <div className="dmain">
         <div className="dmain__inner dmain--narrow">
-          <Body />
+          {Body()}
         </div>
-        <FooterCTA />
+        {FooterCTA()}
       </div>
     )
   }
@@ -1050,9 +1050,9 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
       <TopBar onBack={onBack} onClose={onClose} />
       <Progress step={5} />
       <div className="screen__body">
-        <Body />
+        {Body()}
       </div>
-      <FooterCTA />
+      {FooterCTA()}
     </div>
   )
 }
@@ -1184,7 +1184,7 @@ export function Screen6Success({
           <Icon.Close />
         </button>
       </div>
-      <Body />
+      {Body()}
     </div>
   )
 }
