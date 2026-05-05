@@ -46,8 +46,8 @@ async function LoginPageInner({
           Te <em>esperamos</em>.
         </h1>
         <p className="lede" style={{ textAlign: "center", margin: "0 auto 24px" }}>
-          Ingresá tu email y te enviamos un link para entrar.
-          Sin contraseñas.
+          Continuá con tu cuenta de Google o pedí un link al email. Sin
+          contraseñas.
         </p>
 
         <LoginForm next={sp.next} initialError={sp.error} />
