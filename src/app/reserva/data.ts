@@ -104,6 +104,17 @@ export const parseYmd = (s: string) => {
   return new Date(y, m - 1, d)
 }
 
+// Auto-formats a DOB as the user types: "22031988" -> "22/03/1988"
+export const formatDob = (raw: string): string => {
+  const digits = raw.replace(/\D/g, "").slice(0, 8)
+  const dd = digits.slice(0, 2)
+  const mm = digits.slice(2, 4)
+  const yyyy = digits.slice(4, 8)
+  if (digits.length <= 2) return dd
+  if (digits.length <= 4) return `${dd}/${mm}`
+  return `${dd}/${mm}/${yyyy}`
+}
+
 export const combineDateTime = (ymdStr: string, hm: string): Date => {
   const [y, m, d] = ymdStr.split("-").map(Number)
   const [hh, mm] = hm.split(":").map(Number)
