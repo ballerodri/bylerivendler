@@ -183,11 +183,19 @@ export type BookingState = {
   medical?: MedicalForm
 }
 
-export const STEP_LABELS = [
-  "Tratamiento",
-  "Fecha y horario",
-  "Tus datos",
-  "Ficha inicial",
-  "Confirmación",
-  "Listo",
-] as const
+export type ScreenId =
+  | "details"
+  | "medical"
+  | "services"
+  | "date"
+  | "confirm"
+  | "success"
+
+export const SCREEN_LABEL: Record<ScreenId, string> = {
+  details: "Tus datos",
+  medical: "Ficha inicial",
+  services: "Tratamiento",
+  date: "Fecha y horario",
+  confirm: "Confirmación",
+  success: "Listo",
+}

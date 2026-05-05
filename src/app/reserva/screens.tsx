@@ -30,7 +30,12 @@ type ScreenProps = {
   onBack: () => void
   onClose: () => void
   variant: Variant
+  stepNumber: number
+  totalSteps: number
 }
+
+const stepLabel = (n: number, label: string) =>
+  `Paso ${String(n).padStart(2, "0")} — ${label}`
 
 // ---------- Screen 1: Services ----------
 export function Screen1Services({
@@ -39,6 +44,8 @@ export function Screen1Services({
   onNext,
   onClose,
   variant,
+  stepNumber,
+  totalSteps,
   categories,
   knownFirstName,
 }: ScreenProps & { categories: Category[]; knownFirstName: string | null }) {
@@ -184,7 +191,7 @@ export function Screen1Services({
           <p className="eyebrow">
             {knownFirstName
               ? `Hola, ${knownFirstName}`
-              : "Paso 01 — Tratamiento"}
+              : stepLabel(stepNumber, "Tratamiento")}
           </p>
           <h1 className="headline">
             {knownFirstName ? (
@@ -218,7 +225,7 @@ export function Screen1Services({
           <Icon.Close />
         </button>
       </div>
-      <Progress step={1} />
+      <Progress step={stepNumber} total={totalSteps} />
       <div className="screen__body">
         {Hero()}
         {CatTabs()}
@@ -230,7 +237,7 @@ export function Screen1Services({
 }
 
 // ---------- Screen 2: Date & Time ----------
-export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant }: ScreenProps) {
+export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
   // `today` snapped to midnight so we compare just dates, not times.
   const [today] = useState(() => {
     const d = new Date()
@@ -441,7 +448,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     return (
       <div className="dmain">
         <div className="dmain__inner">
-          <p className="eyebrow">Paso 02 — Fecha y horario</p>
+          <p className="eyebrow">{stepLabel(stepNumber, "Fecha y horario")}</p>
           <h1 className="headline">
             ¿Cuándo te <em>esperamos</em>?
           </h1>
@@ -464,9 +471,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   return (
     <div className="screen">
       <TopBar onBack={onBack} onClose={onClose} />
-      <Progress step={2} />
+      <Progress step={stepNumber} total={totalSteps} />
       <div className="screen__body">
-        <p className="eyebrow">Paso 02 — Fecha y horario</p>
+        <p className="eyebrow">{stepLabel(stepNumber, "Fecha y horario")}</p>
         <h1 className="headline">
           ¿Cuándo te <em>esperamos</em>?
         </h1>
@@ -500,6 +507,8 @@ export function Screen3Details({
   onBack,
   onClose,
   variant,
+  stepNumber,
+  totalSteps,
   isAuthenticated,
   authEmail,
 }: ScreenProps & { isAuthenticated: boolean; authEmail: string | null }) {
@@ -713,7 +722,7 @@ export function Screen3Details({
       // Logged-in. We already know who they are — just confirm the data.
       return (
         <>
-          <p className="eyebrow">Paso 03 — Tus datos</p>
+          <p className="eyebrow">{stepLabel(stepNumber, "Tus datos")}</p>
           <h1 className="headline">
             Confirmá tus <em>datos</em>.
           </h1>
@@ -727,7 +736,7 @@ export function Screen3Details({
     }
     return (
       <>
-        <p className="eyebrow">Paso 03 — Tus datos</p>
+        <p className="eyebrow">{stepLabel(stepNumber, "Tus datos")}</p>
         {mode === "new" ? (
           <>
             <h1 className="headline">
@@ -772,7 +781,7 @@ export function Screen3Details({
   return (
     <div className="screen">
       <TopBar onBack={onBack} onClose={onClose} />
-      <Progress step={3} />
+      <Progress step={stepNumber} total={totalSteps} />
       <div className="screen__body">
         {Body()}
       </div>
@@ -792,7 +801,7 @@ const EMPTY_MED = {
   consent: false,
 }
 
-export function Screen4Medical({ state, setState, onNext, onBack, onClose, variant }: ScreenProps) {
+export function Screen4Medical({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
   const med = state.medical || EMPTY_MED
   const setM = (patch: Partial<typeof EMPTY_MED>) =>
     setState({ ...state, medical: { ...med, ...patch } })
@@ -809,7 +818,7 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
 
   const Body = () => (
     <>
-      <p className="eyebrow">Paso 04 — Ficha inicial</p>
+      <p className="eyebrow">{stepLabel(stepNumber, "Ficha inicial")}</p>
       <h1 className="headline">
         Para <em>cuidarte</em> como merecés.
       </h1>
@@ -965,7 +974,7 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
   return (
     <div className="screen">
       <TopBar onBack={onBack} onClose={onClose} />
-      <Progress step={4} />
+      <Progress step={stepNumber} total={totalSteps} />
       <div className="screen__body">
         {Body()}
       </div>
@@ -975,7 +984,7 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
 }
 
 // ---------- Screen 5: Confirmation ----------
-export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: ScreenProps) {
+export function Screen5Confirm({ state, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
   const services = state.services || []
   const total = services.reduce((a, s) => a + s.price, 0)
   const totalMin = services.reduce((a, s) => a + s.duration, 0)
@@ -1038,7 +1047,7 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
 
   const Body = () => (
     <>
-      <p className="eyebrow">Paso 05 — Confirmación</p>
+      <p className="eyebrow">{stepLabel(stepNumber, "Confirmación")}</p>
       <h1 className="headline">
         Casi <em>listo</em>.
       </h1>
@@ -1179,7 +1188,7 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant }: Scre
   return (
     <div className="screen">
       <TopBar onBack={onBack} onClose={onClose} />
-      <Progress step={5} />
+      <Progress step={stepNumber} total={totalSteps} />
       <div className="screen__body">
         {Body()}
       </div>
