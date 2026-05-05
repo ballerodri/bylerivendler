@@ -15,7 +15,6 @@ import {
   Screen3Details,
   Screen4Medical,
   Screen5Confirm,
-  Screen6Success,
 } from "./screens"
 import type { CurrentClient, AuthProfile } from "./queries"
 
@@ -60,13 +59,15 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
     !!currentClient.dateOfBirth
   const hasRecord = currentClient?.hasMedicalRecord ?? false
 
+  // Nota: "success" ya no es parte del flujo; tras confirmar redirigimos a
+  // /reserva/exito que es una página propia.
   if (hasFullData && hasRecord) {
-    return ["services", "date", "confirm", "success"]
+    return ["services", "date", "confirm"]
   }
   if (hasFullData && !hasRecord) {
-    return ["medical", "services", "date", "confirm", "success"]
+    return ["medical", "services", "date", "confirm"]
   }
-  return ["details", "medical", "services", "date", "confirm", "success"]
+  return ["details", "medical", "services", "date", "confirm"]
 }
 
 export default function ReservaFlow({
@@ -88,7 +89,7 @@ export default function ReservaFlow({
     () => buildScreenOrder(currentClient),
     [currentClient]
   )
-  const totalSteps = screenOrder.length - 1 // exclude "success"
+  const totalSteps = screenOrder.length
 
   useEffect(() => {
     let initialState: BookingState = { services: [] }
@@ -103,15 +104,8 @@ export default function ReservaFlow({
         const stepRaw = localStorage.getItem(STEP_KEY)
         const parsed = stepRaw ? parseInt(stepRaw, 10) || 0 : 0
         const clamped = Math.min(Math.max(0, parsed), screenOrder.length - 1)
-        const persistedScreen = screenOrder[clamped]
 
-        // Si la última pantalla persistida es "success", la reserva ya se
-        // completó. Empezamos un flujo nuevo desde cero — no restauramos
-        // estado ni step.
-        if (persistedScreen === "success") {
-          localStorage.removeItem(STORAGE_KEY)
-          localStorage.removeItem(STEP_KEY)
-        } else {
+        {
           const raw = localStorage.getItem(STORAGE_KEY)
           if (raw) {
             const s = JSON.parse(raw) as BookingState
@@ -175,25 +169,6 @@ export default function ReservaFlow({
   const next = () => goto(Math.min(screenOrder.length - 1, step + 1))
   const back = () => goto(Math.max(0, step - 1))
   const close = () => router.push("/")
-  const restart = () => {
-    if (currentClient) {
-      setState({
-        services: [],
-        form: {
-          firstName: currentClient.firstName,
-          lastName: currentClient.lastName,
-          email: currentClient.email,
-          phone: currentClient.phone,
-          dob: dbDateToUi(currentClient.dateOfBirth),
-          consent: true,
-        },
-        clientMode: "existing",
-      })
-    } else {
-      setState({ services: [] })
-    }
-    goto(0)
-  }
 
   const screenId = screenOrder[step]
   const stepNumber = step + 1
@@ -233,24 +208,17 @@ export default function ReservaFlow({
         return <Screen4Medical {...screenProps} />
       case "confirm":
         return <Screen5Confirm {...screenProps} />
-      case "success":
-        return (
-          <Screen6Success state={state} onClose={close} onRestart={restart} />
-        )
       default:
         return null
     }
   }
 
-  // Sidebar de desktop: lista los pasos previos al "success".
-  const sidebarSteps = screenOrder
-    .filter((id) => id !== "success")
-    .map((id) => SCREEN_LABEL[id])
+  const sidebarSteps = screenOrder.map((id) => SCREEN_LABEL[id])
   const sidebarCurrent = Math.min(step, sidebarSteps.length - 1)
 
   return (
     <div className="blv">
-      {variant === "desktop" && screenId !== "success" ? (
+      {variant === "desktop" ? (
         <div className="dlayout">
           <aside className="dside">
             <div className="dside__wordmark">

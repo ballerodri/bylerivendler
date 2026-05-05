@@ -1,0 +1,92 @@
+"use server"
+
+import { revalidatePath } from "next/cache"
+import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { sendBookingCancellation } from "@/lib/email/booking-emails"
+
+type CancelResult = { ok: true } | { ok: false; error: string }
+
+function adminClient() {
+  return createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false, autoRefreshToken: false } }
+  )
+}
+
+export async function cancelMyAppointment(
+  appointmentId: string
+): Promise<CancelResult> {
+  const supabase = await createSsrClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Sesión expirada" }
+
+  const admin = adminClient()
+
+  // Verificar que el turno pertenezca a la clienta autenticada.
+  const { data: appt } = await admin
+    .from("appointments")
+    .select(
+      `id, status, starts_at, duration_min, total_cents,
+       client:clients(id, user_id, email, first_name),
+       appointment_services(service:services(name))`
+    )
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  type ApptShape = {
+    id: string
+    status: string
+    starts_at: string
+    duration_min: number
+    total_cents: number
+    client: {
+      id: string
+      user_id: string | null
+      email: string
+      first_name: string | null
+    } | null
+    appointment_services: { service: { name: string } | null }[]
+  }
+  const a = appt as unknown as ApptShape
+
+  if (!a.client || a.client.user_id !== user.id) {
+    return { ok: false, error: "No podés cancelar este turno" }
+  }
+
+  if (a.status === "cancelled" || a.status === "completed" || a.status === "no_show") {
+    return { ok: false, error: "Este turno ya no se puede cancelar" }
+  }
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ status: "cancelled" })
+    .eq("id", appointmentId)
+  if (error) return { ok: false, error: error.message }
+
+  // Email de aviso a la clienta (no bloqueante).
+  try {
+    const services = a.appointment_services
+      .map((as) => as.service?.name)
+      .filter((n): n is string => Boolean(n))
+    await sendBookingCancellation({
+      to: a.client.email,
+      firstName: a.client.first_name ?? "",
+      servicesNames: services,
+      startsAt: new Date(a.starts_at),
+      durationMin: a.duration_min,
+      totalCents: a.total_cents,
+      appointmentId: a.id,
+    })
+  } catch {
+    // ignore
+  }
+
+  revalidatePath("/portal")
+  return { ok: true }
+}

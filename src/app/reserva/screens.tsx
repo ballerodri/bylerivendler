@@ -984,7 +984,7 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
 }
 
 // ---------- Screen 5: Confirmation ----------
-export function Screen5Confirm({ state, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
   const services = state.services || []
   const total = services.reduce((a, s) => a + s.price, 0)
   const totalMin = services.reduce((a, s) => a + s.duration, 0)
@@ -1037,10 +1037,15 @@ export function Screen5Confirm({ state, onNext, onBack, onClose, variant, stepNu
             : null,
     })
 
-    setPaying(false)
     if (result.ok) {
-      onNext()
+      // Limpiar el booking en curso y redirigir a la página de confirmación.
+      try {
+        localStorage.removeItem("blv_booking")
+        localStorage.removeItem("blv_step")
+      } catch {}
+      window.location.href = `/reserva/exito?id=${result.appointmentId}`
     } else {
+      setPaying(false)
       setError(result.error)
     }
   }
