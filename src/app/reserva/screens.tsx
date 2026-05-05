@@ -10,6 +10,7 @@ import {
   combineDateTime,
   fmtDuration,
   fmtPrice,
+  formatDob,
   pad2,
   parseYmd,
   ymd,
@@ -522,18 +523,21 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
           <label className="field__label">Teléfono</label>
           <input
             className="field__input"
+            inputMode="tel"
             value={f.phone}
             onChange={(e) => setF({ phone: e.target.value })}
-            placeholder="+54 9 11 ..."
+            placeholder="11 1234-5678"
           />
         </div>
         <div className="field">
           <label className="field__label">Fecha de nacimiento</label>
           <input
             className="field__input"
+            inputMode="numeric"
             value={f.dob}
-            onChange={(e) => setF({ dob: e.target.value })}
-            placeholder="DD / MM / AAAA"
+            onChange={(e) => setF({ dob: formatDob(e.target.value) })}
+            placeholder="DD/MM/AAAA"
+            maxLength={10}
           />
         </div>
       </div>
@@ -547,7 +551,7 @@ export function Screen3Details({ state, setState, onNext, onBack, onClose, varia
       </div>
 
       <Check checked={!!f.consent} onChange={(v) => setF({ consent: v })}>
-        Acepto recibir recordatorios de turno y novedades por email y SMS.
+        Acepto recibir recordatorios de turno y novedades por email y Whatsapp.
         Puedo cancelar en cualquier momento.
       </Check>
     </>
