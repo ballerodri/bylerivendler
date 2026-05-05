@@ -100,21 +100,30 @@ export default function ReservaFlow({
         localStorage.removeItem(STEP_KEY)
         localStorage.setItem(VERSION_KEY, String(FLOW_VERSION))
       } else {
-        const raw = localStorage.getItem(STORAGE_KEY)
-        if (raw) {
-          const s = JSON.parse(raw) as BookingState
-          if (s.services) {
-            const all = categories.flatMap((c) => c.services)
-            s.services = s.services
-              .map((sel) => all.find((x) => x.id === sel.id))
-              .filter((x): x is NonNullable<typeof x> => Boolean(x))
-          }
-          initialState = s
-        }
         const stepRaw = localStorage.getItem(STEP_KEY)
-        if (stepRaw) {
-          const parsed = parseInt(stepRaw, 10) || 0
-          setStep(Math.min(Math.max(0, parsed), screenOrder.length - 1))
+        const parsed = stepRaw ? parseInt(stepRaw, 10) || 0 : 0
+        const clamped = Math.min(Math.max(0, parsed), screenOrder.length - 1)
+        const persistedScreen = screenOrder[clamped]
+
+        // Si la última pantalla persistida es "success", la reserva ya se
+        // completó. Empezamos un flujo nuevo desde cero — no restauramos
+        // estado ni step.
+        if (persistedScreen === "success") {
+          localStorage.removeItem(STORAGE_KEY)
+          localStorage.removeItem(STEP_KEY)
+        } else {
+          const raw = localStorage.getItem(STORAGE_KEY)
+          if (raw) {
+            const s = JSON.parse(raw) as BookingState
+            if (s.services) {
+              const all = categories.flatMap((c) => c.services)
+              s.services = s.services
+                .map((sel) => all.find((x) => x.id === sel.id))
+                .filter((x): x is NonNullable<typeof x> => Boolean(x))
+            }
+            initialState = s
+          }
+          if (stepRaw) setStep(clamped)
         }
       }
     } catch {}
