@@ -21,6 +21,10 @@ import type { CurrentClient, AuthProfile } from "./queries"
 
 const STORAGE_KEY = "blv_booking"
 const STEP_KEY = "blv_step"
+const VERSION_KEY = "blv_flow_version"
+// Aumentar este número cuando cambian las pantallas o el orden, para que
+// los clientes con estado viejo en localStorage no rompan el render.
+const FLOW_VERSION = 2
 
 function useVariant(): "mobile" | "desktop" {
   const [variant, setVariant] = useState<"mobile" | "desktop">("mobile")
@@ -89,22 +93,29 @@ export default function ReservaFlow({
   useEffect(() => {
     let initialState: BookingState = { services: [] }
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) {
-        const s = JSON.parse(raw) as BookingState
-        if (s.services) {
-          const all = categories.flatMap((c) => c.services)
-          s.services = s.services
-            .map((sel) => all.find((x) => x.id === sel.id))
-            .filter((x): x is NonNullable<typeof x> => Boolean(x))
+      // Si la versión del flujo cambió, descartamos cualquier estado viejo.
+      const persistedVersion = localStorage.getItem(VERSION_KEY)
+      if (persistedVersion !== String(FLOW_VERSION)) {
+        localStorage.removeItem(STORAGE_KEY)
+        localStorage.removeItem(STEP_KEY)
+        localStorage.setItem(VERSION_KEY, String(FLOW_VERSION))
+      } else {
+        const raw = localStorage.getItem(STORAGE_KEY)
+        if (raw) {
+          const s = JSON.parse(raw) as BookingState
+          if (s.services) {
+            const all = categories.flatMap((c) => c.services)
+            s.services = s.services
+              .map((sel) => all.find((x) => x.id === sel.id))
+              .filter((x): x is NonNullable<typeof x> => Boolean(x))
+          }
+          initialState = s
         }
-        initialState = s
-      }
-      const stepRaw = localStorage.getItem(STEP_KEY)
-      if (stepRaw) {
-        const parsed = parseInt(stepRaw, 10) || 0
-        // Saneamos: que el step persistido no exceda los pasos actuales.
-        setStep(Math.min(parsed, screenOrder.length - 1))
+        const stepRaw = localStorage.getItem(STEP_KEY)
+        if (stepRaw) {
+          const parsed = parseInt(stepRaw, 10) || 0
+          setStep(Math.min(Math.max(0, parsed), screenOrder.length - 1))
+        }
       }
     } catch {}
 
