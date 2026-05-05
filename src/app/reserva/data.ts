@@ -62,23 +62,55 @@ export const PROFESSIONALS: Professional[] = [
   { id: "p3", initials: "CA", name: "Camila Aranda", role: "Especialista facial" },
 ]
 
-export const AVAILABILITY: Record<string, string[]> = {
-  "2026-04-22": ["10:00", "11:30", "14:00", "15:30", "17:00"],
-  "2026-04-23": ["09:30", "11:00", "12:30", "16:00", "17:30", "19:00"],
-  "2026-04-24": ["10:00", "14:30", "16:00"],
-  "2026-04-27": ["09:00", "10:30", "12:00", "14:00", "15:30", "17:00", "18:30"],
-  "2026-04-28": ["09:30", "11:00", "13:00", "14:30", "16:00", "17:30"],
-  "2026-04-29": ["10:00", "11:30", "15:00", "16:30", "18:00"],
-  "2026-04-30": ["09:00", "10:30", "14:00", "15:30", "17:00", "18:30"],
-  "2026-05-04": ["10:00", "11:30", "13:00", "14:30", "16:00", "17:30", "19:00"],
-  "2026-05-05": ["09:30", "11:00", "12:30", "15:00", "16:30"],
-  "2026-05-06": ["10:00", "14:00", "15:30", "17:00", "18:30"],
-  "2026-05-07": ["09:00", "10:30", "12:00", "13:30", "15:00", "16:30", "18:00"],
-  "2026-05-08": ["10:00", "11:30", "14:30", "16:00", "17:30"],
-  "2026-05-11": ["09:30", "11:00", "13:00", "15:00", "16:30", "18:00"],
-  "2026-05-12": ["10:00", "14:00", "15:30", "17:00"],
-  "2026-05-13": ["09:00", "10:30", "12:00", "14:30", "16:00", "17:30", "19:00"],
-  "2026-05-14": ["10:30", "12:00", "15:00", "16:30", "18:00"],
+// Slots base por día de la semana (0 = domingo … 6 = sábado).
+// Domingo cerrado. Los sábados cerramos antes.
+const WEEKDAY_SLOTS = [
+  "09:00", "10:30", "12:00", "13:30",
+  "15:00", "16:30", "18:00", "19:30",
+]
+const SATURDAY_SLOTS = ["10:00", "11:30", "13:00", "14:30", "16:00"]
+
+// Cuánta antelación mínima exigimos para reservas (en minutos).
+// Evita que alguien intente reservar "para dentro de 10 minutos".
+export const MIN_ADVANCE_MIN = 120
+
+/**
+ * Genera disponibilidad para los próximos `daysAhead` días desde hoy.
+ * Hasta que tengamos lógica real de calendario (staff, turnos ocupados),
+ * sirve para mostrar slots actuales y ofrecer una reserva razonable.
+ */
+export function generateAvailability(daysAhead = 60): Record<string, string[]> {
+  const result: Record<string, string[]> = {}
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  for (let i = 0; i < daysAhead; i++) {
+    const d = new Date(today)
+    d.setDate(d.getDate() + i)
+    const dow = d.getDay()
+    if (dow === 0) continue // domingo cerrado
+    result[ymd(d)] = dow === 6 ? SATURDAY_SLOTS : WEEKDAY_SLOTS
+  }
+  return result
+}
+
+/**
+ * Filtra los slots de un día que ya pasaron (o que están dentro del margen
+ * mínimo de antelación).
+ */
+export function filterFutureSlots(dateStr: string, slots: string[], now = new Date()): string[] {
+  const d = parseYmd(dateStr)
+  d.setHours(0, 0, 0, 0)
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  if (d.getTime() > today.getTime()) return slots // día futuro: todos válidos
+
+  const minTs = now.getTime() + MIN_ADVANCE_MIN * 60_000
+  return slots.filter((t) => {
+    const [hh, mm] = t.split(":").map(Number)
+    const slotTs = parseYmd(dateStr).setHours(hh, mm, 0, 0)
+    return slotTs >= minTs
+  })
 }
 
 export const MONTH_NAMES = [
