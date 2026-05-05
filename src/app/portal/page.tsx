@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import LogoutButton from "./logout-button"
+import CancelButton from "./cancel-button"
 import "../reserva/reserva.css"
 
 export const dynamic = "force-dynamic"
@@ -115,10 +116,17 @@ export default async function PortalPage() {
               Tus turnos
             </h2>
             <div className="summary">
-              {appointments.map((a) => (
+              {appointments.map((a) => {
+                const startsAt = new Date(a.starts_at)
+                const now = new Date()
+                const isUpcoming = startsAt.getTime() > now.getTime()
+                const cancellable =
+                  isUpcoming &&
+                  (a.status === "pending" || a.status === "confirmed")
+                return (
                 <div key={a.id} className="summary__row">
                   <span className="summary__label">
-                    {new Date(a.starts_at).toLocaleString("es-AR", {
+                    {startsAt.toLocaleString("es-AR", {
                       weekday: "long",
                       day: "numeric",
                       month: "long",
@@ -131,9 +139,15 @@ export default async function PortalPage() {
                     <small>
                       {a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}
                     </small>
+                    {cancellable && (
+                      <small style={{ marginTop: 6 }}>
+                        <CancelButton appointmentId={a.id} />
+                      </small>
+                    )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </>
         )}

@@ -4,6 +4,7 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { sendBookingConfirmation } from "@/lib/email/booking-emails"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -185,28 +186,44 @@ export async function createBooking(
 
   if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
 
-  // 7) Send magic link so the clienta gets her portal access automatically.
-  // Use a plain (non-SSR) client to avoid touching the current request's
-  // session cookies. Non-fatal: a failure here doesn't undo the booking.
+  // 7) Email de confirmación con los detalles del turno (no bloqueante).
   try {
-    const h = await headers()
-    const proto = h.get("x-forwarded-proto") ?? "http"
-    const host = h.get("host")
-    const origin = `${proto}://${host}`
-    const plain = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { auth: { persistSession: false, autoRefreshToken: false } }
-    )
-    await plain.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: `${origin}/auth/callback?next=/portal`,
-        shouldCreateUser: true,
-      },
+    await sendBookingConfirmation({
+      to: email,
+      firstName: input.client.firstName.trim(),
+      servicesNames: services.map((s) => s.name),
+      startsAt,
+      durationMin: totalDuration,
+      totalCents,
+      appointmentId: appt.id,
     })
   } catch {
-    // ignore — booking is saved; staff can resend the link later.
+    // ignore — la reserva ya está; el equipo puede reenviar manualmente.
+  }
+
+  // 8) Magic link para portal (solo si la persona no está autenticada todavía).
+  // Si ya tiene sesión, no le mandamos un link adicional.
+  if (!authUser) {
+    try {
+      const h = await headers()
+      const proto = h.get("x-forwarded-proto") ?? "http"
+      const host = h.get("host")
+      const origin = `${proto}://${host}`
+      const plain = createClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        { auth: { persistSession: false, autoRefreshToken: false } }
+      )
+      await plain.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: `${origin}/auth/callback?next=/portal`,
+          shouldCreateUser: true,
+        },
+      })
+    } catch {
+      // ignore
+    }
   }
 
   return { ok: true, appointmentId: appt.id }
