@@ -36,7 +36,7 @@ async function LoginPageInner({
           <img
             src="/assets/logo-crop.png"
             alt="By Leri Vendler"
-            style={{ height: 64, width: "auto", display: "inline-block" }}
+            style={{ height: 96, width: "auto", display: "inline-block" }}
           />
         </div>
         <p className="eyebrow" style={{ textAlign: "center" }}>

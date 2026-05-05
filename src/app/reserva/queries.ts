@@ -2,6 +2,21 @@ import "server-only"
 import { createClient } from "@supabase/supabase-js"
 import type { Category, Service } from "./data"
 
+export type CurrentClient = {
+  id: string
+  firstName: string
+  lastName: string
+  email: string
+  phone: string
+  dateOfBirth: string | null
+  hasMedicalRecord: boolean
+}
+
+export type AuthProfile = {
+  email: string
+  fullName: string | null
+}
+
 type DbCategoryRow = {
   id: string
   slug: string
@@ -67,4 +82,40 @@ export async function fetchCatalog(): Promise<Category[]> {
         })
       ),
   }))
+}
+
+/**
+ * Returns the client row linked to a Supabase auth user, plus a flag indicating
+ * whether they have a current medical record. Used to skip data entry steps
+ * in the booking flow when the user is already known.
+ */
+export async function fetchCurrentClient(
+  userId: string
+): Promise<CurrentClient | null> {
+  const supabase = adminClient()
+
+  const { data: client, error } = await supabase
+    .from("clients")
+    .select("id, first_name, last_name, email, phone, date_of_birth")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (error || !client) return null
+
+  const { data: record } = await supabase
+    .from("client_records")
+    .select("id")
+    .eq("client_id", client.id)
+    .eq("is_current", true)
+    .maybeSingle()
+
+  return {
+    id: client.id,
+    firstName: client.first_name ?? "",
+    lastName: client.last_name ?? "",
+    email: client.email,
+    phone: client.phone ?? "",
+    dateOfBirth: client.date_of_birth ?? null,
+    hasMedicalRecord: !!record,
+  }
 }
