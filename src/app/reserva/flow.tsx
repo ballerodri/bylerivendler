@@ -20,6 +20,29 @@ import {
 import type { CurrentClient, AuthProfile, BusinessHour } from "./queries"
 import { whatsappLink, WHATSAPP_DISPLAY } from "@/lib/whatsapp"
 
+const DOW_LABEL = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
+
+function formatHoursSummary(hours: BusinessHour[]): string {
+  const open = hours
+    .filter(h => h.is_open && h.slots.length > 0)
+    .sort((a, b) => a.day_of_week - b.day_of_week)
+  if (!open.length) return ""
+
+  const first = open[0].day_of_week
+  const last = open[open.length - 1].day_of_week
+  const daysStr =
+    first === last ? DOW_LABEL[first] : `${DOW_LABEL[first]} a ${DOW_LABEL[last]}`
+
+  const allSlots = open.flatMap(h => h.slots).sort()
+  if (!allSlots.length) return daysStr
+
+  const [startH] = allSlots[0].split(":").map(Number)
+  const [endH, endM] = allSlots[allSlots.length - 1].split(":").map(Number)
+  const closeH = Math.floor((endH * 60 + endM + 30) / 60)
+
+  return `${daysStr} · ${startH} a ${closeH}hs`
+}
+
 const STORAGE_KEY = "blv_booking"
 const STEP_KEY = "blv_step"
 const VERSION_KEY = "blv_flow_version"
@@ -260,8 +283,12 @@ export default function ReservaFlow({
               </a>
               <br />
               {WHATSAPP_DISPLAY}
-              <br />
-              Lun a Sáb · 9 a 20hs
+              {formatHoursSummary(businessHours) && (
+                <>
+                  <br />
+                  {formatHoursSummary(businessHours)}
+                </>
+              )}
             </div>
           </aside>
           {renderScreen()}
