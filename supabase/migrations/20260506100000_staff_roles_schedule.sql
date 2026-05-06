@@ -27,5 +27,13 @@ on conflict (day_of_week) do nothing;
 alter table public.business_hours enable row level security;
 
 -- Lectura pública (el flujo de reserva la necesita sin autenticar)
-create policy "business_hours_public_read" on public.business_hours
-  for select using (true);
+do $$ begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public'
+      and tablename  = 'business_hours'
+      and policyname = 'business_hours_public_read'
+  ) then
+    execute 'create policy "business_hours_public_read" on public.business_hours for select using (true)';
+  end if;
+end $$;
