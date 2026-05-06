@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingCancellation } from "@/lib/email/booking-emails"
+import { sendBookingCancellation, sendBookingReschedule } from "@/lib/email/booking-emails"
 
 type CancelResult = { ok: true } | { ok: false; error: string }
 
@@ -85,6 +85,87 @@ export async function cancelMyAppointment(
     })
   } catch {
     // ignore
+  }
+
+  revalidatePath("/portal")
+  return { ok: true }
+}
+
+export type RescheduleResult = { ok: true } | { ok: false; error: string }
+
+export async function rescheduleMyAppointment(
+  appointmentId: string,
+  newStartsAt: string
+): Promise<RescheduleResult> {
+  const supabase = await createSsrClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Sesión expirada" }
+
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select(
+      `id, status, duration_min, total_cents,
+       client:clients(id, user_id, email, first_name),
+       appointment_services(service:services(name))`
+    )
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  type ApptShape = {
+    id: string
+    status: string
+    duration_min: number
+    total_cents: number
+    client: {
+      id: string
+      user_id: string | null
+      email: string
+      first_name: string | null
+    } | null
+    appointment_services: { service: { name: string } | null }[]
+  }
+  const a = appt as unknown as ApptShape
+
+  if (!a.client || a.client.user_id !== user.id) {
+    return { ok: false, error: "No podés reagendar este turno" }
+  }
+
+  if (a.status !== "pending" && a.status !== "confirmed") {
+    return { ok: false, error: "Este turno ya no se puede reagendar" }
+  }
+
+  const newDate = new Date(newStartsAt)
+  if (isNaN(newDate.getTime())) return { ok: false, error: "Fecha inválida" }
+
+  const endsAt = new Date(newDate.getTime() + a.duration_min * 60_000)
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ starts_at: newDate.toISOString(), ends_at: endsAt.toISOString() })
+    .eq("id", appointmentId)
+  if (error) return { ok: false, error: error.message }
+
+  try {
+    const services = a.appointment_services
+      .map((as) => as.service?.name)
+      .filter((n): n is string => Boolean(n))
+    await sendBookingReschedule({
+      to: a.client.email,
+      firstName: a.client.first_name ?? "",
+      servicesNames: services,
+      startsAt: newDate,
+      durationMin: a.duration_min,
+      totalCents: a.total_cents,
+      appointmentId: a.id,
+    })
+  } catch {
+    // ignore — el turno ya fue movido
   }
 
   revalidatePath("/portal")
