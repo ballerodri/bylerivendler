@@ -155,6 +155,7 @@ export default function ReservaFlow({
     }
 
     setStateRaw(initialState)
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(initialState)) } catch {}
     setHydrated(true)
   }, [categories, currentClient, authProfile, screenOrder])
 
