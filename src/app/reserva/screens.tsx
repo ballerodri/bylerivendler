@@ -20,6 +20,7 @@ import type { BookingState, Category, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking } from "./actions"
 import { sendMagicLink } from "../login/actions"
+import { whatsappLink } from "@/lib/whatsapp"
 
 type Variant = "mobile" | "desktop"
 
@@ -1132,9 +1133,30 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
           Alias <strong>leri.vendler</strong> · BBVA Argentina<br />
           A nombre de <strong>Vendler Daiana</strong>
           <br />
-          <span style={{ color: "var(--ink-mute)", fontSize: 12, marginTop: 4, display: "block" }}>
-            Mandanos el comprobante por WhatsApp para confirmar tu turno.
-          </span>
+          <a
+            href={whatsappLink("Hola! Te paso el comprobante de la seña.")}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              marginTop: 10,
+              padding: "8px 14px",
+              borderRadius: 999,
+              background: "#25d366",
+              color: "#fff",
+              fontSize: 12,
+              letterSpacing: "0.04em",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+              <path d="M17.6 6.3A8 8 0 0 0 4.8 16l-1.1 4.1 4.2-1.1a8 8 0 0 0 11.7-7 8 8 0 0 0-2-5.7zm-5.6 12.3a6.6 6.6 0 0 1-3.4-.9l-.2-.2-2.5.7.7-2.4-.2-.3a6.7 6.7 0 1 1 5.6 3zm3.6-5c-.2-.1-1.2-.6-1.4-.7s-.3-.1-.5.1-.5.7-.6.8-.3.1-.5 0a5.4 5.4 0 0 1-1.6-1 6 6 0 0 1-1.1-1.4c-.1-.2 0-.3.1-.4l.3-.4.2-.3v-.4l-.7-1.7c-.2-.4-.4-.4-.5-.4h-.4a.8.8 0 0 0-.6.3 2.4 2.4 0 0 0-.7 1.7 4.1 4.1 0 0 0 .9 2.2 9.4 9.4 0 0 0 3.6 3.2c1.3.6 2 .6 2.7.5a2.2 2.2 0 0 0 1.5-1.1 1.8 1.8 0 0 0 .1-1c-.1-.1-.2-.1-.4-.2z" />
+            </svg>
+            Mandar comprobante por WhatsApp
+          </a>
         </div>
       </div>
 

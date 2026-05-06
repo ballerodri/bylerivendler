@@ -1,5 +1,6 @@
 import "server-only"
 import { Resend } from "resend"
+import { WHATSAPP_DISPLAY, whatsappLink } from "@/lib/whatsapp"
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -8,7 +9,6 @@ const resend = process.env.RESEND_API_KEY
 const FROM = "By Leri Vendler <turnos@bylerivendler.com>"
 const SITE = "https://bylerivendler.com"
 const ADDRESS = "Sanguinetti 297 · Pilar, Buenos Aires"
-const WHATSAPP = "+54 9 11 3364-3359"
 
 export type BookingEmailData = {
   to: string
@@ -49,7 +49,9 @@ function shell(title: string, body: string): string {
     ${body}
     <hr style="border:none;border-top:1px solid rgba(43,38,35,0.1);margin:32px 0;">
     <p style="font-size:11px;color:#7a6e64;line-height:1.5;text-align:center;margin:0;">
-      Si necesitás algo más, escribinos por WhatsApp al <strong>${WHATSAPP}</strong>.<br>
+      Si necesitás algo más, escribinos por
+      <a href="${whatsappLink()}" style="color:#7a6e64;">WhatsApp</a>
+      al <strong>${WHATSAPP_DISPLAY}</strong>.<br>
       © By Leri Vendler · Pilar, Buenos Aires
     </p>
   </div>
