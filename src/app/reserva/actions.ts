@@ -359,6 +359,82 @@ export async function saveMedicalEarly(
   return { ok: true }
 }
 
+/**
+ * Returns the candidate slots (from business hours) that are actually free,
+ * considering existing appointments for the day and the total duration of
+ * the new appointment.
+ *
+ * proHint === "auto"  → slot is free if at least one professional is free
+ * proHint === <uuid>  → slot is free if that professional has no overlap
+ */
+export async function fetchDayAvailability(
+  dateStr: string,
+  durationMin: number,
+  proHint: string,
+  candidateSlots: string[]
+): Promise<string[]> {
+  if (!candidateSlots.length) return []
+
+  const supabase = adminClient()
+
+  const dayStart = new Date(dateStr + "T00:00:00").toISOString()
+  const dayEnd   = new Date(dateStr + "T23:59:59").toISOString()
+
+  let apptQuery = supabase
+    .from("appointments")
+    .select("starts_at, duration_min, staff_id")
+    .gte("starts_at", dayStart)
+    .lte("starts_at", dayEnd)
+    .in("status", ["pending", "confirmed"])
+
+  if (proHint !== "auto") {
+    apptQuery = apptQuery.eq("staff_id", proHint)
+  }
+
+  const { data: appointments } = await apptQuery
+  if (!appointments?.length) return candidateSlots
+
+  // For "auto": how many active professionals exist in total
+  let totalPros = 1
+  if (proHint === "auto") {
+    const { count } = await supabase
+      .from("staff")
+      .select("id", { count: "exact", head: true })
+      .eq("is_professional", true)
+      .eq("active", true)
+    totalPros = count ?? 1
+  }
+
+  return candidateSlots.filter((slot) => {
+    const [hh, mm] = slot.split(":").map(Number)
+    const slotDate = new Date(dateStr + "T00:00:00")
+    slotDate.setHours(hh, mm, 0, 0)
+    const slotStart = slotDate.getTime()
+    const slotEnd   = slotStart + durationMin * 60_000
+
+    if (proHint === "auto") {
+      // Count distinct busy professionals in this window.
+      // Appointments without staff_id (auto-assigned) count as 1 anonymous slot.
+      const busyIds = new Set<string>()
+      let anonymousBusy = 0
+      for (const appt of appointments) {
+        const aStart = new Date(appt.starts_at).getTime()
+        const aEnd   = aStart + (appt.duration_min as number) * 60_000
+        if (slotStart >= aEnd || slotEnd <= aStart) continue // no overlap
+        if (appt.staff_id) busyIds.add(appt.staff_id as string)
+        else anonymousBusy++
+      }
+      return busyIds.size + anonymousBusy < totalPros
+    } else {
+      return !appointments.some((appt) => {
+        const aStart = new Date(appt.starts_at).getTime()
+        const aEnd   = aStart + (appt.duration_min as number) * 60_000
+        return slotStart < aEnd && slotEnd > aStart
+      })
+    }
+  })
+}
+
 // Parses "DD / MM / AAAA" or "DD/MM/YYYY" or ISO; returns ISO date or null.
 function parseDob(raw: string): string | null {
   const cleaned = raw.replace(/\s/g, "")

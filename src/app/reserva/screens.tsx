@@ -17,7 +17,7 @@ import {
 } from "./data"
 import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
-import { createBooking, saveClientEarly, saveMedicalEarly } from "./actions"
+import { createBooking, saveClientEarly, saveMedicalEarly, fetchDayAvailability } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
@@ -268,6 +268,31 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const selectedDate = state.selectedDate
   const selectedTime = state.selectedTime
   const pro = state.pro || "auto"
+  const totalDuration = state.services.reduce((s, sv) => s + sv.duration, 0) || 30
+
+  // Slots checked against real bookings in DB
+  const [daySlots, setDaySlots] = useState<string[] | null>(null)
+  const [slotsLoading, setSlotsLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedDate) { setDaySlots(null); return }
+    const candidates = filterFutureSlots(selectedDate, availability[selectedDate] ?? [])
+    if (!candidates.length) { setDaySlots([]); return }
+    let cancelled = false
+    setSlotsLoading(true)
+    fetchDayAvailability(selectedDate, totalDuration, pro, candidates).then((slots) => {
+      if (cancelled) return
+      setDaySlots(slots)
+      if (state.selectedTime && !slots.includes(state.selectedTime)) {
+        setState({ ...state, selectedTime: null })
+      }
+      setSlotsLoading(false)
+    })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, pro, totalDuration])
+
+  const slotsForDay = daySlots ?? []
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayRaw = new Date(viewYear, viewMonth, 1).getDay()
@@ -281,11 +306,6 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   }
 
   const selectTime = (t: string) => setState({ ...state, selectedTime: t })
-
-  const rawSlotsForDay = selectedDate ? availability[selectedDate] || [] : []
-  const slotsForDay = selectedDate
-    ? filterFutureSlots(selectedDate, rawSlotsForDay)
-    : []
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
   const Cal = () => (
@@ -384,21 +404,34 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
               {MONTH_NAMES[selectedDateObj.getMonth()].toLowerCase()}
             </em>
           </h3>
-          <span className="slots__count">
-            {String(slotsForDay.length).padStart(2, "0")} horarios
-          </span>
+          {!slotsLoading && (
+            <span className="slots__count">
+              {String(slotsForDay.length).padStart(2, "0")} horarios
+            </span>
+          )}
         </div>
-        <div className="slots__grid">
-          {slotsForDay.map((t) => (
-            <button
-              key={t}
-              className={`slot ${selectedTime === t ? "is-selected" : ""}`}
-              onClick={() => selectTime(t)}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+        {slotsLoading ? (
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", padding: "16px 0" }}>
+            Verificando disponibilidad…
+          </p>
+        ) : (
+          <div className="slots__grid">
+            {slotsForDay.map((t) => (
+              <button
+                key={t}
+                className={`slot ${selectedTime === t ? "is-selected" : ""}`}
+                onClick={() => selectTime(t)}
+              >
+                {t}
+              </button>
+            ))}
+            {slotsForDay.length === 0 && (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)", gridColumn: "1/-1" }}>
+                Sin horarios disponibles para este día.
+              </p>
+            )}
+          </div>
+        )}
       </div>
     )
   }
