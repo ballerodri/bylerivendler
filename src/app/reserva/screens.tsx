@@ -21,6 +21,7 @@ import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking } from "./actions"
 import { sendMagicLink } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
+import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 
 type Variant = "mobile" | "desktop"
 
@@ -1102,7 +1103,16 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
           <span className="summary__label">Dónde</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
             By Leri Vendler
-            <small>Sanguinetti 297, Pilar · Buenos Aires</small>
+            <small>
+              <a
+                href={MAPS_LINK}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
+              >
+                {ADDRESS_LINE} · {ADDRESS_AREA}
+              </a>
+            </small>
           </div>
         </div>
       </div>
