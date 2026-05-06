@@ -587,61 +587,119 @@ export function Screen3Details({
 
   const NewForm = () => (
     <>
-      <div className="field__row">
-        <div className="field">
-          <label className="field__label">Nombre</label>
-          <input
-            className="field__input"
-            value={f.firstName}
-            onChange={(e) => setF({ firstName: e.target.value })}
-            placeholder="María"
-          />
-        </div>
-        <div className="field">
-          <label className="field__label">Apellido</label>
-          <input
-            className="field__input"
-            value={f.lastName}
-            onChange={(e) => setF({ lastName: e.target.value })}
-            placeholder="López"
-          />
-        </div>
-      </div>
-      <div className="field">
-        <label className="field__label">Email</label>
-        <input
-          className="field__input"
-          type="email"
-          value={f.email}
-          onChange={(e) => setF({ email: e.target.value })}
-          placeholder="maria@ejemplo.com"
-          readOnly={isAuthenticated}
-          style={isAuthenticated ? { background: "var(--paper-deep)", cursor: "not-allowed" } : undefined}
-        />
-      </div>
-      <div className="field__row">
-        <div className="field">
-          <label className="field__label">Teléfono</label>
-          <input
-            className="field__input"
-            inputMode="tel"
-            value={f.phone}
-            onChange={(e) => setF({ phone: e.target.value })}
-            placeholder="11 1234-5678"
-          />
-        </div>
-        <div className="field">
-          <label className="field__label">Fecha de nacimiento</label>
-          <input
-            className="field__input"
-            inputMode="numeric"
-            value={f.dob}
-            onChange={(e) => setF({ dob: formatDob(e.target.value) })}
-            placeholder="DD/MM/AAAA"
-            maxLength={10}
-          />
-        </div>
-      </div>
+      {/* Si ya está autenticada con Google, mostramos solo los campos faltantes */}
+      {isAuthenticated ? (
+        <>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 14px",
+              background: "var(--linen)",
+              borderRadius: 10,
+              marginBottom: 20,
+              fontSize: 13,
+              color: "var(--ink-soft)",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden style={{ flexShrink: 0 }}>
+              <path d="M17.6 9.2c0-.6 0-1.2-.1-1.7H9v3.3h4.8c-.2 1.1-.8 2-1.7 2.6v2.2h2.7c1.6-1.5 2.5-3.7 2.5-6.4z" fill="#4285F4"/>
+              <path d="M9 18c2.3 0 4.2-.8 5.6-2.1l-2.7-2.1c-.8.5-1.7.8-2.9.8-2.2 0-4.1-1.5-4.8-3.5H1.4v2.2C2.8 16 5.7 18 9 18z" fill="#34A853"/>
+              <path d="M4.2 11.1c-.2-.5-.3-1.1-.3-1.6s.1-1.1.3-1.6V5.6H1.4C.5 7 0 8.5 0 9.5s.5 2.5 1.4 3.9l2.8-2.3z" fill="#FBBC04"/>
+              <path d="M9 3.6c1.3 0 2.4.4 3.3 1.3l2.4-2.4C13.2.9 11.3 0 9 0 5.7 0 2.8 2 1.4 4.6l2.8 2.2C5 5.1 6.8 3.6 9 3.6z" fill="#EA4335"/>
+            </svg>
+            <span>
+              <strong>{f.firstName} {f.lastName}</strong> · {f.email}
+            </span>
+          </div>
+          <div className="field__row">
+            <div className="field">
+              <label className="field__label">Teléfono</label>
+              <input
+                className="field__input"
+                inputMode="tel"
+                value={f.phone}
+                onChange={(e) => setF({ phone: e.target.value })}
+                placeholder="11 1234-5678"
+              />
+            </div>
+            <div className="field">
+              <label className="field__label">Fecha de nacimiento</label>
+              <input
+                className="field__input"
+                inputMode="numeric"
+                value={f.dob}
+                onChange={(e) => setF({ dob: formatDob(e.target.value) })}
+                placeholder="DD/MM/AAAA"
+                maxLength={10}
+              />
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* Botón Google */}
+          <button
+            type="button"
+            onClick={handleGoogle}
+            disabled={googleLoading}
+            className="btn btn--full"
+            style={{
+              background: "#fff",
+              color: "var(--ink)",
+              border: "1px solid var(--line-strong)",
+              gap: 10,
+              textTransform: "none",
+              letterSpacing: "0.02em",
+              fontWeight: 500,
+              marginBottom: 4,
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden style={{ flexShrink: 0 }}>
+              <path d="M17.6 9.2c0-.6 0-1.2-.1-1.7H9v3.3h4.8c-.2 1.1-.8 2-1.7 2.6v2.2h2.7c1.6-1.5 2.5-3.7 2.5-6.4z" fill="#4285F4"/>
+              <path d="M9 18c2.3 0 4.2-.8 5.6-2.1l-2.7-2.1c-.8.5-1.7.8-2.9.8-2.2 0-4.1-1.5-4.8-3.5H1.4v2.2C2.8 16 5.7 18 9 18z" fill="#34A853"/>
+              <path d="M4.2 11.1c-.2-.5-.3-1.1-.3-1.6s.1-1.1.3-1.6V5.6H1.4C.5 7 0 8.5 0 9.5s.5 2.5 1.4 3.9l2.8-2.3z" fill="#FBBC04"/>
+              <path d="M9 3.6c1.3 0 2.4.4 3.3 1.3l2.4-2.4C13.2.9 11.3 0 9 0 5.7 0 2.8 2 1.4 4.6l2.8 2.2C5 5.1 6.8 3.6 9 3.6z" fill="#EA4335"/>
+            </svg>
+            {googleLoading ? "Conectando…" : "Continuar con Google"}
+          </button>
+          <p style={{ fontSize: 11, color: "var(--ink-mute)", textAlign: "center", margin: "0 0 16px" }}>
+            Cargamos tu nombre y email automáticamente
+          </p>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 16px", color: "var(--ink-mute)", fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase" }}>
+            <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+            o completá tus datos
+            <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+          </div>
+
+          <div className="field__row">
+            <div className="field">
+              <label className="field__label">Nombre</label>
+              <input className="field__input" value={f.firstName} onChange={(e) => setF({ firstName: e.target.value })} placeholder="María" />
+            </div>
+            <div className="field">
+              <label className="field__label">Apellido</label>
+              <input className="field__input" value={f.lastName} onChange={(e) => setF({ lastName: e.target.value })} placeholder="López" />
+            </div>
+          </div>
+          <div className="field">
+            <label className="field__label">Email</label>
+            <input className="field__input" type="email" value={f.email} onChange={(e) => setF({ email: e.target.value })} placeholder="maria@ejemplo.com" />
+          </div>
+          <div className="field__row">
+            <div className="field">
+              <label className="field__label">Teléfono</label>
+              <input className="field__input" inputMode="tel" value={f.phone} onChange={(e) => setF({ phone: e.target.value })} placeholder="11 1234-5678" />
+            </div>
+            <div className="field">
+              <label className="field__label">Fecha de nacimiento</label>
+              <input className="field__input" inputMode="numeric" value={f.dob} onChange={(e) => setF({ dob: formatDob(e.target.value) })} placeholder="DD/MM/AAAA" maxLength={10} />
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="info-strip">
         <Icon.Info />
