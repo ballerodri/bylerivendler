@@ -26,6 +26,12 @@ export type ProfessionalRow = {
   assigned: boolean
 }
 
+export type OtherService = {
+  id: string
+  name: string
+  mustBefore: boolean  // this service must go BEFORE the other
+}
+
 export default async function AdminServiceDetailPage({
   params,
 }: {
@@ -38,7 +44,7 @@ export default async function AdminServiceDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: service }, { data: allStaff }, { data: assigned }, { data: category }] =
+  const [{ data: service }, { data: allStaff }, { data: assigned }, , { data: allServices }, { data: orderRules }] =
     await Promise.all([
       admin
         .from("services")
@@ -59,6 +65,15 @@ export default async function AdminServiceDetailPage({
         .from("service_categories")
         .select("id, name")
         .maybeSingle<CategoryRow>(),
+      admin
+        .from("services")
+        .select("id, name")
+        .eq("active", true)
+        .order("name", { ascending: true }),
+      admin
+        .from("service_order_rules")
+        .select("service_second_id")
+        .eq("service_first_id", id),
     ])
 
   if (!service) notFound()
@@ -71,6 +86,15 @@ export default async function AdminServiceDetailPage({
       assigned: assignedIds.has(s.id),
     })
   )
+
+  const mustBeforeIds = new Set(
+    (orderRules ?? []).map((r: { service_second_id: string }) => r.service_second_id)
+  )
+  const otherServices: OtherService[] = (
+    (allServices ?? []) as { id: string; name: string }[]
+  )
+    .filter((s) => s.id !== id)
+    .map((s) => ({ id: s.id, name: s.name, mustBefore: mustBeforeIds.has(s.id) }))
 
   // Re-fetch category by service's category_id
   const { data: cat } = await admin
@@ -91,7 +115,7 @@ export default async function AdminServiceDetailPage({
         {cat?.name ?? "Servicio"} · Cambios se reflejan inmediatamente en el catálogo público.
       </p>
 
-      <ServiceEditor service={service} professionals={professionals} />
+      <ServiceEditor service={service} professionals={professionals} otherServices={otherServices} />
     </>
   )
 }

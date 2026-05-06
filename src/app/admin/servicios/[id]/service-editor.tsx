@@ -2,15 +2,17 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { updateService, deleteService, updateServiceStaff } from "../../actions"
-import type { ProfessionalRow, ServiceRow } from "./page"
+import { updateService, deleteService, updateServiceStaff, updateServiceOrderRules } from "../../actions"
+import type { OtherService, ProfessionalRow, ServiceRow } from "./page"
 
 export default function ServiceEditor({
   service,
   professionals,
+  otherServices,
 }: {
   service: ServiceRow
   professionals: ProfessionalRow[]
+  otherServices: OtherService[]
 }) {
   const router = useRouter()
   const [assignedIds, setAssignedIds] = useState<Set<string>>(
@@ -37,6 +39,34 @@ export default function ServiceEditor({
       const r = await updateServiceStaff(service.id, Array.from(assignedIds))
       if (r.ok) setStaffStatus("saved")
       else { setStaffError(r.error ?? "Error"); setStaffStatus("error") }
+    })
+  }
+
+  // Order rules: IDs of services that THIS service must go before
+  const [mustBeforeIds, setMustBeforeIds] = useState<Set<string>>(
+    new Set(otherServices.filter((s) => s.mustBefore).map((s) => s.id))
+  )
+  const [orderStatus, setOrderStatus] = useState<"idle" | "saved" | "error">("idle")
+  const [orderError, setOrderError] = useState<string | null>(null)
+  const [orderPending, startOrderTransition] = useTransition()
+
+  const toggleOrder = (otherId: string) => {
+    setMustBeforeIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(otherId)) next.delete(otherId)
+      else next.add(otherId)
+      return next
+    })
+    setOrderStatus("idle")
+  }
+
+  const saveOrder = () => {
+    setOrderError(null)
+    setOrderStatus("idle")
+    startOrderTransition(async () => {
+      const r = await updateServiceOrderRules(service.id, Array.from(mustBeforeIds))
+      if (r.ok) setOrderStatus("saved")
+      else { setOrderError(r.error ?? "Error"); setOrderStatus("error") }
     })
   }
 
@@ -228,6 +258,39 @@ export default function ServiceEditor({
             </button>
             {staffStatus === "saved" && <span style={{ fontSize: 12, color: "#4d6b3e" }}>Guardado ✓</span>}
             {staffStatus === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{staffError}</span>}
+          </div>
+        </>
+      )}
+
+      {/* ── Orden al combinar con otros servicios ── */}
+      {otherServices.length > 0 && (
+        <>
+          <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Orden al combinar</p>
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
+            Marcá los tratamientos con los que <strong>{service.name}</strong> debe hacerse <strong>primero</strong>.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            {otherServices.map((s) => (
+              <label
+                key={s.id}
+                style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}
+              >
+                <input
+                  type="checkbox"
+                  checked={mustBeforeIds.has(s.id)}
+                  onChange={() => toggleOrder(s.id)}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span>Antes de <strong>{s.name}</strong></span>
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+            <button className="adm-btn adm-btn--ghost" onClick={saveOrder} disabled={orderPending}>
+              {orderPending ? "Guardando…" : "Guardar orden"}
+            </button>
+            {orderStatus === "saved" && <span style={{ fontSize: 12, color: "#4d6b3e" }}>Guardado ✓</span>}
+            {orderStatus === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{orderError}</span>}
           </div>
         </>
       )}

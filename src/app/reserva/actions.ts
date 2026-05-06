@@ -536,7 +536,8 @@ function trySlot(
   dateStr: string,
   services: ServiceInput[],
   appts: Appt[],
-  allPros: string[]
+  allPros: string[],
+  isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const [hh, mm] = slot.split(":").map(Number)
   const base = new Date(dateStr + "T00:00:00")
@@ -544,6 +545,7 @@ function trySlot(
   const startMs = base.getTime()
 
   for (const perm of permutations(services.map((_, i) => i))) {
+    if (!isValidOrder(perm)) continue
     const assignment = checkPerm(startMs, perm, services, appts, allPros)
     if (assignment) {
       return {
@@ -572,9 +574,16 @@ export async function fetchSequentialAvailability(
 
   const supabase = adminClient()
 
-  const [bhRes, prosRes] = await Promise.all([
+  const serviceIds = services.map((s) => s.id)
+
+  const [bhRes, prosRes, rulesRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
+    supabase
+      .from("service_order_rules")
+      .select("service_first_id, service_second_id")
+      .in("service_first_id", serviceIds)
+      .in("service_second_id", serviceIds),
   ])
 
   const byDow = new Map(
@@ -583,6 +592,26 @@ export async function fetchSequentialAvailability(
     )
   )
   const allPros = ((prosRes.data ?? []) as { id: string }[]).map((p) => p.id)
+
+  // Set of "first_id|second_id" — first must go before second
+  const orderRules = new Set<string>(
+    ((rulesRes.data ?? []) as { service_first_id: string; service_second_id: string }[]).map(
+      (r) => `${r.service_first_id}|${r.service_second_id}`
+    )
+  )
+
+  // Filter permutations that violate order rules
+  const isValidOrder = (perm: number[]): boolean => {
+    for (let i = 0; i < perm.length; i++) {
+      for (let j = i + 1; j < perm.length; j++) {
+        const a = services[perm[i]].id
+        const b = services[perm[j]].id
+        // If rule says b must come before a, this ordering is invalid
+        if (orderRules.has(`${b}|${a}`)) return false
+      }
+    }
+    return true
+  }
 
   const from = new Date(fromDate + "T00:00:00")
   const to = new Date(fromDate + "T00:00:00")
@@ -615,7 +644,7 @@ export async function fetchSequentialAvailability(
     const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === dateStr)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayAppts, allPros)
+      const result = trySlot(slot, dateStr, services, dayAppts, allPros, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)

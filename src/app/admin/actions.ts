@@ -575,3 +575,37 @@ export async function updateBusinessHours(
   revalidatePath("/reserva")
   return { ok: true }
 }
+
+// ─── Reglas de orden entre servicios ──────────────────────────────────────────
+
+/**
+ * Reemplaza todas las reglas donde serviceId es el PRIMERO
+ * (i.e. "serviceId debe ir antes que X").
+ */
+export async function updateServiceOrderRules(
+  serviceId: string,
+  mustBeforeIds: string[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // Borrar reglas existentes donde este servicio es el primero
+  const { error: delErr } = await admin
+    .from("service_order_rules")
+    .delete()
+    .eq("service_first_id", serviceId)
+
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (mustBeforeIds.length > 0) {
+    const rows = mustBeforeIds.map((id) => ({
+      service_first_id: serviceId,
+      service_second_id: id,
+    }))
+    const { error: insErr } = await admin.from("service_order_rules").insert(rows)
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+
+  revalidatePath("/admin/servicios")
+  return { ok: true }
+}
