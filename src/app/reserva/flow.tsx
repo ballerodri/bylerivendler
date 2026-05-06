@@ -17,7 +17,7 @@ import {
   Screen4Medical,
   Screen5Confirm,
 } from "./screens"
-import type { CurrentClient, AuthProfile } from "./queries"
+import type { CurrentClient, AuthProfile, BusinessHour } from "./queries"
 import { whatsappLink, WHATSAPP_DISPLAY } from "@/lib/whatsapp"
 
 const STORAGE_KEY = "blv_booking"
@@ -75,11 +75,13 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
 export default function ReservaFlow({
   categories,
   professionals,
+  businessHours,
   currentClient,
   authProfile,
 }: {
   categories: Category[]
   professionals: Professional[]
+  businessHours: BusinessHour[]
   currentClient: CurrentClient | null
   authProfile: AuthProfile | null
 }) {
@@ -205,7 +207,7 @@ export default function ReservaFlow({
           />
         )
       case "date":
-        return <Screen2DateTime {...screenProps} professionals={professionals} />
+        return <Screen2DateTime {...screenProps} professionals={professionals} businessHours={businessHours} />
       case "details":
         return (
           <Screen3Details

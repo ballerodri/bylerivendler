@@ -512,3 +512,66 @@ export async function deleteService(
   revalidatePath("/admin/servicios")
   return { ok: true }
 }
+
+// ─── Staff ────────────────────────────────────────────────────────────────────
+
+export async function updateStaffProfessional(
+  staffId: string,
+  isProfessional: boolean
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const { error } = await admin
+    .from("staff")
+    .update({ is_professional: isProfessional })
+    .eq("id", staffId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/staff")
+  return { ok: true }
+}
+
+// ─── Profesionales por servicio ───────────────────────────────────────────────
+
+export async function updateServiceStaff(
+  serviceId: string,
+  staffIds: string[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // Reemplazamos la asignación completa: borramos y volvemos a insertar.
+  const { error: delErr } = await admin
+    .from("staff_services")
+    .delete()
+    .eq("service_id", serviceId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (staffIds.length > 0) {
+    const rows = staffIds.map((sid) => ({ staff_id: sid, service_id: serviceId }))
+    const { error: insErr } = await admin.from("staff_services").insert(rows)
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+
+  revalidatePath(`/admin/servicios/${serviceId}`)
+  return { ok: true }
+}
+
+// ─── Horarios ─────────────────────────────────────────────────────────────────
+
+export async function updateBusinessHours(
+  hours: { day_of_week: number; is_open: boolean; slots: string[] }[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  for (const h of hours) {
+    const { error } = await admin
+      .from("business_hours")
+      .upsert({ day_of_week: h.day_of_week, is_open: h.is_open, slots: h.slots })
+    if (error) return { ok: false, error: error.message }
+  }
+
+  revalidatePath("/admin/horarios")
+  revalidatePath("/reserva")
+  return { ok: true }
+}

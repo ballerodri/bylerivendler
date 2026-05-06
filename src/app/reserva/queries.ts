@@ -138,6 +138,22 @@ function deriveInitials(name: string): string {
   return (first + last).toUpperCase()
 }
 
+export type BusinessHour = {
+  day_of_week: number
+  is_open: boolean
+  slots: string[]
+}
+
+export async function fetchBusinessHours(): Promise<BusinessHour[]> {
+  const supabase = adminClient()
+  const { data } = await supabase
+    .from("business_hours")
+    .select("day_of_week, is_open, slots")
+    .order("day_of_week", { ascending: true })
+
+  return ((data ?? []) as BusinessHour[])
+}
+
 export async function fetchProfessionals(): Promise<Professional[]> {
   const supabase = adminClient()
 
@@ -145,20 +161,15 @@ export async function fetchProfessionals(): Promise<Professional[]> {
     .from("staff")
     .select("id, full_name, role")
     .eq("active", true)
-    .in("role", ["admin", "professional"])
+    .eq("is_professional", true)
     .order("full_name", { ascending: true })
-
-  const ROLE_DISPLAY: Record<string, string> = {
-    admin: "By Leri Vendler",
-    professional: "Profesional",
-  }
 
   const staff = ((data ?? []) as { id: string; full_name: string; role: string }[]).map(
     (s): Professional => ({
       id: s.id,
       initials: deriveInitials(s.full_name),
       name: s.full_name,
-      role: ROLE_DISPLAY[s.role] ?? "Equipo BLV",
+      role: "Profesional BLV",
     })
   )
 

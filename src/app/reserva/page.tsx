@@ -1,4 +1,4 @@
-import { fetchCatalog, fetchCurrentClient, fetchProfessionals, type AuthProfile } from "./queries"
+import { fetchCatalog, fetchCurrentClient, fetchProfessionals, fetchBusinessHours, type AuthProfile } from "./queries"
 import ReservaFlow from "./flow"
 import { createClient } from "@/lib/supabase/server"
 import "./reserva.css"
@@ -6,9 +6,10 @@ import "./reserva.css"
 export const dynamic = "force-dynamic"
 
 export default async function ReservaPage() {
-  const [categories, professionals, supabase] = await Promise.all([
+  const [categories, professionals, businessHours, supabase] = await Promise.all([
     fetchCatalog(),
     fetchProfessionals(),
+    fetchBusinessHours(),
     createClient(),
   ])
 
@@ -34,6 +35,7 @@ export default async function ReservaPage() {
     <ReservaFlow
       categories={categories}
       professionals={professionals}
+      businessHours={businessHours}
       currentClient={currentClient}
       authProfile={authProfile}
     />

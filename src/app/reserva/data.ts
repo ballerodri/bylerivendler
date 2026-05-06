@@ -21,24 +21,29 @@ export type Professional = {
   role: string
 }
 
-// Slots base por día de la semana (0 = domingo … 6 = sábado).
-// Domingo cerrado. Los sábados cerramos antes.
-const WEEKDAY_SLOTS = [
-  "09:00", "10:30", "12:00", "13:30",
-  "15:00", "16:30", "18:00", "19:30",
-]
-const SATURDAY_SLOTS = ["10:00", "11:30", "13:00", "14:30", "16:00"]
-
 // Cuánta antelación mínima exigimos para reservas (en minutos).
-// Evita que alguien intente reservar "para dentro de 10 minutos".
 export const MIN_ADVANCE_MIN = 120
 
-/**
- * Genera disponibilidad para los próximos `daysAhead` días desde hoy.
- * Hasta que tengamos lógica real de calendario (staff, turnos ocupados),
- * sirve para mostrar slots actuales y ofrecer una reserva razonable.
- */
-export function generateAvailability(daysAhead = 60): Record<string, string[]> {
+export type BusinessHour = { day_of_week: number; is_open: boolean; slots: string[] }
+
+// Fallback hardcodeado para cuando no hay datos de DB (local dev, etc.)
+const FALLBACK_HOURS: BusinessHour[] = [
+  { day_of_week: 0, is_open: false, slots: [] },
+  { day_of_week: 1, is_open: true, slots: ["09:00","10:30","12:00","13:30","15:00","16:30","18:00","19:30"] },
+  { day_of_week: 2, is_open: true, slots: ["09:00","10:30","12:00","13:30","15:00","16:30","18:00","19:30"] },
+  { day_of_week: 3, is_open: true, slots: ["09:00","10:30","12:00","13:30","15:00","16:30","18:00","19:30"] },
+  { day_of_week: 4, is_open: true, slots: ["09:00","10:30","12:00","13:30","15:00","16:30","18:00","19:30"] },
+  { day_of_week: 5, is_open: true, slots: ["09:00","10:30","12:00","13:30","15:00","16:30","18:00","19:30"] },
+  { day_of_week: 6, is_open: true, slots: ["10:00","11:30","13:00","14:30","16:00"] },
+]
+
+export function generateAvailability(
+  daysAhead = 60,
+  businessHours?: BusinessHour[]
+): Record<string, string[]> {
+  const hours = businessHours && businessHours.length > 0 ? businessHours : FALLBACK_HOURS
+  const byDow = new Map(hours.map((h) => [h.day_of_week, h]))
+
   const result: Record<string, string[]> = {}
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -47,8 +52,9 @@ export function generateAvailability(daysAhead = 60): Record<string, string[]> {
     const d = new Date(today)
     d.setDate(d.getDate() + i)
     const dow = d.getDay()
-    if (dow === 0) continue // domingo cerrado
-    result[ymd(d)] = dow === 6 ? SATURDAY_SLOTS : WEEKDAY_SLOTS
+    const h = byDow.get(dow)
+    if (!h || !h.is_open || h.slots.length === 0) continue
+    result[ymd(d)] = h.slots
   }
   return result
 }

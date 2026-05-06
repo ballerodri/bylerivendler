@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import RescheduleFlow from "./reschedule-flow"
+import { fetchBusinessHours } from "@/app/reserva/queries"
 import "../../reserva.css"
 
 export const dynamic = "force-dynamic"
@@ -23,15 +24,18 @@ export default async function ReschedulePage({ params }: Props) {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const { data: appt } = await admin
-    .from("appointments")
-    .select(
-      `id, status, starts_at, duration_min, total_cents,
-       client:clients(user_id, first_name),
-       appointment_services(service:services(name))`
-    )
-    .eq("id", appointmentId)
-    .maybeSingle()
+  const [businessHours, { data: appt }] = await Promise.all([
+    fetchBusinessHours(),
+    admin
+      .from("appointments")
+      .select(
+        `id, status, starts_at, duration_min, total_cents,
+         client:clients(user_id, first_name),
+         appointment_services(service:services(name))`
+      )
+      .eq("id", appointmentId)
+      .maybeSingle(),
+  ])
 
   if (!appt) notFound()
 
@@ -62,6 +66,7 @@ export default async function ReschedulePage({ params }: Props) {
       serviceNames={serviceNames}
       currentStartsAt={a.starts_at}
       durationMin={a.duration_min}
+      businessHours={businessHours}
     />
   )
 }

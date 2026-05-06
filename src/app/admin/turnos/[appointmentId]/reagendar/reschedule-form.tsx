@@ -15,12 +15,15 @@ import {
 } from "@/app/reserva/data"
 import { rescheduleAppointment } from "@/app/admin/actions"
 
+import type { BusinessHour } from "@/app/reserva/data"
+
 type Props = {
   appointmentId: string
   clientName: string
   serviceNames: string[]
   currentStartsAt: string
   durationMin: number
+  businessHours: BusinessHour[]
 }
 
 export default function AdminRescheduleForm({
@@ -29,6 +32,7 @@ export default function AdminRescheduleForm({
   serviceNames,
   currentStartsAt,
   durationMin,
+  businessHours,
 }: Props) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -39,7 +43,7 @@ export default function AdminRescheduleForm({
     d.setHours(0, 0, 0, 0)
     return d
   })
-  const [availability] = useState(() => generateAvailability(90))
+  const [availability] = useState(() => generateAvailability(90, businessHours))
 
   const currentDate = new Date(currentStartsAt)
   const [viewYear, setViewYear] = useState(today.getFullYear())

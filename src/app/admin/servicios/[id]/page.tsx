@@ -18,9 +18,12 @@ export type ServiceRow = {
   visible_public: boolean
 }
 
-type CategoryRow = {
+type CategoryRow = { id: string; name: string }
+
+export type ProfessionalRow = {
   id: string
-  name: string
+  full_name: string
+  assigned: boolean
 }
 
 export default async function AdminServiceDetailPage({
@@ -35,17 +38,42 @@ export default async function AdminServiceDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const { data: service } = await admin
-    .from("services")
-    .select(
-      "id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public"
-    )
-    .eq("id", id)
-    .maybeSingle<ServiceRow>()
+  const [{ data: service }, { data: allStaff }, { data: assigned }, { data: category }] =
+    await Promise.all([
+      admin
+        .from("services")
+        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public")
+        .eq("id", id)
+        .maybeSingle<ServiceRow>(),
+      admin
+        .from("staff")
+        .select("id, full_name")
+        .eq("active", true)
+        .eq("is_professional", true)
+        .order("full_name", { ascending: true }),
+      admin
+        .from("staff_services")
+        .select("staff_id")
+        .eq("service_id", id),
+      admin
+        .from("service_categories")
+        .select("id, name")
+        .maybeSingle<CategoryRow>(),
+    ])
 
   if (!service) notFound()
 
-  const { data: category } = await admin
+  const assignedIds = new Set((assigned ?? []).map((r: { staff_id: string }) => r.staff_id))
+  const professionals: ProfessionalRow[] = (allStaff ?? []).map(
+    (s: { id: string; full_name: string }) => ({
+      id: s.id,
+      full_name: s.full_name,
+      assigned: assignedIds.has(s.id),
+    })
+  )
+
+  // Re-fetch category by service's category_id
+  const { data: cat } = await admin
     .from("service_categories")
     .select("id, name")
     .eq("id", service.category_id)
@@ -60,10 +88,10 @@ export default async function AdminServiceDetailPage({
       </p>
       <h1 className="adm-h1">{service.name}</h1>
       <p className="adm-lede">
-        {category?.name ?? "Servicio"} · Cambios se reflejan inmediatamente en el catálogo público.
+        {cat?.name ?? "Servicio"} · Cambios se reflejan inmediatamente en el catálogo público.
       </p>
 
-      <ServiceEditor service={service} />
+      <ServiceEditor service={service} professionals={professionals} />
     </>
   )
 }

@@ -2,11 +2,44 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { updateService, deleteService } from "../../actions"
-import type { ServiceRow } from "./page"
+import { updateService, deleteService, updateServiceStaff } from "../../actions"
+import type { ProfessionalRow, ServiceRow } from "./page"
 
-export default function ServiceEditor({ service }: { service: ServiceRow }) {
+export default function ServiceEditor({
+  service,
+  professionals,
+}: {
+  service: ServiceRow
+  professionals: ProfessionalRow[]
+}) {
   const router = useRouter()
+  const [assignedIds, setAssignedIds] = useState<Set<string>>(
+    new Set(professionals.filter((p) => p.assigned).map((p) => p.id))
+  )
+  const [staffStatus, setStaffStatus] = useState<"idle" | "saved" | "error">("idle")
+  const [staffError, setStaffError] = useState<string | null>(null)
+  const [staffPending, startStaffTransition] = useTransition() // eslint-disable-line @typescript-eslint/no-unused-vars
+
+  const toggleStaff = (staffId: string) => {
+    setAssignedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(staffId)) next.delete(staffId)
+      else next.add(staffId)
+      return next
+    })
+    setStaffStatus("idle")
+  }
+
+  const saveStaff = () => {
+    setStaffError(null)
+    setStaffStatus("idle")
+    startStaffTransition(async () => {
+      const r = await updateServiceStaff(service.id, Array.from(assignedIds))
+      if (r.ok) setStaffStatus("saved")
+      else { setStaffError(r.error ?? "Error"); setStaffStatus("error") }
+    })
+  }
+
   const [data, setData] = useState({
     name: service.name,
     description: service.description ?? "",
@@ -167,6 +200,37 @@ export default function ServiceEditor({ service }: { service: ServiceRow }) {
           onChange={(v) => setData({ ...data, visible_public: v })}
         />
       </div>
+
+      {professionals.length > 0 && (
+        <>
+          <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginTop: 24, marginBottom: 8 }}>
+            Profesionales habilitadas
+          </h3>
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
+            Quiénes pueden realizar este tratamiento. Si ninguna está seleccionada, cualquiera puede tomarlo.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            {professionals.map((p) => (
+              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={assignedIds.has(p.id)}
+                  onChange={() => toggleStaff(p.id)}
+                  style={{ width: 16, height: 16 }}
+                />
+                {p.full_name}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+            <button className="adm-btn adm-btn--ghost" onClick={saveStaff} disabled={staffPending}>
+              {staffPending ? "Guardando…" : "Guardar profesionales"}
+            </button>
+            {staffStatus === "saved" && <span style={{ fontSize: 12, color: "#4d6b3e" }}>Guardado ✓</span>}
+            {staffStatus === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{staffError}</span>}
+          </div>
+        </>
+      )}
 
       <div
         style={{

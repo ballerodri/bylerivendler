@@ -252,16 +252,14 @@ export function Screen1Services({
 }
 
 // ---------- Screen 2: Date & Time ----------
-export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals }: ScreenProps & { professionals: Professional[] }) {
+export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals, businessHours }: ScreenProps & { professionals: Professional[]; businessHours: import("./data").BusinessHour[] }) {
   // `today` snapped to midnight so we compare just dates, not times.
   const [today] = useState(() => {
     const d = new Date()
     d.setHours(0, 0, 0, 0)
     return d
   })
-  // Generate availability dynamically for the next ~60 days. Eventually this
-  // will come from a server query that respects staff schedules + booked slots.
-  const [availability] = useState(() => generateAvailability(60))
+  const [availability] = useState(() => generateAvailability(60, businessHours))
 
   const initialDate = state.selectedDate ? parseYmd(state.selectedDate) : today
   const [viewYear, setViewYear] = useState(initialDate.getFullYear())

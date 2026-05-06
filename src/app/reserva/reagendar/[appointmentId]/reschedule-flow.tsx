@@ -16,12 +16,15 @@ import {
 import { Icon, Wordmark } from "../../primitives"
 import { rescheduleMyAppointment } from "@/app/portal/actions"
 
+import type { BusinessHour } from "../../data"
+
 type Props = {
   appointmentId: string
   firstName: string
   serviceNames: string[]
   currentStartsAt: string
   durationMin: number
+  businessHours: BusinessHour[]
 }
 
 export default function RescheduleFlow({
@@ -30,6 +33,7 @@ export default function RescheduleFlow({
   serviceNames,
   currentStartsAt,
   durationMin,
+  businessHours,
 }: Props) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -40,7 +44,7 @@ export default function RescheduleFlow({
     d.setHours(0, 0, 0, 0)
     return d
   })
-  const [availability] = useState(() => generateAvailability(60))
+  const [availability] = useState(() => generateAvailability(60, businessHours))
 
   const currentDate = new Date(currentStartsAt)
   const [viewYear, setViewYear] = useState(today.getFullYear())
