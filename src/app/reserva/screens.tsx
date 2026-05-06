@@ -1124,7 +1124,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
 
       <div
         className="mp-badge"
-        style={{ background: "#fff", border: "1px solid var(--line)", padding: "16px 18px" }}
+        style={{ background: "#fff", border: "1px solid var(--line)", padding: "16px 18px", display: "block" }}
       >
         <div className="mp-text" style={{ fontSize: 13, lineHeight: 1.55 }}>
           <strong style={{ display: "block", marginBottom: 4, fontFamily: "var(--serif)", fontSize: 15 }}>
@@ -1132,6 +1132,21 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
           </strong>
           Alias <strong>leri.vendler</strong> · BBVA Argentina<br />
           A nombre de <strong>Vendler Daiana</strong>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            paddingTop: 14,
+            borderTop: "1px dashed var(--line)",
+            fontSize: 13,
+            color: "var(--ink-soft)",
+            lineHeight: 1.55,
+          }}
+        >
+          Después mandanos el comprobante por WhatsApp al{" "}
+          <strong style={{ color: "var(--ink)" }}>+54 9 11 3364-3359</strong>{" "}
+          para confirmar tu turno.
           <br />
           <a
             href={whatsappLink("Hola! Te paso el comprobante de la seña.")}
@@ -1142,7 +1157,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
               alignItems: "center",
               gap: 8,
               marginTop: 10,
-              padding: "8px 14px",
+              padding: "9px 16px",
               borderRadius: 999,
               background: "#25d366",
               color: "#fff",
@@ -1155,7 +1170,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
               <path d="M17.6 6.3A8 8 0 0 0 4.8 16l-1.1 4.1 4.2-1.1a8 8 0 0 0 11.7-7 8 8 0 0 0-2-5.7zm-5.6 12.3a6.6 6.6 0 0 1-3.4-.9l-.2-.2-2.5.7.7-2.4-.2-.3a6.7 6.7 0 1 1 5.6 3zm3.6-5c-.2-.1-1.2-.6-1.4-.7s-.3-.1-.5.1-.5.7-.6.8-.3.1-.5 0a5.4 5.4 0 0 1-1.6-1 6 6 0 0 1-1.1-1.4c-.1-.2 0-.3.1-.4l.3-.4.2-.3v-.4l-.7-1.7c-.2-.4-.4-.4-.5-.4h-.4a.8.8 0 0 0-.6.3 2.4 2.4 0 0 0-.7 1.7 4.1 4.1 0 0 0 .9 2.2 9.4 9.4 0 0 0 3.6 3.2c1.3.6 2 .6 2.7.5a2.2 2.2 0 0 0 1.5-1.1 1.8 1.8 0 0 0 .1-1c-.1-.1-.2-.1-.4-.2z" />
             </svg>
-            Mandar comprobante por WhatsApp
+            Abrir WhatsApp
           </a>
         </div>
       </div>
