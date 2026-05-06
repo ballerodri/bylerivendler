@@ -392,3 +392,123 @@ export async function updateClientRecord(
   revalidatePath(`/admin/clientas/${clientId}`)
   return { ok: true }
 }
+
+
+// ─── Categorías ───────────────────────────────────────────────────────────────
+
+function toSlug(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+}
+
+export async function createCategory(
+  name: string,
+  tagline: string
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  await requireStaff()
+  if (!name.trim()) return { ok: false, error: "El nombre es obligatorio" }
+
+  const admin = adminClient()
+  const { data: last } = await admin
+    .from("service_categories")
+    .select("sort_order")
+    .order("sort_order", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const slug = toSlug(name)
+  const { data, error } = await admin
+    .from("service_categories")
+    .insert({
+      slug,
+      name: name.trim(),
+      tagline: tagline.trim() || null,
+      sort_order: (last?.sort_order ?? 0) + 10,
+    })
+    .select("id")
+    .single()
+
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/servicios")
+  return { ok: true, id: data.id }
+}
+
+export async function deleteCategory(
+  categoryId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { count } = await admin
+    .from("services")
+    .select("id", { count: "exact", head: true })
+    .eq("category_id", categoryId)
+
+  if ((count ?? 0) > 0)
+    return { ok: false, error: "La categoría tiene servicios. Eliminá los servicios primero." }
+
+  const { error } = await admin
+    .from("service_categories")
+    .delete()
+    .eq("id", categoryId)
+
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/servicios")
+  return { ok: true }
+}
+
+// ─── Servicios ────────────────────────────────────────────────────────────────
+
+export async function createService(
+  categoryId: string,
+  data: {
+    name: string
+    description: string
+    duration_min: number
+    price_cents: number
+    points_earned: number
+    points_cost: number
+  }
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  await requireStaff()
+  if (!data.name.trim()) return { ok: false, error: "El nombre es obligatorio" }
+  if (data.duration_min < 1) return { ok: false, error: "La duración debe ser mayor a 0" }
+
+  const admin = adminClient()
+  const slug = toSlug(data.name) + "-" + Date.now()
+  const { data: created, error } = await admin
+    .from("services")
+    .insert({
+      category_id: categoryId,
+      slug,
+      name: data.name.trim(),
+      description: data.description.trim() || null,
+      duration_min: data.duration_min,
+      price_cents: data.price_cents,
+      points_earned: data.points_earned,
+      points_cost: data.points_cost,
+      active: true,
+      visible_public: true,
+    })
+    .select("id")
+    .single()
+
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/servicios")
+  return { ok: true, id: created.id }
+}
+
+export async function deleteService(
+  serviceId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const { error } = await admin.from("services").delete().eq("id", serviceId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/servicios")
+  return { ok: true }
+}

@@ -1,10 +1,12 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { updateService } from "../../actions"
+import { useRouter } from "next/navigation"
+import { updateService, deleteService } from "../../actions"
 import type { ServiceRow } from "./page"
 
 export default function ServiceEditor({ service }: { service: ServiceRow }) {
+  const router = useRouter()
   const [data, setData] = useState({
     name: service.name,
     description: service.description ?? "",
@@ -18,6 +20,18 @@ export default function ServiceEditor({ service }: { service: ServiceRow }) {
   const [pending, startTransition] = useTransition()
   const [status, setStatus] = useState<"idle" | "saved" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
+
+  const remove = () => {
+    if (!confirm(`¿Eliminar el servicio "${service.name}"? Esta acción no se puede deshacer.`)) return
+    startTransition(async () => {
+      const r = await deleteService(service.id)
+      if (r.ok) router.push("/admin/servicios")
+      else {
+        setError(r.error ?? "Error al eliminar")
+        setStatus("error")
+      }
+    })
+  }
 
   const save = () => {
     setError(null)
@@ -177,6 +191,16 @@ export default function ServiceEditor({ service }: { service: ServiceRow }) {
         {status === "error" && (
           <span style={{ fontSize: 12, color: "#8c463c" }}>{error}</span>
         )}
+        <div style={{ marginLeft: "auto" }}>
+          <button
+            className="adm-btn adm-btn--ghost"
+            style={{ color: "#8c463c" }}
+            onClick={remove}
+            disabled={pending}
+          >
+            Eliminar servicio
+          </button>
+        </div>
       </div>
     </div>
   )

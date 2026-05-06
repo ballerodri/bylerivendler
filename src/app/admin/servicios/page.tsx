@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../reserva/data"
+import CategoryActions from "./category-actions"
 
 export const dynamic = "force-dynamic"
 
@@ -42,7 +43,9 @@ export default async function AdminServiciosPage() {
 
   return (
     <>
-      <p className="adm-eyebrow">Catálogo</p>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <p className="adm-eyebrow" style={{ marginBottom: 0 }}>Catálogo</p>
+      </div>
       <h1 className="adm-h1">
         Tus <em>servicios</em>
       </h1>
@@ -52,54 +55,68 @@ export default async function AdminServiciosPage() {
 
       {categories.map((cat) => (
         <div key={cat.id} style={{ marginBottom: 32 }}>
-          <h2 className="adm-section-title">
-            {cat.name}
-            {cat.tagline && (
-              <span style={{ fontWeight: 400, color: "var(--ink-mute)", fontSize: 13, marginLeft: 8 }}>
-                · {cat.tagline}
-              </span>
-            )}
-          </h2>
-          <div className="adm-card">
-            {cat.services.map((s) => (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <h2 className="adm-section-title" style={{ marginBottom: 0 }}>
+              {cat.name}
+              {cat.tagline && (
+                <span style={{ fontWeight: 400, color: "var(--ink-mute)", fontSize: 13, marginLeft: 8 }}>
+                  · {cat.tagline}
+                </span>
+              )}
+            </h2>
+            <div style={{ display: "flex", gap: 8 }}>
               <Link
-                key={s.id}
-                href={`/admin/servicios/${s.id}`}
-                className="adm-list-row"
-                style={{
-                  gridTemplateColumns: "1fr 100px 110px 110px 80px 80px",
-                }}
+                href={`/admin/servicios/nuevo?cat=${cat.id}`}
+                className="adm-btn adm-btn--ghost"
+                style={{ fontSize: 12 }}
               >
-                <div>
-                  <div className="adm-name">{s.name}</div>
-                  <div className="adm-sub">
-                    {s.active && s.visible_public
-                      ? "Visible para clientas"
-                      : !s.active
-                        ? "Inactivo"
-                        : "Oculto del público"}
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "var(--ink-mute)" }}>
-                  {s.duration_min} min
-                </div>
-                <div style={{ fontSize: 13, fontFamily: "var(--serif)", fontWeight: 500 }}>
-                  {fmtPrice(s.price_cents / 100)}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--gold)" }}>
-                  +{s.points_earned} pts
-                </div>
-                <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                  {s.points_cost} pts
-                </div>
-                <div className="adm-actions">
-                  <span className="adm-btn adm-btn--ghost">Editar →</span>
-                </div>
+                + Agregar servicio
               </Link>
-            ))}
+              {cat.services.length === 0 && (
+                <CategoryActions categoryId={cat.id} categoryName={cat.name} />
+              )}
+            </div>
+          </div>
+          <div className="adm-card">
+            {cat.services.length === 0 ? (
+              <p style={{ padding: "16px 20px", fontSize: 13, color: "var(--ink-mute)" }}>
+                Sin servicios aún.
+              </p>
+            ) : (
+              cat.services.map((s) => (
+                <Link
+                  key={s.id}
+                  href={`/admin/servicios/${s.id}`}
+                  className="adm-list-row"
+                  style={{ gridTemplateColumns: "1fr 100px 110px 110px 80px 80px" }}
+                >
+                  <div>
+                    <div className="adm-name">{s.name}</div>
+                    <div className="adm-sub">
+                      {s.active && s.visible_public
+                        ? "Visible para clientas"
+                        : !s.active
+                          ? "Inactivo"
+                          : "Oculto del público"}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--ink-mute)" }}>{s.duration_min} min</div>
+                  <div style={{ fontSize: 13, fontFamily: "var(--serif)", fontWeight: 500 }}>
+                    {fmtPrice(s.price_cents / 100)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--gold)" }}>+{s.points_earned} pts</div>
+                  <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>{s.points_cost} pts</div>
+                  <div className="adm-actions">
+                    <span className="adm-btn adm-btn--ghost">Editar →</span>
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
         </div>
       ))}
+
+      <CategoryActions showNewForm />
     </>
   )
 }
