@@ -11,6 +11,7 @@ const BookingInput = z.object({
   startsAt: z.string().datetime(),
   proHint: z.string(),
   redeemWithPoints: z.boolean().optional(),
+  savedClientId: z.string().uuid().optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -79,59 +80,67 @@ export async function createBooking(
   const startsAt = new Date(input.startsAt)
   const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
 
-  // 2) Find or create client (by email). Si la persona está autenticada,
-  // linkeamos el row al auth.user para que las próximas reservas la
-  // reconozcan automáticamente como clienta conocida.
+  // 2) Find or create client. Si ya fue guardada por saveClientEarly usamos
+  // ese ID directamente y salteamos la creación.
   const ssr = await createSsrClient()
   const {
     data: { user: authUser },
   } = await ssr.auth.getUser()
 
   const email = input.client.email.trim().toLowerCase()
-  const { data: existing, error: findErr } = await supabase
-    .from("clients")
-    .select("id, user_id")
-    .eq("email", email)
-    .maybeSingle()
-  if (findErr) return { ok: false, error: `Clientes: ${findErr.message}` }
-
   let clientId: string
-  if (existing) {
-    clientId = existing.id
-    // Si el row existe sin user_id y la persona está autenticada con el
-    // mismo email, lo linkeamos ahora.
-    if (authUser && !existing.user_id && authUser.email?.toLowerCase() === email) {
-      await supabase
-        .from("clients")
-        .update({ user_id: authUser.id })
-        .eq("id", clientId)
-    }
-  } else {
-    const dob = parseDob(input.client.dob)
-    const { data: created, error: insErr } = await supabase
+  let alreadyLinked: boolean
+
+  if (input.savedClientId) {
+    clientId = input.savedClientId
+    const { data: saved } = await supabase
       .from("clients")
-      .insert({
-        user_id:
-          authUser && authUser.email?.toLowerCase() === email
-            ? authUser.id
-            : null,
-        first_name: input.client.firstName.trim(),
-        last_name: input.client.lastName.trim(),
-        email,
-        phone: input.client.phone.trim(),
-        date_of_birth: dob,
-        marketing_consent: input.client.marketingConsent,
-        source: "web",
-      })
-      .select("id")
-      .single()
-    if (insErr || !created)
-      return { ok: false, error: `No pudimos crear tu ficha: ${insErr?.message}` }
-    clientId = created.id
+      .select("user_id")
+      .eq("id", clientId)
+      .maybeSingle()
+    alreadyLinked = !!(saved?.user_id)
+  } else {
+    const { data: existing, error: findErr } = await supabase
+      .from("clients")
+      .select("id, user_id")
+      .eq("email", email)
+      .maybeSingle()
+    if (findErr) return { ok: false, error: `Clientes: ${findErr.message}` }
+
+    if (existing) {
+      clientId = existing.id
+      if (authUser && !existing.user_id && authUser.email?.toLowerCase() === email) {
+        await supabase.from("clients").update({ user_id: authUser.id }).eq("id", clientId)
+      }
+      alreadyLinked = !!existing.user_id
+    } else {
+      const dob = parseDob(input.client.dob)
+      const { data: created, error: insErr } = await supabase
+        .from("clients")
+        .insert({
+          user_id:
+            authUser && authUser.email?.toLowerCase() === email
+              ? authUser.id
+              : null,
+          first_name: input.client.firstName.trim(),
+          last_name: input.client.lastName.trim(),
+          email,
+          phone: input.client.phone.trim(),
+          date_of_birth: dob,
+          marketing_consent: input.client.marketingConsent,
+          source: "web",
+        })
+        .select("id")
+        .single()
+      if (insErr || !created)
+        return { ok: false, error: `No pudimos crear tu ficha: ${insErr?.message}` }
+      clientId = created.id
+      alreadyLinked = false
+    }
   }
 
-  // 3) Insert medical record if first-time client and form provided
-  if (input.medical && !input.client.isExisting) {
+  // 3) Insert medical record — saltear si ya fue guardada por saveMedicalEarly.
+  if (!input.savedClientId && input.medical && !input.client.isExisting) {
     const { error: medErr } = await supabase.from("client_records").insert({
       client_id: clientId,
       version: 1,
@@ -235,9 +244,7 @@ export async function createBooking(
 
   // 8) Magic link para portal — solo si:
   //   - no hay sesión activa
-  //   - Y el clients row no está ya linkeado a un auth user (si lo está,
-  //     la persona ya tiene cuenta; magic link sería duplicado)
-  const alreadyLinked = !!(existing && existing.user_id)
+  //   - Y el clients row no está ya linkeado a un auth user
   if (!authUser && !alreadyLinked) {
     try {
       const h = await headers()
@@ -262,6 +269,94 @@ export async function createBooking(
   }
 
   return { ok: true, appointmentId: appt.id }
+}
+
+export type SaveClientResult =
+  | { ok: true; clientId: string }
+  | { ok: false; error: string }
+
+export async function saveClientEarly(data: {
+  firstName: string
+  lastName: string
+  email: string
+  phone: string
+  dob: string
+  marketingConsent: boolean
+}): Promise<SaveClientResult> {
+  const supabase = adminClient()
+  const ssr = await createSsrClient()
+  const { data: { user: authUser } } = await ssr.auth.getUser()
+
+  const email = data.email.trim().toLowerCase()
+  const { data: existing } = await supabase
+    .from("clients")
+    .select("id, user_id")
+    .eq("email", email)
+    .maybeSingle()
+
+  if (existing) {
+    if (authUser && !existing.user_id && authUser.email?.toLowerCase() === email) {
+      await supabase.from("clients").update({ user_id: authUser.id }).eq("id", existing.id)
+    }
+    return { ok: true, clientId: existing.id }
+  }
+
+  const dob = parseDob(data.dob)
+  const { data: created, error } = await supabase
+    .from("clients")
+    .insert({
+      user_id: authUser && authUser.email?.toLowerCase() === email ? authUser.id : null,
+      first_name: data.firstName.trim(),
+      last_name: data.lastName.trim(),
+      email,
+      phone: data.phone.trim(),
+      date_of_birth: dob,
+      marketing_consent: data.marketingConsent,
+      source: "web",
+    })
+    .select("id")
+    .single()
+
+  if (error || !created) return { ok: false, error: error?.message ?? "Error al guardar datos" }
+  return { ok: true, clientId: created.id }
+}
+
+export async function saveMedicalEarly(
+  clientId: string,
+  medical: {
+    allergies: string[]
+    allergiesOther: string
+    meds: "no" | "si"
+    medsNote: string
+    pregnancy: "no" | "embarazo" | "lactancia"
+    skin: string[]
+  }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = adminClient()
+
+  const { data: existing } = await supabase
+    .from("client_records")
+    .select("id")
+    .eq("client_id", clientId)
+    .eq("is_current", true)
+    .maybeSingle()
+
+  if (existing) return { ok: true }
+
+  const { error } = await supabase.from("client_records").insert({
+    client_id: clientId,
+    version: 1,
+    is_current: true,
+    allergies: medical.allergies,
+    allergies_other: medical.allergiesOther || null,
+    medications_status: medical.meds,
+    medications_note: medical.medsNote || null,
+    pregnancy: medical.pregnancy,
+    skin_conditions: medical.skin,
+  })
+
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
 }
 
 // Parses "DD / MM / AAAA" or "DD/MM/YYYY" or ISO; returns ISO date or null.
