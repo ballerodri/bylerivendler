@@ -105,23 +105,28 @@ export default function ReservaFlow({
         localStorage.removeItem(STEP_KEY)
         localStorage.setItem(VERSION_KEY, String(FLOW_VERSION))
       } else {
-        const stepRaw = localStorage.getItem(STEP_KEY)
-        const parsed = stepRaw ? parseInt(stepRaw, 10) || 0 : 0
-        const clamped = Math.min(Math.max(0, parsed), screenOrder.length - 1)
-
-        {
-          const raw = localStorage.getItem(STORAGE_KEY)
-          if (raw) {
-            const s = JSON.parse(raw) as BookingState
-            if (s.services) {
-              const all = categories.flatMap((c) => c.services)
-              s.services = s.services
-                .map((sel) => all.find((x) => x.id === sel.id))
-                .filter((x): x is NonNullable<typeof x> => Boolean(x))
-            }
-            initialState = s
+        const raw = localStorage.getItem(STORAGE_KEY)
+        if (raw) {
+          const s = JSON.parse(raw) as BookingState
+          if (s.services) {
+            const all = categories.flatMap((c) => c.services)
+            s.services = s.services
+              .map((sel) => all.find((x) => x.id === sel.id))
+              .filter((x): x is NonNullable<typeof x> => Boolean(x))
           }
+          initialState = s
+        }
+
+        // Solo restauramos el paso guardado si la clienta NO está en la DB.
+        // Si ya tiene perfil completo, el flujo es más corto y arrancamos
+        // siempre desde el paso 1 para evitar quedar en "Confirmación".
+        if (!currentClient) {
+          const stepRaw = localStorage.getItem(STEP_KEY)
+          const parsed = stepRaw ? parseInt(stepRaw, 10) || 0 : 0
+          const clamped = Math.min(Math.max(0, parsed), screenOrder.length - 1)
           if (stepRaw) setStep(clamped)
+        } else {
+          localStorage.removeItem(STEP_KEY)
         }
       }
     } catch {}
