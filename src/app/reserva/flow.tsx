@@ -234,7 +234,7 @@ export default function ReservaFlow({
               <strong>¿Alguna duda?</strong>
               Escribinos por WhatsApp al
               <br />
-              +54 9 11 5555-3892
+              +54 9 11 3364-3359
               <br />
               Lun a Sáb · 9 a 20hs
             </div>
