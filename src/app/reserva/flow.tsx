@@ -6,6 +6,7 @@ import {
   SCREEN_LABEL,
   type BookingState,
   type Category,
+  type Professional,
   type ScreenId,
 } from "./data"
 import { DesktopSteps } from "./primitives"
@@ -73,10 +74,12 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
 
 export default function ReservaFlow({
   categories,
+  professionals,
   currentClient,
   authProfile,
 }: {
   categories: Category[]
+  professionals: Professional[]
   currentClient: CurrentClient | null
   authProfile: AuthProfile | null
 }) {
@@ -196,7 +199,7 @@ export default function ReservaFlow({
           />
         )
       case "date":
-        return <Screen2DateTime {...screenProps} />
+        return <Screen2DateTime {...screenProps} professionals={professionals} />
       case "details":
         return (
           <Screen3Details
@@ -212,6 +215,7 @@ export default function ReservaFlow({
           <Screen5Confirm
             {...screenProps}
             loyaltyPoints={currentClient?.loyaltyPoints ?? 0}
+            professionals={professionals}
           />
         )
       default:

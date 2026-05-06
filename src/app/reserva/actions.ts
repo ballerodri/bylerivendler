@@ -184,7 +184,7 @@ export async function createBooking(
     .from("appointments")
     .insert({
       client_id: clientId,
-      staff_id: null, // auto-asignación; el equipo asigna luego
+      staff_id: input.proHint !== "auto" ? input.proHint : null,
       room_id: room?.id ?? null,
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),

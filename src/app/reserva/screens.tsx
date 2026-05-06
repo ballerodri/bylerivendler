@@ -5,7 +5,6 @@ import {
   DOW_NAMES,
   DOW_SHORT,
   MONTH_NAMES,
-  PROFESSIONALS,
   combineDateTime,
   filterFutureSlots,
   fmtDuration,
@@ -16,10 +15,10 @@ import {
   parseYmd,
   ymd,
 } from "./data"
-import type { BookingState, Category, Service } from "./data"
+import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking } from "./actions"
-import { sendMagicLink } from "../login/actions"
+import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 
@@ -253,7 +252,7 @@ export function Screen1Services({
 }
 
 // ---------- Screen 2: Date & Time ----------
-export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals }: ScreenProps & { professionals: Professional[] }) {
   // `today` snapped to midnight so we compare just dates, not times.
   const [today] = useState(() => {
     const d = new Date()
@@ -409,7 +408,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const ProPicker = () => (
     <div style={{ marginTop: 24 }}>
       <p className="eyebrow">Profesional · opcional</p>
-      {PROFESSIONALS.map((p) => (
+      {professionals.map((p) => (
         <button
           key={p.id}
           className={`pro-row ${pro === p.id ? "is-selected" : ""}`}
@@ -532,6 +531,18 @@ export function Screen3Details({
   const f = state.form || EMPTY_FORM
   const [linkStatus, setLinkStatus] = useState<"idle" | "sending" | "sent">("idle")
   const [linkError, setLinkError] = useState<string | null>(null)
+  const [googleLoading, setGoogleLoading] = useState(false)
+
+  const handleGoogle = async () => {
+    setGoogleLoading(true)
+    const r = await signInWithGoogle("/reserva")
+    if (r.ok) {
+      window.location.href = r.url
+    } else {
+      setGoogleLoading(false)
+      setLinkError(r.error)
+    }
+  }
 
   const setF = (patch: Partial<typeof EMPTY_FORM>) =>
     setState({ ...state, form: { ...f, ...patch }, clientMode: mode })
@@ -672,12 +683,49 @@ export function Screen3Details({
 
     return (
       <div className="magic">
-        <p className="eyebrow">Acceso rápido</p>
-        <h3 className="magic__title">Te enviamos un link al correo.</h3>
-        <p className="magic__desc">
-          Sin contraseñas. Al abrir el email desde tu celular, entrás a tu
-          portal y reservás en pocos clicks.
-        </p>
+        {/* Google */}
+        <button
+          type="button"
+          onClick={handleGoogle}
+          disabled={googleLoading}
+          className="btn btn--full"
+          style={{
+            background: "#fff",
+            color: "var(--ink)",
+            border: "1px solid var(--line-strong)",
+            gap: 10,
+            textTransform: "none",
+            letterSpacing: "0.02em",
+            fontWeight: 500,
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden style={{ flexShrink: 0 }}>
+            <path d="M17.6 9.2c0-.6 0-1.2-.1-1.7H9v3.3h4.8c-.2 1.1-.8 2-1.7 2.6v2.2h2.7c1.6-1.5 2.5-3.7 2.5-6.4z" fill="#4285F4"/>
+            <path d="M9 18c2.3 0 4.2-.8 5.6-2.1l-2.7-2.1c-.8.5-1.7.8-2.9.8-2.2 0-4.1-1.5-4.8-3.5H1.4v2.2C2.8 16 5.7 18 9 18z" fill="#34A853"/>
+            <path d="M4.2 11.1c-.2-.5-.3-1.1-.3-1.6s.1-1.1.3-1.6V5.6H1.4C.5 7 0 8.5 0 9.5s.5 2.5 1.4 3.9l2.8-2.3z" fill="#FBBC04"/>
+            <path d="M9 3.6c1.3 0 2.4.4 3.3 1.3l2.4-2.4C13.2.9 11.3 0 9 0 5.7 0 2.8 2 1.4 4.6l2.8 2.2C5 5.1 6.8 3.6 9 3.6z" fill="#EA4335"/>
+          </svg>
+          {googleLoading ? "Conectando…" : "Continuar con Google"}
+        </button>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            margin: "20px 0 16px",
+            color: "var(--ink-mute)",
+            fontSize: 11,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+          }}
+        >
+          <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+          o con email
+          <span style={{ flex: 1, height: 1, background: "var(--line)" }} />
+        </div>
+
+        <p className="eyebrow" style={{ marginBottom: 8 }}>Link al correo</p>
         <div className="field" style={{ marginBottom: 12 }}>
           <input
             className="field__input"
@@ -1009,7 +1057,8 @@ export function Screen5Confirm({
   stepNumber,
   totalSteps,
   loyaltyPoints,
-}: ScreenProps & { loyaltyPoints: number }) {
+  professionals,
+}: ScreenProps & { loyaltyPoints: number; professionals: Professional[] }) {
   const services = state.services || []
   const total = services.reduce((a, s) => a + s.price, 0)
   const totalMin = services.reduce((a, s) => a + s.duration, 0)
@@ -1025,7 +1074,7 @@ export function Screen5Confirm({
 
   const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
-  const pro = PROFESSIONALS.find((p) => p.id === (state.pro || "auto"))!
+  const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
 
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState<string | null>(null)

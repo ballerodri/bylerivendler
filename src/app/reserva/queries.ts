@@ -1,6 +1,6 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
-import type { Category, Service } from "./data"
+import type { Category, Professional, Service } from "./data"
 
 export type CurrentClient = {
   id: string
@@ -122,4 +122,45 @@ export async function fetchCurrentClient(
     hasMedicalRecord: !!record,
     loyaltyPoints: (client.loyalty_points as number | null) ?? 0,
   }
+}
+
+const AUTO_PROFESSIONAL: Professional = {
+  id: "auto",
+  initials: "BLV",
+  name: "Asignación automática",
+  role: "Se asigna según disponibilidad",
+}
+
+function deriveInitials(name: string): string {
+  const parts = name.trim().split(/\s+/)
+  const first = parts[0]?.[0] ?? ""
+  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : ""
+  return (first + last).toUpperCase()
+}
+
+export async function fetchProfessionals(): Promise<Professional[]> {
+  const supabase = adminClient()
+
+  const { data } = await supabase
+    .from("staff")
+    .select("id, full_name, role")
+    .eq("active", true)
+    .in("role", ["admin", "professional"])
+    .order("full_name", { ascending: true })
+
+  const ROLE_DISPLAY: Record<string, string> = {
+    admin: "By Leri Vendler",
+    professional: "Profesional",
+  }
+
+  const staff = ((data ?? []) as { id: string; full_name: string; role: string }[]).map(
+    (s): Professional => ({
+      id: s.id,
+      initials: deriveInitials(s.full_name),
+      name: s.full_name,
+      role: ROLE_DISPLAY[s.role] ?? "Equipo BLV",
+    })
+  )
+
+  return [AUTO_PROFESSIONAL, ...staff]
 }
