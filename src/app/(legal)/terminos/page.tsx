@@ -172,7 +172,15 @@ export default function TerminosPage() {
         <p>
           Para cualquier consulta sobre estos términos, escribinos a{" "}
           <a href="mailto:hola@bylerivendler.com">hola@bylerivendler.com</a>{" "}
-          o por WhatsApp al +54 9 11 3364-3359.
+          o por{" "}
+          <a
+            href="https://wa.me/5491133643359"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            WhatsApp al +54 9 11 3364-3359
+          </a>
+          .
         </p>
       </article>
     </>

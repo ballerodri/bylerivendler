@@ -17,6 +17,7 @@ import {
   Screen5Confirm,
 } from "./screens"
 import type { CurrentClient, AuthProfile } from "./queries"
+import { whatsappLink, WHATSAPP_DISPLAY } from "@/lib/whatsapp"
 
 const STORAGE_KEY = "blv_booking"
 const STEP_KEY = "blv_step"
@@ -232,9 +233,16 @@ export default function ReservaFlow({
             />
             <div className="dside__foot">
               <strong>¿Alguna duda?</strong>
-              Escribinos por WhatsApp al
+              <a
+                href={whatsappLink()}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "inherit", textDecoration: "underline", textUnderlineOffset: 2 }}
+              >
+                Escribinos por WhatsApp
+              </a>
               <br />
-              +54 9 11 3364-3359
+              {WHATSAPP_DISPLAY}
               <br />
               Lun a Sáb · 9 a 20hs
             </div>
