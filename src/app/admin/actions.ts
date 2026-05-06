@@ -158,6 +158,37 @@ export async function setStaffActive(
   return { ok: true }
 }
 
+const ServicePatch = z.object({
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  duration_min: z.number().int().positive(),
+  price_cents: z.number().int().nonnegative(),
+  points_earned: z.number().int().nonnegative(),
+  points_cost: z.number().int().nonnegative(),
+  active: z.boolean(),
+  visible_public: z.boolean(),
+})
+
+export async function updateService(
+  serviceId: string,
+  patch: z.infer<typeof ServicePatch>
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const parsed = ServicePatch.safeParse(patch)
+  if (!parsed.success) return { ok: false, error: "Datos inválidos" }
+
+  const admin = adminClient()
+  const { error } = await admin
+    .from("services")
+    .update(parsed.data)
+    .eq("id", serviceId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/admin/servicios")
+  revalidatePath(`/admin/servicios/${serviceId}`)
+  return { ok: true }
+}
+
 const RecordPatch = z.object({
   allergies: z.array(z.string()),
   allergies_other: z.string().nullable(),

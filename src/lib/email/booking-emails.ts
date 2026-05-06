@@ -8,7 +8,7 @@ const resend = process.env.RESEND_API_KEY
 const FROM = "By Leri Vendler <turnos@bylerivendler.com>"
 const SITE = "https://bylerivendler.com"
 const ADDRESS = "Sanguinetti 297 · Pilar, Buenos Aires"
-const WHATSAPP = "+54 9 11 5555-3892"
+const WHATSAPP = "+54 9 11 3364-3359"
 
 export type BookingEmailData = {
   to: string
