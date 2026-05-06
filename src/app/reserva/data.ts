@@ -141,6 +141,7 @@ export type BookingState = {
   form?: ClientForm
   medical?: MedicalForm
   redeemWithPoints?: boolean
+  savedClientId?: string
 }
 
 export type ScreenId =

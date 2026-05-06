@@ -1,4 +1,5 @@
 import Link from "next/link"
+import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { isStaffUser } from "@/lib/staff"
@@ -41,6 +42,9 @@ export default async function Home() {
         .select("id, first_name")
         .eq("user_id", user.id)
         .maybeSingle<ClientRow>()
+
+      if (!client) redirect("/reserva")
+
       firstName = client?.first_name ?? null
 
       if (client) {

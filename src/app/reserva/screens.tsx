@@ -17,7 +17,7 @@ import {
 } from "./data"
 import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
-import { createBooking } from "./actions"
+import { createBooking, saveClientEarly, saveMedicalEarly } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
@@ -821,16 +821,38 @@ export function Screen3Details({
     )
   }
 
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const handleContinue = async () => {
+    setSaving(true)
+    setSaveError(null)
+    const r = await saveClientEarly({
+      firstName: f.firstName,
+      lastName: f.lastName,
+      email: f.email,
+      phone: f.phone,
+      dob: f.dob,
+      marketingConsent: f.consent,
+    })
+    setSaving(false)
+    if (!r.ok) { setSaveError(r.error); return }
+    setState({ ...state, form: f, clientMode: mode, savedClientId: r.clientId })
+    onNext()
+  }
+
   const FooterCTA = () => (
     <div className="footer">
       <div className="footer__row">
         <div className="footer__summary">
-          {mode === "new"
-            ? "Tus datos son privados y encriptados"
-            : "Link enviado al abrir tu email"}
+          {saveError
+            ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
+            : mode === "new"
+              ? "Tus datos son privados y encriptados"
+              : "Link enviado al abrir tu email"}
         </div>
-        <button className="btn btn--primary" disabled={!isValid} onClick={onNext}>
-          Continuar
+        <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
+          {saving ? "Guardando…" : "Continuar"}
           <span className="btn__arrow">
             <Icon.Arrow />
           </span>
@@ -937,6 +959,27 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
   }
 
   const isValid = med.consent
+
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const handleContinue = async () => {
+    if (state.savedClientId) {
+      setSaving(true)
+      setSaveError(null)
+      const r = await saveMedicalEarly(state.savedClientId, {
+        allergies: med.allergies,
+        allergiesOther: med.allergiesOther,
+        meds: med.meds,
+        medsNote: med.medsNote,
+        pregnancy: med.pregnancy,
+        skin: med.skin,
+      })
+      setSaving(false)
+      if (!r.ok) { setSaveError(r.error); return }
+    }
+    onNext()
+  }
 
   const Body = () => (
     <>
@@ -1070,10 +1113,12 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
     <div className="footer">
       <div className="footer__row">
         <div className="footer__summary">
-          Tus respuestas quedan <strong>bajo secreto profesional</strong>
+          {saveError
+            ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
+            : <span>Tus respuestas quedan <strong>bajo secreto profesional</strong></span>}
         </div>
-        <button className="btn btn--primary" disabled={!isValid} onClick={onNext}>
-          Continuar
+        <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
+          {saving ? "Guardando…" : "Continuar"}
           <span className="btn__arrow">
             <Icon.Arrow />
           </span>
@@ -1152,6 +1197,7 @@ export function Screen5Confirm({
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
       redeemWithPoints: redeeming,
+      savedClientId: state.savedClientId,
       client: {
         firstName: state.form.firstName,
         lastName: state.form.lastName,
