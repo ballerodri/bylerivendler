@@ -182,7 +182,7 @@ export default async function ReservaExitoPage({
           <Link href="/portal" className="btn btn--primary">
             Ver mis turnos
           </Link>
-          <Link href="/reserva" className="btn btn--ghost">
+          <Link href="/reserva" className="btn btn--primary">
             Reservar otro
           </Link>
         </div>
