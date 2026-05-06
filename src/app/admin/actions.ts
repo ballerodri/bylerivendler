@@ -255,6 +255,88 @@ export async function updateService(
   return { ok: true }
 }
 
+export async function uploadClientPhoto(
+  clientId: string,
+  formData: FormData
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+
+  const file = formData.get("file")
+  const type = formData.get("type")
+
+  if (!(file instanceof File) || !file.size) return { ok: false, error: "Archivo requerido" }
+  if (type !== "before" && type !== "after") return { ok: false, error: "Tipo inválido" }
+
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "jpg"
+  const path = `${clientId}/${crypto.randomUUID()}.${ext}`
+  const buffer = await file.arrayBuffer()
+
+  const admin = adminClient()
+
+  const { error: storageErr } = await admin.storage
+    .from("client-photos")
+    .upload(path, buffer, { contentType: file.type, upsert: false })
+
+  if (storageErr) return { ok: false, error: storageErr.message }
+
+  const { error: dbErr } = await admin.from("client_photos").insert({
+    client_id: clientId,
+    storage_path: path,
+    type,
+    visible_to_client: false,
+  })
+
+  if (dbErr) {
+    await admin.storage.from("client-photos").remove([path])
+    return { ok: false, error: dbErr.message }
+  }
+
+  revalidatePath(`/admin/clientas/${clientId}`)
+  return { ok: true }
+}
+
+export async function deleteClientPhoto(
+  photoId: string,
+  clientId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+
+  const admin = adminClient()
+  const { data: photo } = await admin
+    .from("client_photos")
+    .select("storage_path")
+    .eq("id", photoId)
+    .maybeSingle()
+
+  if (!photo) return { ok: false, error: "Foto no encontrada" }
+
+  await admin.storage.from("client-photos").remove([photo.storage_path])
+  await admin.from("client_photos").delete().eq("id", photoId)
+
+  revalidatePath(`/admin/clientas/${clientId}`)
+  return { ok: true }
+}
+
+export async function togglePhotoVisibility(
+  photoId: string,
+  clientId: string,
+  visible: boolean
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+
+  const admin = adminClient()
+  const { error } = await admin
+    .from("client_photos")
+    .update({ visible_to_client: visible })
+    .eq("id", photoId)
+
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(`/admin/clientas/${clientId}`)
+  revalidatePath("/portal")
+  return { ok: true }
+}
+
 const RecordPatch = z.object({
   allergies: z.array(z.string()),
   allergies_other: z.string().nullable(),

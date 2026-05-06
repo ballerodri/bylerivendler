@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../../reserva/data"
 import RecordEditor from "./record-editor"
+import PhotosManager from "./photos-manager"
 
 export const dynamic = "force-dynamic"
 
@@ -88,6 +89,23 @@ export default async function AdminClientDetailPage({
     .limit(50)
   const appts = (apptsData ?? []) as unknown as ApptRow[]
 
+  type PhotoRow = { id: string; storage_path: string; type: "before" | "after"; visible_to_client: boolean }
+  const { data: photosData } = await admin
+    .from("client_photos")
+    .select("id, storage_path, type, visible_to_client")
+    .eq("client_id", id)
+    .order("created_at", { ascending: false })
+  const rawPhotos = (photosData ?? []) as PhotoRow[]
+
+  const photos = await Promise.all(
+    rawPhotos.map(async (p) => {
+      const { data } = await admin.storage
+        .from("client-photos")
+        .createSignedUrl(p.storage_path, 7200)
+      return { ...p, signedUrl: data?.signedUrl ?? "" }
+    })
+  )
+
   const hasAlerts =
     !!record &&
     (record.pregnancy !== "no" ||
@@ -160,6 +178,9 @@ export default async function AdminClientDetailPage({
           <RecordEditor clientId={client.id} record={record} />
         </div>
       </div>
+
+      <h2 className="adm-section-title">Fotos antes / después</h2>
+      <PhotosManager clientId={client.id} photos={photos} />
 
       <h2 className="adm-section-title">Historial de turnos</h2>
       {appts.length === 0 ? (

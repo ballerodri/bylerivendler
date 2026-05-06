@@ -43,13 +43,34 @@ export default async function PortalPage() {
     .maybeSingle<ClientRow>()
 
   let appointments: AppointmentRow[] = []
+  type PortalPhoto = { id: string; storage_path: string; type: "before" | "after"; signedUrl: string }
+  let photos: PortalPhoto[] = []
+
   if (client) {
-    const { data } = await admin
-      .from("appointments")
-      .select("id, starts_at, status, duration_min, total_cents")
-      .eq("client_id", client.id)
-      .order("starts_at", { ascending: true })
-    appointments = (data ?? []) as AppointmentRow[]
+    const [apptRes, photoRes] = await Promise.all([
+      admin
+        .from("appointments")
+        .select("id, starts_at, status, duration_min, total_cents")
+        .eq("client_id", client.id)
+        .order("starts_at", { ascending: true }),
+      admin
+        .from("client_photos")
+        .select("id, storage_path, type")
+        .eq("client_id", client.id)
+        .eq("visible_to_client", true)
+        .order("created_at", { ascending: true }),
+    ])
+    appointments = (apptRes.data ?? []) as AppointmentRow[]
+
+    const rawPhotos = (photoRes.data ?? []) as { id: string; storage_path: string; type: "before" | "after" }[]
+    photos = await Promise.all(
+      rawPhotos.map(async (p) => {
+        const { data } = await admin.storage
+          .from("client-photos")
+          .createSignedUrl(p.storage_path, 7200)
+        return { ...p, signedUrl: data?.signedUrl ?? "" }
+      })
+    )
   }
 
   const greeting = client?.first_name
@@ -180,6 +201,60 @@ export default async function PortalPage() {
                 </div>
                 )
               })}
+            </div>
+          </>
+        )}
+
+        {photos.length > 0 && (
+          <>
+            <h2
+              style={{
+                fontFamily: "var(--serif)",
+                fontWeight: 500,
+                fontSize: 20,
+                marginTop: 40,
+                marginBottom: 12,
+              }}
+            >
+              Tu evolución
+            </h2>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))",
+                gap: 10,
+                marginBottom: 8,
+              }}
+            >
+              {photos.map((p) => (
+                <div
+                  key={p.id}
+                  style={{ borderRadius: 12, overflow: "hidden", position: "relative" }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={p.signedUrl}
+                    alt={p.type === "before" ? "Antes" : "Después"}
+                    style={{ width: "100%", aspectRatio: "1", objectFit: "cover", display: "block" }}
+                  />
+                  <div
+                    style={{
+                      position: "absolute",
+                      bottom: 6,
+                      left: 6,
+                      background: "rgba(43,38,35,0.65)",
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                      fontSize: 10,
+                      letterSpacing: "0.08em",
+                      color: "#f2ede6",
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {p.type === "before" ? "Antes" : "Después"}
+                  </div>
+                </div>
+              ))}
             </div>
           </>
         )}
