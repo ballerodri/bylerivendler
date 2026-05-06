@@ -32,12 +32,12 @@ export async function GET(req: NextRequest) {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  // Window: appointments starting between 23h and 25h from now.
-  // Running hourly ensures every appointment falls in this window exactly once.
-  // reminder_sent_at IS NULL prevents double-sends on overlap.
+  // Cron runs once daily at 09:00 UTC (06:00 Buenos Aires).
+  // Window: 18h–42h from now → catches every appointment in the next day,
+  // regardless of time. reminder_sent_at IS NULL prevents duplicates.
   const now = new Date()
-  const windowStart = new Date(now.getTime() + 23 * 60 * 60 * 1000).toISOString()
-  const windowEnd = new Date(now.getTime() + 25 * 60 * 60 * 1000).toISOString()
+  const windowStart = new Date(now.getTime() + 18 * 60 * 60 * 1000).toISOString()
+  const windowEnd = new Date(now.getTime() + 42 * 60 * 60 * 1000).toISOString()
 
   const { data, error } = await admin
     .from("appointments")
