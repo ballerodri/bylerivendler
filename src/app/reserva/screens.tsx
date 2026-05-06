@@ -1145,7 +1145,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
           }}
         >
           Después mandanos el comprobante por WhatsApp al{" "}
-          <strong style={{ color: "var(--ink)" }}>+54 9 11 3364-3359</strong>{" "}
+          <strong style={{ color: "var(--ink)" }}>11 3364-3359</strong>{" "}
           para confirmar tu turno.
           <br />
           <a

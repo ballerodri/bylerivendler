@@ -1,7 +1,7 @@
 // WhatsApp del negocio. Centralizado acá para mantener un solo lugar
 // donde actualizar el número.
 
-export const WHATSAPP_DISPLAY = "+54 9 11 3364-3359"
+export const WHATSAPP_DISPLAY = "11 3364-3359"
 export const WHATSAPP_E164 = "5491133643359" // sin + ni espacios
 
 /**

@@ -178,7 +178,7 @@ export default function TerminosPage() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            WhatsApp al +54 9 11 3364-3359
+            WhatsApp al 11 3364-3359
           </a>
           .
         </p>
