@@ -5,11 +5,15 @@ import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendBookingConfirmation } from "@/lib/email/booking-emails"
+import { ymd, filterFutureSlots } from "./data"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
   startsAt: z.string().datetime(),
   proHint: z.string(),
+  // Multi-professional sequential support
+  serviceOrder: z.array(z.string().uuid()).optional(),
+  resolvedStaff: z.record(z.string(), z.string()).optional(),
   redeemWithPoints: z.boolean().optional(),
   savedClientId: z.string().uuid().optional(),
   client: z.object({
@@ -188,19 +192,26 @@ export async function createBooking(
       .eq("id", clientId)
   }
 
+  // 5) Determine main staff (first service's resolved pro, or proHint)
+  const mainStaffId = input.resolvedStaff
+    ? (input.serviceOrder?.[0]
+        ? (input.resolvedStaff[input.serviceOrder[0]] ?? null)
+        : Object.values(input.resolvedStaff)[0] ?? null)
+    : (input.proHint !== "auto" ? input.proHint : null)
+
   // 5) Create appointment
   const { data: appt, error: apptErr } = await supabase
     .from("appointments")
     .insert({
       client_id: clientId,
-      staff_id: input.proHint !== "auto" ? input.proHint : null,
+      staff_id: mainStaffId,
       room_id: room?.id ?? null,
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
       duration_min: totalDuration,
       total_cents: redeem ? 0 : totalCents,
       deposit_cents: redeem ? 0 : depositCents,
-      deposit_paid: redeem, // canje = ya cubierto, sin seña pendiente
+      deposit_paid: redeem,
       status: redeem ? "confirmed" : "pending",
       source: "web",
       notes_internal: redeem
@@ -213,13 +224,25 @@ export async function createBooking(
   if (apptErr || !appt)
     return { ok: false, error: `Turno: ${apptErr?.message}` }
 
-  // 6) Link services to appointment
-  const apptServices = services.map((s) => ({
-    appointment_id: appt.id,
-    service_id: s.id,
-    duration_min: s.duration_min,
-    price_cents: s.price_cents,
-  }))
+  // 6) Link services — respecting sequential order and per-service staff/starts_at
+  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
+  const orderedServices = orderedIds
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+
+  let serviceMs = startsAt.getTime()
+  const apptServices = orderedServices.map((s) => {
+    const sStartsAt = new Date(serviceMs)
+    serviceMs += s.duration_min * 60_000
+    return {
+      appointment_id: appt.id,
+      service_id: s.id,
+      duration_min: s.duration_min,
+      price_cents: s.price_cents,
+      staff_id: input.resolvedStaff?.[s.id] ?? mainStaffId,
+      starts_at: sStartsAt.toISOString(),
+    }
+  })
 
   const { error: linkErr } = await supabase
     .from("appointment_services")
@@ -433,6 +456,215 @@ export async function fetchDayAvailability(
       })
     }
   })
+}
+
+// ─── Sequential availability ──────────────────────────────────────────────────
+
+export type ServiceInput = { id: string; name: string; duration: number; staffId: string }
+
+export type SlotResult = {
+  date: string
+  time: string
+  serviceOrder: string[]
+  resolvedStaff: Record<string, string>
+}
+
+export type SequentialAvailabilityResult = {
+  slotsForDate: SlotResult[]
+  nextAvailable: SlotResult[]
+  hasSequentialToday: boolean
+  individualSlotsForDate: { serviceId: string; serviceName: string; slots: string[] }[]
+}
+
+function permutations(arr: number[]): number[][] {
+  if (arr.length <= 1) return [arr.slice()]
+  const result: number[][] = []
+  for (let i = 0; i < arr.length; i++) {
+    const rest = [...arr.slice(0, i), ...arr.slice(i + 1)]
+    for (const p of permutations(rest)) result.push([arr[i], ...p])
+  }
+  return result
+}
+
+type Appt = { starts_at: string; duration_min: number; staff_id: string | null }
+
+function checkPerm(
+  startMs: number,
+  perm: number[],
+  services: ServiceInput[],
+  appts: Appt[],
+  allPros: string[]
+): Record<string, string> | null {
+  const assignment: Record<string, string> = {}
+  const used = new Set<string>()
+  let ms = startMs
+
+  for (const idx of perm) {
+    const svc = services[idx]
+    const sStart = ms
+    const sEnd = ms + svc.duration * 60_000
+
+    if (svc.staffId !== "auto") {
+      if (used.has(svc.staffId)) return null
+      const busy = appts.some((a) => {
+        if (a.staff_id !== svc.staffId) return false
+        const aS = new Date(a.starts_at).getTime()
+        return sStart < aS + a.duration_min * 60_000 && sEnd > aS
+      })
+      if (busy) return null
+      assignment[svc.id] = svc.staffId
+      used.add(svc.staffId)
+    } else {
+      const free = allPros.find((pid) => {
+        if (used.has(pid)) return false
+        return !appts.some((a) => {
+          if (a.staff_id !== pid) return false
+          const aS = new Date(a.starts_at).getTime()
+          return sStart < aS + a.duration_min * 60_000 && sEnd > aS
+        })
+      })
+      if (!free) return null
+      assignment[svc.id] = free
+      used.add(free)
+    }
+    ms = sEnd
+  }
+  return assignment
+}
+
+function trySlot(
+  slot: string,
+  dateStr: string,
+  services: ServiceInput[],
+  appts: Appt[],
+  allPros: string[]
+): SlotResult | null {
+  const [hh, mm] = slot.split(":").map(Number)
+  const base = new Date(dateStr + "T00:00:00")
+  base.setHours(hh, mm, 0, 0)
+  const startMs = base.getTime()
+
+  for (const perm of permutations(services.map((_, i) => i))) {
+    const assignment = checkPerm(startMs, perm, services, appts, allPros)
+    if (assignment) {
+      return {
+        date: dateStr,
+        time: slot,
+        serviceOrder: perm.map((i) => services[i].id),
+        resolvedStaff: assignment,
+      }
+    }
+  }
+  return null
+}
+
+export async function fetchSequentialAvailability(
+  services: ServiceInput[],
+  fromDate: string,
+  daysAhead = 30
+): Promise<SequentialAvailabilityResult> {
+  const empty: SequentialAvailabilityResult = {
+    slotsForDate: [],
+    nextAvailable: [],
+    hasSequentialToday: false,
+    individualSlotsForDate: [],
+  }
+  if (!services.length) return empty
+
+  const supabase = adminClient()
+
+  const [bhRes, prosRes] = await Promise.all([
+    supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
+    supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
+  ])
+
+  const byDow = new Map(
+    ((bhRes.data ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[]).map(
+      (h) => [h.day_of_week, h]
+    )
+  )
+  const allPros = ((prosRes.data ?? []) as { id: string }[]).map((p) => p.id)
+
+  const from = new Date(fromDate + "T00:00:00")
+  const to = new Date(fromDate + "T00:00:00")
+  to.setDate(to.getDate() + daysAhead)
+
+  const { data: apptData } = await supabase
+    .from("appointments")
+    .select("starts_at, duration_min, staff_id")
+    .gte("starts_at", from.toISOString())
+    .lt("starts_at", to.toISOString())
+    .in("status", ["pending", "confirmed"])
+  const allAppts = (apptData ?? []) as Appt[]
+
+  const slotsForDate: SlotResult[] = []
+  const nextAvailable: SlotResult[] = []
+  const now = new Date()
+
+  for (let i = 0; i < daysAhead; i++) {
+    const d = new Date(fromDate + "T00:00:00")
+    d.setDate(d.getDate() + i)
+    const dateStr = ymd(d)
+
+    const bh = byDow.get(d.getDay())
+    if (!bh || !bh.is_open || !bh.slots.length) continue
+
+    const candidates = i === 0
+      ? filterFutureSlots(dateStr, bh.slots, now)
+      : [...bh.slots]
+
+    const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === dateStr)
+
+    for (const slot of candidates) {
+      const result = trySlot(slot, dateStr, services, dayAppts, allPros)
+      if (!result) continue
+      if (i === 0) {
+        slotsForDate.push(result)
+      } else {
+        nextAvailable.push(result)
+        if (nextAvailable.length >= 5) break
+      }
+    }
+    if (i > 0 && nextAvailable.length >= 5) break
+  }
+
+  // Individual slots per service when no sequential slots today
+  const individualSlotsForDate: SequentialAvailabilityResult["individualSlotsForDate"] = []
+  if (!slotsForDate.length) {
+    const todayBh = byDow.get(new Date(fromDate + "T00:00:00").getDay())
+    if (todayBh?.is_open && todayBh.slots.length) {
+      const candidates = filterFutureSlots(fromDate, todayBh.slots, now)
+      const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === fromDate)
+
+      for (const svc of services) {
+        const slots = candidates.filter((slot) => {
+          const [hh, mm] = slot.split(":").map(Number)
+          const base = new Date(fromDate + "T00:00:00")
+          base.setHours(hh, mm, 0, 0)
+          const sStart = base.getTime()
+          const sEnd = sStart + svc.duration * 60_000
+          if (svc.staffId === "auto") {
+            // Available if at least one pro is free
+            return allPros.some(
+              (pid) => !dayAppts.some((a) => {
+                if (a.staff_id !== pid) return false
+                const aS = new Date(a.starts_at).getTime()
+                return sStart < aS + a.duration_min * 60_000 && sEnd > aS
+              })
+            )
+          }
+          return !dayAppts.some((a) => {
+            if (a.staff_id !== svc.staffId) return false
+            const aS = new Date(a.starts_at).getTime()
+            return sStart < aS + a.duration_min * 60_000 && sEnd > aS
+          })
+        })
+        individualSlotsForDate.push({ serviceId: svc.id, serviceName: svc.name, slots })
+      }
+    }
+  }
+
+  return { slotsForDate, nextAvailable, hasSequentialToday: slotsForDate.length > 0, individualSlotsForDate }
 }
 
 // Parses "DD / MM / AAAA" or "DD/MM/YYYY" or ISO; returns ISO date or null.

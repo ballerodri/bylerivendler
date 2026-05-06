@@ -143,6 +143,10 @@ export type BookingState = {
   selectedDate?: string
   selectedTime?: string | null
   pro?: string
+  // Multi-professional sequential booking
+  serviceStaff?: Record<string, string>   // serviceId → "auto" | staffId (user preference)
+  serviceOrder?: string[]                 // service IDs in execution order (resolved)
+  resolvedStaff?: Record<string, string>  // serviceId → actual staffId (resolved after slot pick)
   clientMode?: "new" | "existing"
   form?: ClientForm
   medical?: MedicalForm

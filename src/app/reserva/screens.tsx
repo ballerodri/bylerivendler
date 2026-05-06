@@ -17,7 +17,7 @@ import {
 } from "./data"
 import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
-import { createBooking, saveClientEarly, saveMedicalEarly, fetchDayAvailability } from "./actions"
+import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
@@ -267,32 +267,62 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const selectedDate = state.selectedDate
   const selectedTime = state.selectedTime
-  const pro = state.pro || "auto"
-  const totalDuration = state.services.reduce((s, sv) => s + sv.duration, 0) || 30
 
-  // Slots checked against real bookings in DB
-  const [daySlots, setDaySlots] = useState<string[] | null>(null)
+  // Per-service professional preference (defaults all to "auto")
+  const serviceStaff: Record<string, string> =
+    state.serviceStaff ?? Object.fromEntries(state.services.map((s) => [s.id, "auto"]))
+
+  const updateServiceStaff = (serviceId: string, staffId: string) =>
+    setState({
+      ...state,
+      serviceStaff: { ...serviceStaff, [serviceId]: staffId },
+      selectedTime: null,
+      serviceOrder: undefined,
+      resolvedStaff: undefined,
+    })
+
+  // Sequential availability result
+  const [seqResult, setSeqResult] = useState<import("./actions").SequentialAvailabilityResult | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
 
+  // Stable key for service+staff combo to drive effect
+  const assignmentKey = state.services.map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}`).join("|")
+
   useEffect(() => {
-    if (!selectedDate) { setDaySlots(null); return }
-    const candidates = filterFutureSlots(selectedDate, availability[selectedDate] ?? [])
-    if (!candidates.length) { setDaySlots([]); return }
+    if (!selectedDate) { setSeqResult(null); return }
+    const serviceInputs = state.services.map((s) => ({
+      id: s.id,
+      name: s.name,
+      duration: s.duration,
+      staffId: serviceStaff[s.id] ?? "auto",
+    }))
     let cancelled = false
     setSlotsLoading(true)
-    fetchDayAvailability(selectedDate, totalDuration, pro, candidates).then((slots) => {
+    fetchSequentialAvailability(serviceInputs, selectedDate).then((result) => {
       if (cancelled) return
-      setDaySlots(slots)
-      if (state.selectedTime && !slots.includes(state.selectedTime)) {
-        setState({ ...state, selectedTime: null })
+      setSeqResult(result)
+      if (state.selectedTime && !result.slotsForDate.some((r) => r.time === state.selectedTime)) {
+        setState({ ...state, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined })
       }
       setSlotsLoading(false)
     })
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, pro, totalDuration])
+  }, [selectedDate, assignmentKey])
 
-  const slotsForDay = daySlots ?? []
+  const selectSeqSlot = (result: import("./actions").SlotResult) => {
+    const d = parseYmd(result.date)
+    setViewYear(d.getFullYear())
+    setViewMonth(d.getMonth())
+    setState({
+      ...state,
+      selectedDate: result.date,
+      selectedTime: result.time,
+      serviceOrder: result.serviceOrder,
+      resolvedStaff: result.resolvedStaff,
+      serviceStaff: { ...serviceStaff, ...result.resolvedStaff },
+    })
+  }
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayRaw = new Date(viewYear, viewMonth, 1).getDay()
@@ -302,10 +332,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const selectDay = (d: number) => {
     const dateStr = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(d)}`
-    setState({ ...state, selectedDate: dateStr, selectedTime: null })
+    setState({ ...state, selectedDate: dateStr, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined })
   }
-
-  const selectTime = (t: string) => setState({ ...state, selectedTime: t })
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
   const Cal = () => (
@@ -380,55 +408,108 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     if (!selectedDate || !selectedDateObj) {
       return (
         <div className="slots">
-          <p
-            style={{
-              fontSize: 12,
-              color: "var(--ink-mute)",
-              textAlign: "center",
-              padding: "24px 0",
-            }}
-          >
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", textAlign: "center", padding: "24px 0" }}>
             Elegí un día para ver horarios disponibles.
           </p>
         </div>
       )
     }
     const dowLabel = DOW_NAMES[(selectedDateObj.getDay() + 6) % 7]
+    const seqSlots = seqResult?.slotsForDate ?? []
+    const next = seqResult?.nextAvailable ?? []
+    const individual = seqResult?.individualSlotsForDate ?? []
+    const multiPro = state.services.length > 1
+
     return (
       <div className="slots">
         <div className="slots__head">
           <h3 className="slots__title">
             {dowLabel}{" "}
-            <em>
-              {selectedDateObj.getDate()} de{" "}
-              {MONTH_NAMES[selectedDateObj.getMonth()].toLowerCase()}
-            </em>
+            <em>{selectedDateObj.getDate()} de {MONTH_NAMES[selectedDateObj.getMonth()].toLowerCase()}</em>
           </h3>
-          {!slotsLoading && (
-            <span className="slots__count">
-              {String(slotsForDay.length).padStart(2, "0")} horarios
-            </span>
+          {!slotsLoading && seqSlots.length > 0 && (
+            <span className="slots__count">{String(seqSlots.length).padStart(2, "0")} horarios</span>
           )}
         </div>
+
         {slotsLoading ? (
           <p style={{ fontSize: 12, color: "var(--ink-mute)", padding: "16px 0" }}>
             Verificando disponibilidad…
           </p>
-        ) : (
+        ) : seqSlots.length > 0 ? (
           <div className="slots__grid">
-            {slotsForDay.map((t) => (
+            {seqSlots.map((r) => (
               <button
-                key={t}
-                className={`slot ${selectedTime === t ? "is-selected" : ""}`}
-                onClick={() => selectTime(t)}
+                key={r.time}
+                className={`slot ${selectedTime === r.time && selectedDate === r.date ? "is-selected" : ""}`}
+                onClick={() => selectSeqSlot(r)}
               >
-                {t}
+                {r.time}
               </button>
             ))}
-            {slotsForDay.length === 0 && (
-              <p style={{ fontSize: 12, color: "var(--ink-mute)", gridColumn: "1/-1" }}>
+          </div>
+        ) : (
+          <div>
+            {multiPro && (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
+                No hay turnos consecutivos disponibles para este día.
+              </p>
+            )}
+            {!multiPro && (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
                 Sin horarios disponibles para este día.
               </p>
+            )}
+
+            {next.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <p style={{ fontSize: 11, color: "var(--ink-mute)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Próximos turnos consecutivos
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {next.map((r, i) => {
+                    const d = parseYmd(r.date)
+                    const dow = DOW_SHORT[(d.getDay() + 6) % 7]
+                    const dateLabel = `${dow} ${d.getDate()}/${pad2(d.getMonth() + 1)}`
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => selectSeqSlot(r)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "8px 12px", borderRadius: 8,
+                          border: "1px solid var(--line)", background: "transparent",
+                          cursor: "pointer", fontSize: 13, color: "var(--ink)", textAlign: "left",
+                        }}
+                      >
+                        <span style={{ fontWeight: 600 }}>{r.time}hs</span>
+                        <span style={{ color: "var(--ink-mute)" }}>{dateLabel}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {multiPro && individual.length > 0 && (
+              <div>
+                <p style={{ fontSize: 11, color: "var(--ink-mute)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Horarios individuales disponibles hoy
+                </p>
+                {individual.map((ind) => (
+                  <div key={ind.serviceId} style={{ marginBottom: 10 }}>
+                    <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 4 }}>{ind.serviceName}</p>
+                    <div className="slots__grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(60px, 1fr))" }}>
+                      {ind.slots.slice(0, 8).map((t) => (
+                        <div key={t} className="slot" style={{ opacity: 0.5, cursor: "default", fontSize: 11 }}>{t}</div>
+                      ))}
+                      {ind.slots.length === 0 && (
+                        <span style={{ fontSize: 11, color: "var(--ink-mute)" }}>Sin horarios</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}
@@ -438,25 +519,60 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const ProPicker = () => (
     <div style={{ marginTop: 24 }}>
-      <p className="eyebrow">Profesional · opcional</p>
-      {professionals.map((p) => (
-        <button
-          key={p.id}
-          className={`pro-row ${pro === p.id ? "is-selected" : ""}`}
-          onClick={() => setState({ ...state, pro: p.id })}
-        >
-          <div className="pro-avatar">{p.initials}</div>
-          <div>
-            <div className="pro-name">{p.name}</div>
-            <div className="pro-role">{p.role}</div>
-          </div>
-          <div className="pro-spacer" />
-          {p.id === "auto" && pro !== "auto" && (
-            <span className="pro-hint">Recomendado</span>
-          )}
-          {pro === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
-        </button>
-      ))}
+      <p className="eyebrow">
+        {state.services.length > 1 ? "Profesional por tratamiento · opcional" : "Profesional · opcional"}
+      </p>
+      {state.services.length > 1 ? (
+        // Per-service pickers
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {state.services.map((svc) => {
+            const current = serviceStaff[svc.id] ?? "auto"
+            return (
+              <div key={svc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "var(--ink-mute)", flex: 1 }}>{svc.name}</span>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  {professionals.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => updateServiceStaff(svc.id, p.id)}
+                      style={{
+                        padding: "4px 10px", borderRadius: 20, fontSize: 12,
+                        border: `1px solid ${current === p.id ? "var(--ink)" : "var(--line)"}`,
+                        background: current === p.id ? "var(--ink)" : "transparent",
+                        color: current === p.id ? "var(--linen)" : "var(--ink-mute)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {p.id === "auto" ? "Auto" : p.initials}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        // Single picker (original)
+        professionals.map((p) => {
+          const current = serviceStaff[state.services[0]?.id ?? ""] ?? "auto"
+          return (
+            <button
+              key={p.id}
+              className={`pro-row ${current === p.id ? "is-selected" : ""}`}
+              onClick={() => state.services[0] && updateServiceStaff(state.services[0].id, p.id)}
+            >
+              <div className="pro-avatar">{p.initials}</div>
+              <div>
+                <div className="pro-name">{p.name}</div>
+                <div className="pro-role">{p.role}</div>
+              </div>
+              <div className="pro-spacer" />
+              {p.id === "auto" && current !== "auto" && <span className="pro-hint">Recomendado</span>}
+              {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
+            </button>
+          )
+        })
+      )}
     </div>
   )
 
@@ -1227,6 +1343,8 @@ export function Screen5Confirm({
       serviceIds: services.map((s) => s.id),
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
+      serviceOrder: state.serviceOrder,
+      resolvedStaff: state.resolvedStaff,
       redeemWithPoints: redeeming,
       savedClientId: state.savedClientId,
       client: {
