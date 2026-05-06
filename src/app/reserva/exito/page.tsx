@@ -2,6 +2,7 @@ import Link from "next/link"
 import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { DOW_NAMES, MONTH_NAMES, fmtDuration, fmtPrice } from "../data"
+import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import "../reserva.css"
 
 export const dynamic = "force-dynamic"
@@ -134,9 +135,14 @@ export default async function ReservaExitoPage({
             hs · {fmtDuration(appt.duration_min)} ·{" "}
             {fmtPrice(appt.total_cents / 100)}
             <br />
-            <span style={{ color: "var(--ink-mute)" }}>
-              Sanguinetti 297 · Pilar, Buenos Aires
-            </span>
+            <a
+              href={MAPS_LINK}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
+            >
+              {ADDRESS_LINE} · {ADDRESS_AREA}
+            </a>
           </div>
         </div>
 

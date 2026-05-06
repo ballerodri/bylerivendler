@@ -1,6 +1,7 @@
 import "server-only"
 import { Resend } from "resend"
 import { WHATSAPP_DISPLAY, whatsappLink } from "@/lib/whatsapp"
+import { ADDRESS_FULL, MAPS_LINK } from "@/lib/location"
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -8,7 +9,6 @@ const resend = process.env.RESEND_API_KEY
 
 const FROM = "By Leri Vendler <turnos@bylerivendler.com>"
 const SITE = "https://bylerivendler.com"
-const ADDRESS = "Sanguinetti 297 · Pilar, Buenos Aires"
 
 export type BookingEmailData = {
   to: string
@@ -90,7 +90,7 @@ export async function sendBookingConfirmation(
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Dónde</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0;">
         By Leri Vendler<br>
-        <span style="font-size:13px;color:#7a6e64;font-family:Helvetica,Arial,sans-serif;">${ADDRESS}</span>
+        <a href="${MAPS_LINK}" style="font-size:13px;color:#b68a5f;font-family:Helvetica,Arial,sans-serif;text-decoration:underline;">${ADDRESS_FULL}</a>
       </p>
     </div>
 
