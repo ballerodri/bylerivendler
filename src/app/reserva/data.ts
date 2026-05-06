@@ -4,6 +4,7 @@ export type Service = {
   duration: number
   price: number
   desc: string
+  pointsCost: number
 }
 
 export type Category = {
@@ -19,41 +20,6 @@ export type Professional = {
   name: string
   role: string
 }
-
-export const CATEGORIES: Category[] = [
-  {
-    id: "facial",
-    name: "Facial",
-    tagline: "Rituales de piel",
-    services: [
-      { id: "f1", name: "Limpieza facial profunda", duration: 60, price: 35000, desc: "Extracción, vapor ozonizado y máscara calmante. Ideal como primer encuentro con la piel." },
-      { id: "f2", name: "Hydrafacial signature", duration: 75, price: 78000, desc: "Exfoliación, infusión de sérums y hidratación intensiva con efecto luminoso inmediato." },
-      { id: "f3", name: "Radiofrecuencia facial", duration: 50, price: 58000, desc: "Tensado progresivo con aparatología. Serie de 6 sesiones recomendadas." },
-      { id: "f4", name: "Peeling químico editorial", duration: 45, price: 54000, desc: "Renovación celular con ácidos seleccionados según ficha dermatológica." },
-    ],
-  },
-  {
-    id: "corporal",
-    name: "Corporal",
-    tagline: "Tratamientos de cuerpo",
-    services: [
-      { id: "c1", name: "Drenaje linfático manual", duration: 60, price: 38000, desc: "Técnica Vodder clásica. Reduce retención y activa circulación." },
-      { id: "c2", name: "Masaje descontracturante", duration: 60, price: 36000, desc: "Presión profunda sobre zonas de tensión. Con aceites esenciales." },
-      { id: "c3", name: "Maderoterapia modeladora", duration: 75, price: 48000, desc: "Remodelado de silueta con instrumental de madera. Serie recomendada." },
-      { id: "c4", name: "Ritual de espalda", duration: 50, price: 34000, desc: "Limpieza, exfoliación y masaje. Para pieles con acné o tensión crónica." },
-    ],
-  },
-  {
-    id: "masaje",
-    name: "Masajes",
-    tagline: "Relajación y bienestar",
-    services: [
-      { id: "m1", name: "Masaje relajante", duration: 60, price: 32000, desc: "Maniobras suaves sobre cuerpo completo. Aromaterapia personalizada." },
-      { id: "m2", name: "Piedras calientes", duration: 75, price: 44000, desc: "Basaltos termoregulados. Calor que desbloquea tensiones profundas." },
-      { id: "m3", name: "Masaje en pareja", duration: 60, price: 62000, desc: "Cabina doble, dos terapeutas, misma sincronía. Con copa de espumante." },
-    ],
-  },
-]
 
 export const PROFESSIONALS: Professional[] = [
   { id: "auto", initials: "BLV", name: "Asignación automática", role: "Se asigna según disponibilidad" },
@@ -181,6 +147,7 @@ export type BookingState = {
   clientMode?: "new" | "existing"
   form?: ClientForm
   medical?: MedicalForm
+  redeemWithPoints?: boolean
 }
 
 export type ScreenId =

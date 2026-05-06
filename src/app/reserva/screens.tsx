@@ -142,7 +142,21 @@ export function Screen1Services({
                   <span>{fmtDuration(s.duration)}</span>
                 </div>
               </div>
-              <div className="svc__price">{fmtPrice(s.price)}</div>
+              <div style={{ textAlign: "right" }}>
+                <div className="svc__price">{fmtPrice(s.price)}</div>
+                {s.pointsCost > 0 && (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--gold)",
+                      letterSpacing: "0.04em",
+                      marginTop: 2,
+                    }}
+                  >
+                    o {s.pointsCost} pts
+                  </div>
+                )}
+              </div>
             </div>
             <p className="svc__desc">{s.desc}</p>
             <span className="svc__check">
@@ -986,12 +1000,28 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
 }
 
 // ---------- Screen 5: Confirmation ----------
-export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+export function Screen5Confirm({
+  state,
+  setState,
+  onBack,
+  onClose,
+  variant,
+  stepNumber,
+  totalSteps,
+  loyaltyPoints,
+}: ScreenProps & { loyaltyPoints: number }) {
   const services = state.services || []
   const total = services.reduce((a, s) => a + s.price, 0)
   const totalMin = services.reduce((a, s) => a + s.duration, 0)
-  const deposit = Math.round(total * 0.3)
-  const remaining = total - deposit
+  const totalPointsCost = services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
+  const canRedeem = loyaltyPoints >= totalPointsCost && totalPointsCost > 0
+  const redeeming = !!state.redeemWithPoints && canRedeem
+  const deposit = redeeming ? 0 : Math.round(total * 0.3)
+  const remaining = redeeming ? 0 : total - deposit
+
+  const toggleRedeem = (v: boolean) => {
+    setState({ ...state, redeemWithPoints: v })
+  }
 
   const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
@@ -1014,6 +1044,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
       serviceIds: services.map((s) => s.id),
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
+      redeemWithPoints: redeeming,
       client: {
         firstName: state.form.firstName,
         lastName: state.form.lastName,
@@ -1117,21 +1148,78 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
         </div>
       </div>
 
+      {canRedeem && (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "14px 16px",
+            background: redeeming ? "var(--rose-wash)" : "var(--linen)",
+            border: `1px solid ${redeeming ? "var(--nude)" : "var(--line)"}`,
+            borderRadius: 12,
+            marginBottom: 18,
+            cursor: "pointer",
+            transition: "all 0.2s",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={redeeming}
+            onChange={(e) => toggleRedeem(e.target.checked)}
+            style={{ width: 18, height: 18, accentColor: "#b68a5f", cursor: "pointer" }}
+          />
+          <div style={{ flex: 1, fontSize: 13, lineHeight: 1.45 }}>
+            <strong
+              style={{
+                display: "block",
+                fontFamily: "var(--serif)",
+                fontSize: 15,
+                color: "var(--ink)",
+              }}
+            >
+              Pagar con puntos del Programa Cerca
+            </strong>
+            <span style={{ color: "var(--ink-soft)" }}>
+              Tenés <strong>{loyaltyPoints} pts</strong>. Este turno cuesta{" "}
+              <strong>{totalPointsCost} pts</strong> — te queda{" "}
+              {Math.max(0, loyaltyPoints - totalPointsCost)} pts.
+            </span>
+          </div>
+        </label>
+      )}
+
       <div className="breakdown">
         <div className="breakdown__row">
           <span>Subtotal</span>
           <span>{fmtPrice(total)}</span>
         </div>
-        <div className="breakdown__row">
-          <span>Resto a abonar en el local</span>
-          <span>{fmtPrice(remaining)}</span>
-        </div>
-        <div className="breakdown__row breakdown__row--total">
-          <span>Seña (30%) hoy</span>
-          <span>{fmtPrice(deposit)}</span>
-        </div>
+        {redeeming ? (
+          <>
+            <div className="breakdown__row" style={{ color: "var(--gold)" }}>
+              <span>Pago con puntos</span>
+              <span>− {totalPointsCost} pts</span>
+            </div>
+            <div className="breakdown__row breakdown__row--total">
+              <span>Total a abonar</span>
+              <span>$0</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="breakdown__row">
+              <span>Resto a abonar en el local</span>
+              <span>{fmtPrice(remaining)}</span>
+            </div>
+            <div className="breakdown__row breakdown__row--total">
+              <span>Seña (30%) hoy</span>
+              <span>{fmtPrice(deposit)}</span>
+            </div>
+          </>
+        )}
       </div>
 
+      {!redeeming && (
       <div
         className="mp-badge"
         style={{ background: "#fff", border: "1px solid var(--line)", padding: "16px 18px", display: "block" }}
@@ -1184,6 +1272,7 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
           </a>
         </div>
       </div>
+      )}
 
       <div className="policy">
         <strong>Política de cancelación ·</strong> Podés reprogramar sin cargo

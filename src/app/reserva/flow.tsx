@@ -208,7 +208,12 @@ export default function ReservaFlow({
       case "medical":
         return <Screen4Medical {...screenProps} />
       case "confirm":
-        return <Screen5Confirm {...screenProps} />
+        return (
+          <Screen5Confirm
+            {...screenProps}
+            loyaltyPoints={currentClient?.loyaltyPoints ?? 0}
+          />
+        )
       default:
         return null
     }

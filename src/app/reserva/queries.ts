@@ -10,6 +10,7 @@ export type CurrentClient = {
   phone: string
   dateOfBirth: string | null
   hasMedicalRecord: boolean
+  loyaltyPoints: number
 }
 
 export type AuthProfile = {
@@ -33,6 +34,7 @@ type DbServiceRow = {
   description: string | null
   duration_min: number
   price_cents: number
+  points_cost: number
   active: boolean
   visible_public: boolean
 }
@@ -57,7 +59,7 @@ export async function fetchCatalog(): Promise<Category[]> {
     .select(
       `
       id, slug, name, tagline, sort_order,
-      services:services(id, slug, name, description, duration_min, price_cents, active, visible_public)
+      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public)
     `
     )
     .eq("active", true)
@@ -79,6 +81,7 @@ export async function fetchCatalog(): Promise<Category[]> {
           duration: s.duration_min,
           price: Math.round(s.price_cents / 100),
           desc: s.description ?? "",
+          pointsCost: s.points_cost,
         })
       ),
   }))
@@ -96,7 +99,7 @@ export async function fetchCurrentClient(
 
   const { data: client, error } = await supabase
     .from("clients")
-    .select("id, first_name, last_name, email, phone, date_of_birth")
+    .select("id, first_name, last_name, email, phone, date_of_birth, loyalty_points")
     .eq("user_id", userId)
     .maybeSingle()
 
@@ -117,5 +120,6 @@ export async function fetchCurrentClient(
     phone: client.phone ?? "",
     dateOfBirth: client.date_of_birth ?? null,
     hasMedicalRecord: !!record,
+    loyaltyPoints: (client.loyalty_points as number | null) ?? 0,
   }
 }

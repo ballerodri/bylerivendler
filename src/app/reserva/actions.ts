@@ -10,6 +10,7 @@ const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
   startsAt: z.string().datetime(),
   proHint: z.string(),
+  redeemWithPoints: z.boolean().optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -59,7 +60,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents")
+    .select("id, name, duration_min, price_cents, points_cost")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -70,6 +71,11 @@ export async function createBooking(
   const totalDuration = services.reduce((a, s) => a + s.duration_min, 0)
   const totalCents = services.reduce((a, s) => a + s.price_cents, 0)
   const depositCents = Math.round(totalCents * 0.3)
+  const totalPointsCost = services.reduce(
+    (a, s) => a + (s.points_cost ?? 0),
+    0
+  )
+  const redeem = !!input.redeemWithPoints
   const startsAt = new Date(input.startsAt)
   const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
 
@@ -150,6 +156,29 @@ export async function createBooking(
     .limit(1)
     .maybeSingle()
 
+  // 4b) Validar y descontar puntos si pidió canjear con Programa Cerca.
+  if (redeem) {
+    if (totalPointsCost <= 0) {
+      return { ok: false, error: "Estos servicios no se pueden canjear por puntos." }
+    }
+    const { data: c } = await supabase
+      .from("clients")
+      .select("loyalty_points")
+      .eq("id", clientId)
+      .maybeSingle()
+    const balance = (c?.loyalty_points as number | null) ?? 0
+    if (balance < totalPointsCost) {
+      return {
+        ok: false,
+        error: `Te faltan ${totalPointsCost - balance} pts para canjear este turno.`,
+      }
+    }
+    await supabase
+      .from("clients")
+      .update({ loyalty_points: balance - totalPointsCost })
+      .eq("id", clientId)
+  }
+
   // 5) Create appointment
   const { data: appt, error: apptErr } = await supabase
     .from("appointments")
@@ -160,11 +189,14 @@ export async function createBooking(
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
       duration_min: totalDuration,
-      total_cents: totalCents,
-      deposit_cents: depositCents,
-      deposit_paid: false,
-      status: "pending",
+      total_cents: redeem ? 0 : totalCents,
+      deposit_cents: redeem ? 0 : depositCents,
+      deposit_paid: redeem, // canje = ya cubierto, sin seña pendiente
+      status: redeem ? "confirmed" : "pending",
       source: "web",
+      notes_internal: redeem
+        ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
+        : null,
     })
     .select("id")
     .single()
