@@ -5,6 +5,7 @@ import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser } from "@/lib/staff"
+import { sendBookingReschedule } from "@/lib/email/booking-emails"
 
 const StatusSchema = z.enum([
   "pending",
@@ -91,6 +92,71 @@ export async function updateAppointmentStatus(
   }
 
   revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/portal")
+  return { ok: true }
+}
+
+export async function rescheduleAppointment(
+  appointmentId: string,
+  newStartsAt: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+
+  const newDate = new Date(newStartsAt)
+  if (isNaN(newDate.getTime())) return { ok: false, error: "Fecha inválida" }
+
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select(
+      `id, status, duration_min, total_cents,
+       client:clients(email, first_name),
+       appointment_services(service:services(name))`
+    )
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  type ApptShape = {
+    id: string
+    status: string
+    duration_min: number
+    total_cents: number
+    client: { email: string; first_name: string | null } | null
+    appointment_services: { service: { name: string } | null }[]
+  }
+  const a = appt as unknown as ApptShape
+
+  const endsAt = new Date(newDate.getTime() + a.duration_min * 60_000)
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ starts_at: newDate.toISOString(), ends_at: endsAt.toISOString() })
+    .eq("id", appointmentId)
+  if (error) return { ok: false, error: error.message }
+
+  if (a.client) {
+    try {
+      const services = a.appointment_services
+        .map((as) => as.service?.name)
+        .filter((n): n is string => Boolean(n))
+      await sendBookingReschedule({
+        to: a.client.email,
+        firstName: a.client.first_name ?? "",
+        servicesNames: services,
+        startsAt: newDate,
+        durationMin: a.duration_min,
+        totalCents: a.total_cents,
+        appointmentId: a.id,
+      })
+    } catch {
+      // ignore — el turno ya fue movido
+    }
+  }
+
   revalidatePath("/admin/turnos")
   revalidatePath("/portal")
   return { ok: true }

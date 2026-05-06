@@ -172,18 +172,7 @@ export default async function PortalPage() {
                       {a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}
                     </small>
                     {cancellable && (
-                      <small style={{ marginTop: 6, display: "flex", gap: 12, alignItems: "center" }}>
-                        <a
-                          href={`/reserva/reagendar/${a.id}`}
-                          style={{
-                            fontSize: 11,
-                            color: "var(--gold)",
-                            textDecoration: "underline",
-                            textUnderlineOffset: 3,
-                          }}
-                        >
-                          Reagendar
-                        </a>
+                      <small style={{ marginTop: 6 }}>
                         <CancelButton appointmentId={a.id} />
                       </small>
                     )}

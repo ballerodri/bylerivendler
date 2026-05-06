@@ -18,6 +18,8 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
   no_show: [{ status: "pending", label: "Reactivar" }],
 }
 
+const RESCHEDULABLE = new Set(["pending", "confirmed"])
+
 export default function StatusActions({
   appointmentId,
   currentStatus,
@@ -37,7 +39,9 @@ export default function StatusActions({
     })
   }
 
-  if (actions.length === 0) {
+  const canReschedule = RESCHEDULABLE.has(currentStatus)
+
+  if (actions.length === 0 && !canReschedule) {
     return <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>—</span>
   }
 
@@ -53,6 +57,14 @@ export default function StatusActions({
           {a.label}
         </button>
       ))}
+      {canReschedule && (
+        <a
+          href={`/admin/turnos/${appointmentId}/reagendar`}
+          className="adm-btn adm-btn--ghost"
+        >
+          Reagendar
+        </a>
+      )}
       {error && (
         <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>
       )}
