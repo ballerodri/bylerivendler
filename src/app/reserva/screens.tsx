@@ -1121,12 +1121,20 @@ export function Screen5Confirm({ state, onBack, onClose, variant, stepNumber, to
         </div>
       </div>
 
-      <div className="mp-badge">
-        <div className="mp-logo">MP</div>
-        <div className="mp-text">
-          <strong>Mercado Pago</strong>
+      <div
+        className="mp-badge"
+        style={{ background: "#fff", border: "1px solid var(--line)", padding: "16px 18px" }}
+      >
+        <div className="mp-text" style={{ fontSize: 13, lineHeight: 1.55 }}>
+          <strong style={{ display: "block", marginBottom: 4, fontFamily: "var(--serif)", fontSize: 15 }}>
+            Seña por transferencia
+          </strong>
+          Alias <strong>leri.vendler</strong> · BBVA Argentina<br />
+          A nombre de <strong>Vendler Daiana</strong>
           <br />
-          Abona con tarjeta, transferencia o saldo en cuenta.
+          <span style={{ color: "var(--ink-mute)", fontSize: 12, marginTop: 4, display: "block" }}>
+            Mandanos el comprobante por WhatsApp para confirmar tu turno.
+          </span>
         </div>
       </div>
 

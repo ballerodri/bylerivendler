@@ -148,8 +148,8 @@ export default async function ReservaExitoPage({
             </div>
             <div className="perk__text">
               <strong>Programa Cerca</strong>
-              Acumula puntos en cada visita. El 6° tratamiento del año es
-              una cortesía de la casa.
+              Cada turno completado te suma puntos que después podés canjear
+              por tratamientos.
             </div>
           </div>
           <div className="perk">
@@ -176,7 +176,7 @@ export default async function ReservaExitoPage({
           <Link href="/portal" className="btn btn--primary">
             Ver mis turnos
           </Link>
-          <Link href="/reserva" className="linkbtn">
+          <Link href="/reserva" className="btn btn--ghost">
             Reservar otro
           </Link>
         </div>
