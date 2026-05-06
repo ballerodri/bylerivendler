@@ -496,7 +496,10 @@ function checkPerm(
   allPros: string[]
 ): Record<string, string> | null {
   const assignment: Record<string, string> = {}
-  const used = new Set<string>()
+  // Tracks which professionals are concurrently busy within THIS permutation's
+  // time windows. Since services run sequentially (one ends before the next starts),
+  // the same professional CAN appear in multiple services — no concurrency conflict.
+  // We only block concurrent overlap with EXISTING appointments in `appts`.
   let ms = startMs
 
   for (const idx of perm) {
@@ -504,28 +507,24 @@ function checkPerm(
     const sStart = ms
     const sEnd = ms + svc.duration * 60_000
 
-    if (svc.staffId !== "auto") {
-      if (used.has(svc.staffId)) return null
-      const busy = appts.some((a) => {
-        if (a.staff_id !== svc.staffId) return false
+    const overlaps = (pid: string) =>
+      appts.some((a) => {
+        if (a.staff_id !== pid) return false
         const aS = new Date(a.starts_at).getTime()
         return sStart < aS + a.duration_min * 60_000 && sEnd > aS
       })
-      if (busy) return null
+
+    if (svc.staffId !== "auto") {
+      if (overlaps(svc.staffId)) return null
       assignment[svc.id] = svc.staffId
-      used.add(svc.staffId)
     } else {
-      const free = allPros.find((pid) => {
-        if (used.has(pid)) return false
-        return !appts.some((a) => {
-          if (a.staff_id !== pid) return false
-          const aS = new Date(a.starts_at).getTime()
-          return sStart < aS + a.duration_min * 60_000 && sEnd > aS
-        })
-      })
+      // Prefer already-assigned professionals (same pro can do sequential services).
+      // Among those free, pick any available one.
+      const assignedValues = Object.values(assignment)
+      const preferred = assignedValues.find((pid) => !overlaps(pid))
+      const free = preferred ?? allPros.find((pid) => !overlaps(pid))
       if (!free) return null
       assignment[svc.id] = free
-      used.add(free)
     }
     ms = sEnd
   }
