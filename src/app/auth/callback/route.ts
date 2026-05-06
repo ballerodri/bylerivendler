@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { cookies } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { ensureStaffLink } from "@/lib/staff"
@@ -8,7 +9,12 @@ export async function GET(request: Request) {
   const code = url.searchParams.get("code")
   const tokenHash = url.searchParams.get("token_hash")
   const type = url.searchParams.get("type")
-  const rawNext = url.searchParams.get("next") ?? "/portal"
+
+  // `next` puede venir como query param (magic link) o como cookie (Google OAuth).
+  const cookieStore = await cookies()
+  const cookieNext = cookieStore.get("auth_next")?.value ?? null
+  if (cookieNext) cookieStore.delete("auth_next")
+  const rawNext = url.searchParams.get("next") ?? cookieNext ?? "/portal"
   // Only allow same-origin paths to avoid open-redirects
   const next = rawNext.startsWith("/") ? rawNext : "/portal"
   const origin = url.origin

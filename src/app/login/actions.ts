@@ -1,6 +1,6 @@
 "use server"
 
-import { headers } from "next/headers"
+import { headers, cookies } from "next/headers"
 import { z } from "zod"
 import { createClient } from "@/lib/supabase/server"
 
@@ -30,9 +30,21 @@ export async function signInWithGoogle(
   const supabase = await createClient()
   const origin = await getOrigin()
   const safeNext = next && next.startsWith("/") ? next : null
-  const callback = safeNext
-    ? `${origin}/auth/callback?next=${encodeURIComponent(safeNext)}`
-    : `${origin}/auth/callback`
+
+  // Guardamos el destino en una cookie en lugar de en el redirectTo,
+  // porque Supabase rechaza URLs con query params en la lista de permitidos.
+  if (safeNext) {
+    const cookieStore = await cookies()
+    cookieStore.set("auth_next", safeNext, {
+      path: "/",
+      maxAge: 300,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: true,
+    })
+  }
+
+  const callback = `${origin}/auth/callback`
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
