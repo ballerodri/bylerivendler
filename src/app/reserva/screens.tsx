@@ -5,7 +5,6 @@ import {
   DOW_NAMES,
   DOW_SHORT,
   MONTH_NAMES,
-  PROFESSIONALS,
   combineDateTime,
   filterFutureSlots,
   fmtDuration,
@@ -16,7 +15,7 @@ import {
   parseYmd,
   ymd,
 } from "./data"
-import type { BookingState, Category, Service } from "./data"
+import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking } from "./actions"
 import { sendMagicLink } from "../login/actions"
@@ -253,7 +252,7 @@ export function Screen1Services({
 }
 
 // ---------- Screen 2: Date & Time ----------
-export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals }: ScreenProps & { professionals: Professional[] }) {
   // `today` snapped to midnight so we compare just dates, not times.
   const [today] = useState(() => {
     const d = new Date()
@@ -409,7 +408,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const ProPicker = () => (
     <div style={{ marginTop: 24 }}>
       <p className="eyebrow">Profesional · opcional</p>
-      {PROFESSIONALS.map((p) => (
+      {professionals.map((p) => (
         <button
           key={p.id}
           className={`pro-row ${pro === p.id ? "is-selected" : ""}`}
@@ -1009,7 +1008,8 @@ export function Screen5Confirm({
   stepNumber,
   totalSteps,
   loyaltyPoints,
-}: ScreenProps & { loyaltyPoints: number }) {
+  professionals,
+}: ScreenProps & { loyaltyPoints: number; professionals: Professional[] }) {
   const services = state.services || []
   const total = services.reduce((a, s) => a + s.price, 0)
   const totalMin = services.reduce((a, s) => a + s.duration, 0)
@@ -1025,7 +1025,7 @@ export function Screen5Confirm({
 
   const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
-  const pro = PROFESSIONALS.find((p) => p.id === (state.pro || "auto"))!
+  const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
 
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState<string | null>(null)

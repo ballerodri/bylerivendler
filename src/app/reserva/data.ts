@@ -21,13 +21,6 @@ export type Professional = {
   role: string
 }
 
-export const PROFESSIONALS: Professional[] = [
-  { id: "auto", initials: "BLV", name: "Asignación automática", role: "Se asigna según disponibilidad" },
-  { id: "p1", initials: "LV", name: "Leri Vendler", role: "Cosmetóloga · Fundadora" },
-  { id: "p2", initials: "SM", name: "Sofía Marsicano", role: "Esteticista corporal" },
-  { id: "p3", initials: "CA", name: "Camila Aranda", role: "Especialista facial" },
-]
-
 // Slots base por día de la semana (0 = domingo … 6 = sábado).
 // Domingo cerrado. Los sábados cerramos antes.
 const WEEKDAY_SLOTS = [
