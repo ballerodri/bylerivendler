@@ -43,6 +43,15 @@ export async function updateAppointmentStatus(
   if (!parsed.success) return { ok: false, error: "Estado inválido" }
 
   const admin = adminClient()
+
+  // Estado anterior, para detectar transición a "completed" y sumar puntos
+  // exactamente una vez.
+  const { data: prev } = await admin
+    .from("appointments")
+    .select("status, client_id")
+    .eq("id", appointmentId)
+    .maybeSingle()
+
   const { error } = await admin
     .from("appointments")
     .update({ status: parsed.data })
@@ -50,8 +59,40 @@ export async function updateAppointmentStatus(
 
   if (error) return { ok: false, error: error.message }
 
+  // Si pasó a `completed` (y antes no lo estaba), sumar puntos del Programa Cerca.
+  if (
+    parsed.data === "completed" &&
+    prev &&
+    prev.status !== "completed" &&
+    prev.client_id
+  ) {
+    type EarnedRow = { service: { points_earned: number } | null }
+    const { data: rows } = await admin
+      .from("appointment_services")
+      .select("service:services(points_earned)")
+      .eq("appointment_id", appointmentId)
+    const earned = ((rows as unknown as EarnedRow[] | null) ?? []).reduce(
+      (sum, r) => sum + (r.service?.points_earned ?? 0),
+      0
+    )
+    if (earned > 0) {
+      // increment via RPC-style: select current and update.
+      const { data: client } = await admin
+        .from("clients")
+        .select("loyalty_points")
+        .eq("id", prev.client_id)
+        .maybeSingle()
+      const currentPoints = (client?.loyalty_points as number | null) ?? 0
+      await admin
+        .from("clients")
+        .update({ loyalty_points: currentPoints + earned })
+        .eq("id", prev.client_id)
+    }
+  }
+
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
+  revalidatePath("/portal")
   return { ok: true }
 }
 

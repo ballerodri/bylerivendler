@@ -12,6 +12,7 @@ type ClientRow = {
   first_name: string | null
   last_name: string | null
   email: string
+  loyalty_points: number
 }
 
 type AppointmentRow = {
@@ -37,7 +38,7 @@ export default async function PortalPage() {
 
   const { data: client } = await admin
     .from("clients")
-    .select("id, first_name, last_name, email")
+    .select("id, first_name, last_name, email, loyalty_points")
     .eq("user_id", user.id)
     .maybeSingle<ClientRow>()
 
@@ -80,6 +81,37 @@ export default async function PortalPage() {
           Tu portal · {subtitle}
         </p>
         <h1 className="headline">{greeting}</h1>
+
+        {client && (
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "baseline",
+              gap: 8,
+              padding: "8px 14px",
+              borderRadius: 999,
+              background: "var(--linen)",
+              fontSize: 12,
+              letterSpacing: "0.04em",
+              color: "var(--ink-soft)",
+              marginTop: 4,
+              marginBottom: 12,
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--serif)",
+                fontSize: 18,
+                fontWeight: 500,
+                color: "var(--gold)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {client.loyalty_points}
+            </span>
+            <span>puntos · Programa Cerca</span>
+          </div>
+        )}
 
         {!client && (
           <p className="lede">

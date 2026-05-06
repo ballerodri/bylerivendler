@@ -62,12 +62,13 @@ export default function TerminosPage() {
           Algunos tratamientos requieren una <strong>seña del 30%</strong>{" "}
           para confirmar la reserva. Esta seña se acredita contra el monto
           total del servicio, que abonás en el local al finalizar la sesión.
-          Aceptamos efectivo, transferencia, tarjetas y Mercado Pago.
+          Aceptamos efectivo, transferencia y tarjetas.
         </p>
         <p>
-          Si elegís pagar la seña por adelantado a través del sitio, la
-          transacción la procesa Mercado Pago bajo sus propios términos. No
-          almacenamos datos de tu tarjeta en nuestros servidores.
+          La seña se acredita por <strong>transferencia bancaria</strong> al
+          alias <strong>leri.vendler</strong> (BBVA Argentina, a nombre de
+          Vendler Daiana). Te pedimos enviar el comprobante por WhatsApp para
+          confirmar tu turno.
         </p>
 
         <h2>5. Tu compromiso al reservar</h2>

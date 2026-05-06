@@ -123,10 +123,6 @@ export default function PrivacidadPage() {
             <strong>Google</strong> — autenticación opcional con tu cuenta de
             Google y, en el futuro, sincronización de calendario.
           </li>
-          <li>
-            <strong>Mercado Pago</strong> — procesamiento de pagos cuando
-            corresponda.
-          </li>
         </ul>
         <p>
           Estos proveedores procesan tus datos solo para los fines descritos en
