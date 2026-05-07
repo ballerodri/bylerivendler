@@ -70,7 +70,7 @@ export default async function PortalPage() {
         .eq("visible_to_client", true)
         .order("created_at", { ascending: true }),
     ])
-    appointments = (apptRes.data ?? []) as AppointmentRow[]
+    appointments = (apptRes.data ?? []) as unknown as AppointmentRow[]
 
     const rawPhotos = (photoRes.data ?? []) as { id: string; storage_path: string; type: "before" | "after" }[]
     photos = await Promise.all(
