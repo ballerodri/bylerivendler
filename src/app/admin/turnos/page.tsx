@@ -198,7 +198,7 @@ export default async function AdminTurnosPage({
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
                     const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
                     const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
-                    const msg = `Hola ${a.client!.first_name}! Te recordamos tu turno *${when}* en By Leri Vendler. Te esperamos!`
+                    const msg = `Hola ${a.client!.first_name}! 🌸 Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nCualquier consulta estamos acá. ¡Te esperamos! ✨`
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
