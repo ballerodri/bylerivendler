@@ -20,6 +20,12 @@ export type AvailabilityRow = {
   to_time: string
 }
 
+export type BusinessHourRow = {
+  day_of_week: number
+  is_open: boolean
+  slots: string[]
+}
+
 export default async function AdminStaffDetailPage({
   params,
 }: {
@@ -32,7 +38,7 @@ export default async function AdminStaffDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: staffMember }, { data: availData }] = await Promise.all([
+  const [{ data: staffMember }, { data: availData }, { data: bhData }] = await Promise.all([
     admin
       .from("staff")
       .select("id, full_name, role, email, active, is_professional")
@@ -43,11 +49,16 @@ export default async function AdminStaffDetailPage({
       .select("day_of_week, from_time, to_time")
       .eq("staff_id", id)
       .order("day_of_week"),
+    admin
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+      .order("day_of_week"),
   ])
 
   if (!staffMember) notFound()
 
   const availability = (availData ?? []) as AvailabilityRow[]
+  const businessHours = (bhData ?? []) as BusinessHourRow[]
 
   return (
     <>
@@ -59,7 +70,7 @@ export default async function AdminStaffDetailPage({
       <h1 className="adm-h1">{staffMember.full_name}</h1>
       <p className="adm-lede">{staffMember.email ?? "Sin email registrado"}</p>
 
-      <StaffEditor staff={staffMember} availability={availability} />
+      <StaffEditor staff={staffMember} availability={availability} businessHours={businessHours} />
     </>
   )
 }
