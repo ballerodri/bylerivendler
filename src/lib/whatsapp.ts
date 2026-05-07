@@ -14,6 +14,17 @@ export function whatsappLink(message?: string): string {
 }
 
 /**
+ * Genera un link wa.me al número de una clienta con mensaje pre-cargado.
+ * Devuelve null si el teléfono no se puede normalizar.
+ */
+export function clientWhatsappLink(phone: string, message: string): string | null {
+  const normalized = normalizeArPhone(phone)
+  if (!normalized) return null
+  const digits = normalized.replace("+", "")
+  return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`
+}
+
+/**
  * Normaliza un número de teléfono argentino a formato E.164.
  * Ej: "1133643359" → "+5491133643359"
  *     "011 3364 3359" → "+5491133643359"

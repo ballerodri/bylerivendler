@@ -4,6 +4,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
 import { fmtPrice } from "../../reserva/data"
+import { clientWhatsappLink } from "@/lib/whatsapp"
 
 export const dynamic = "force-dynamic"
 
@@ -19,7 +20,7 @@ type ApptRow = {
   status: string
   duration_min: number
   total_cents: number
-  client: { id: string; first_name: string; last_name: string } | null
+  client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: ApptService[]
 }
 
@@ -60,7 +61,7 @@ export default async function AdminTurnosPage({
   let q = admin.from("appointments").select(
     `
       id, starts_at, status, duration_min, total_cents,
-      client:clients(id, first_name, last_name),
+      client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
         service:services(name),
@@ -189,6 +190,17 @@ export default async function AdminTurnosPage({
                   </span>
                 </div>
                 <div className="adm-actions">
+                  {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
+                    const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
+                    const when = isToday ? `hoy a las ${time}` : `el ${dateLabel} a las ${time}`
+                    const msg = `Hola ${a.client!.first_name}, te recordamos que tenés turno *${when}* en By Leri Vendler. ¡Te esperamos! 🌸`
+                    const link = clientWhatsappLink(a.client!.phone, msg)
+                    return link ? (
+                      <a href={link} target="_blank" rel="noopener noreferrer" className="adm-btn" style={{ fontSize: 12, padding: "4px 10px", color: "#25D366", borderColor: "#25D366" }}>
+                        WhatsApp
+                      </a>
+                    ) : null
+                  })()}
                   <StatusActions appointmentId={a.id} currentStatus={a.status} />
                 </div>
               </div>
