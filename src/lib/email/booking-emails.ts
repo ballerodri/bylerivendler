@@ -79,7 +79,9 @@ export async function sendBookingConfirmation(
     </p>
     <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Cuándo</p>
-      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 16px;">${formattedDate}</p>
+      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 6px;">${formattedDate}</p>
+      ${calChip(gcalLink(data))}
+      <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
@@ -103,7 +105,7 @@ export async function sendBookingConfirmation(
       </p>
     </div>
 
-    ${ctaButtons(SITE + "/portal", "Ver mis turnos", gcalLink(data))}
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
   `
 
   try {
@@ -173,7 +175,9 @@ export async function sendBookingReminder(
     </p>
     <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Cuándo</p>
-      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 16px;">${formattedDate}</p>
+      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 6px;">${formattedDate}</p>
+      ${calChip(gcalLink(data))}
+      <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
@@ -196,7 +200,7 @@ export async function sendBookingReminder(
       </p>
     </div>
 
-    ${ctaButtons(MAPS_LINK, "Ver cómo llegar", gcalLink(data))}
+    ${ctaButtons(MAPS_LINK, "Ver cómo llegar")}
   `
 
   try {
@@ -230,7 +234,9 @@ export async function sendBookingReschedule(
     </p>
     <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Nueva fecha</p>
-      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 16px;">${formattedDate}</p>
+      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 6px;">${formattedDate}</p>
+      ${calChip(gcalLink(data))}
+      <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
@@ -247,7 +253,7 @@ export async function sendBookingReschedule(
       </p>
     </div>
 
-    ${ctaButtons(SITE + "/portal", "Ver mis turnos", gcalLink(data))}
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
   `
 
   try {
@@ -263,18 +269,22 @@ export async function sendBookingReschedule(
   }
 }
 
-function ctaButtons(primaryHref: string, primaryLabel: string, calHref: string): string {
+function ctaButtons(primaryHref: string, primaryLabel: string): string {
   return `
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${primaryHref}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 32px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         ${primaryLabel}
       </a>
-      <div style="margin-top:14px;">
-        <a href="${calHref}" title="Agregar al calendario de Google" style="display:inline-block;text-decoration:none;opacity:0.7;">
-          <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="Agregar al calendario de Google" width="24" height="24" style="display:inline-block;vertical-align:middle;">
-        </a>
-      </div>
     </div>
+  `
+}
+
+function calChip(calHref: string): string {
+  return `
+    <a href="${calHref}" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:6px 12px;border:1px solid #dadce0;border-radius:999px;text-decoration:none;font-size:12px;color:#3c4043;font-family:Helvetica,Arial,sans-serif;background:#f8f9fa;">
+      <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="14" height="14" style="display:inline-block;vertical-align:middle;">
+      Agregar al calendario
+    </a>
   `
 }
 
