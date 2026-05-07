@@ -187,6 +187,7 @@ export async function rescheduleMyAppointment(
       clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
       serviceNames,
       staffName: null,
+      staffEmail: null,
       startsAt: newDate,
       endsAt,
       notes: null,

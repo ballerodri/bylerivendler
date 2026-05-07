@@ -269,19 +269,22 @@ export async function createBooking(
   // 7) Google Calendar event (no bloqueante)
   try {
     let staffName: string | null = null
+    let staffEmail: string | null = null
     if (mainStaffId) {
       const { data: staffRow } = await supabase
         .from("staff")
-        .select("full_name")
+        .select("full_name, email")
         .eq("id", mainStaffId)
         .maybeSingle()
       staffName = staffRow?.full_name ?? null
+      staffEmail = staffRow?.email ?? null
     }
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
       clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
       serviceNames: services.map((s) => s.name),
       staffName,
+      staffEmail,
       startsAt,
       endsAt,
       notes: null,

@@ -119,7 +119,7 @@ export async function rescheduleAppointment(
     .select(
       `id, status, duration_min, total_cents, google_event_id,
        client:clients(email, first_name, last_name),
-       staff:staff(full_name),
+       staff:staff(full_name, email),
        appointment_services(id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
@@ -135,7 +135,7 @@ export async function rescheduleAppointment(
     total_cents: number
     google_event_id: string | null
     client: { email: string; first_name: string | null; last_name: string | null } | null
-    staff: { full_name: string } | null
+    staff: { full_name: string; email: string | null } | null
     appointment_services: SvcShape[]
   }
   const a = appt as unknown as ApptShape
@@ -193,6 +193,7 @@ export async function rescheduleAppointment(
       clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
       serviceNames,
       staffName: a.staff?.full_name ?? null,
+      staffEmail: a.staff?.email ?? null,
       startsAt: newDate,
       endsAt,
       notes: null,
@@ -839,13 +840,14 @@ export async function createAdminBooking(
       .eq("id", clientId)
       .maybeSingle()
     const { data: staffRow } = mainStaffId
-      ? await admin.from("staff").select("full_name").eq("id", mainStaffId).maybeSingle()
+      ? await admin.from("staff").select("full_name, email").eq("id", mainStaffId).maybeSingle()
       : { data: null }
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
       clientName: `${clientRow?.first_name ?? ""} ${clientRow?.last_name ?? ""}`.trim(),
       serviceNames: services.map((s) => s.name),
       staffName: staffRow?.full_name ?? null,
+      staffEmail: staffRow?.email ?? null,
       startsAt,
       endsAt,
       notes: input.notes || null,

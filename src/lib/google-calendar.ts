@@ -25,9 +25,37 @@ export type CalendarEventInput = {
   clientName: string
   serviceNames: string[]
   staffName: string | null
+  staffEmail: string | null  // invitada al evento → aparece en su propio Google Calendar
   startsAt: Date
   endsAt: Date
   notes?: string | null
+}
+
+function buildRequestBody(input: CalendarEventInput) {
+  const summary = `${input.clientName} — ${input.serviceNames.join(" + ")}`
+  const description = [
+    input.staffName ? `Profesional: ${input.staffName}` : null,
+    input.notes ? `Notas: ${input.notes}` : null,
+    `Turno ID: ${input.appointmentId}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+
+  const attendees = input.staffEmail
+    ? [{ email: input.staffEmail, displayName: input.staffName ?? undefined }]
+    : undefined
+
+  return {
+    summary,
+    description,
+    start: { dateTime: input.startsAt.toISOString(), timeZone: AR_TZ },
+    end: { dateTime: input.endsAt.toISOString(), timeZone: AR_TZ },
+    attendees,
+    reminders: {
+      useDefault: false,
+      overrides: [{ method: "popup" as const, minutes: 60 }],
+    },
+  }
 }
 
 export async function createCalendarEvent(
@@ -38,30 +66,11 @@ export async function createCalendarEvent(
   try {
     const auth = oauthClient()
     const calendar = google.calendar({ version: "v3", auth })
-
-    const summary = `${input.clientName} — ${input.serviceNames.join(" + ")}`
-    const description = [
-      input.staffName ? `Profesional: ${input.staffName}` : null,
-      input.notes ? `Notas: ${input.notes}` : null,
-      `Turno ID: ${input.appointmentId}`,
-    ]
-      .filter(Boolean)
-      .join("\n")
-
     const { data } = await calendar.events.insert({
       calendarId: CALENDAR_ID,
-      requestBody: {
-        summary,
-        description,
-        start: { dateTime: input.startsAt.toISOString(), timeZone: AR_TZ },
-        end: { dateTime: input.endsAt.toISOString(), timeZone: AR_TZ },
-        reminders: {
-          useDefault: false,
-          overrides: [{ method: "popup", minutes: 60 }],
-        },
-      },
+      sendUpdates: "all",  // envía invitación por email a la profesional
+      requestBody: buildRequestBody(input),
     })
-
     return data.id ?? null
   } catch {
     return null
@@ -74,9 +83,13 @@ export async function deleteCalendarEvent(eventId: string): Promise<void> {
   try {
     const auth = oauthClient()
     const calendar = google.calendar({ version: "v3", auth })
-    await calendar.events.delete({ calendarId: CALENDAR_ID, eventId })
+    await calendar.events.delete({
+      calendarId: CALENDAR_ID,
+      eventId,
+      sendUpdates: "all",  // notifica a la profesional que el turno fue cancelado
+    })
   } catch {
-    // Non-fatal: el turno ya está cancelado en la app
+    // Non-fatal
   }
 }
 
@@ -89,25 +102,11 @@ export async function updateCalendarEvent(
   try {
     const auth = oauthClient()
     const calendar = google.calendar({ version: "v3", auth })
-
-    const summary = `${input.clientName} — ${input.serviceNames.join(" + ")}`
-    const description = [
-      input.staffName ? `Profesional: ${input.staffName}` : null,
-      input.notes ? `Notas: ${input.notes}` : null,
-      `Turno ID: ${input.appointmentId}`,
-    ]
-      .filter(Boolean)
-      .join("\n")
-
     await calendar.events.patch({
       calendarId: CALENDAR_ID,
       eventId,
-      requestBody: {
-        summary,
-        description,
-        start: { dateTime: input.startsAt.toISOString(), timeZone: AR_TZ },
-        end: { dateTime: input.endsAt.toISOString(), timeZone: AR_TZ },
-      },
+      sendUpdates: "all",  // notifica a la profesional el nuevo horario
+      requestBody: buildRequestBody(input),
     })
   } catch {
     // Non-fatal
