@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendBookingCancellation, sendBookingReschedule } from "@/lib/email/booking-emails"
+import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 
 type CancelResult = { ok: true } | { ok: false; error: string }
 
@@ -30,7 +31,7 @@ export async function cancelMyAppointment(
   const { data: appt } = await admin
     .from("appointments")
     .select(
-      `id, status, starts_at, duration_min, total_cents,
+      `id, status, starts_at, duration_min, total_cents, google_event_id,
        client:clients(id, user_id, email, first_name),
        appointment_services(service:services(name))`
     )
@@ -45,6 +46,7 @@ export async function cancelMyAppointment(
     starts_at: string
     duration_min: number
     total_cents: number
+    google_event_id: string | null
     client: {
       id: string
       user_id: string | null
@@ -87,6 +89,11 @@ export async function cancelMyAppointment(
     // ignore
   }
 
+  // Borrar evento de Google Calendar (no bloqueante)
+  if (a.google_event_id) {
+    deleteCalendarEvent(a.google_event_id).catch(() => {})
+  }
+
   revalidatePath("/portal")
   return { ok: true }
 }
@@ -108,8 +115,8 @@ export async function rescheduleMyAppointment(
   const { data: appt } = await admin
     .from("appointments")
     .select(
-      `id, status, duration_min, total_cents,
-       client:clients(id, user_id, email, first_name),
+      `id, status, duration_min, total_cents, google_event_id,
+       client:clients(id, user_id, email, first_name, last_name),
        appointment_services(service:services(name))`
     )
     .eq("id", appointmentId)
@@ -122,11 +129,13 @@ export async function rescheduleMyAppointment(
     status: string
     duration_min: number
     total_cents: number
+    google_event_id: string | null
     client: {
       id: string
       user_id: string | null
       email: string
       first_name: string | null
+      last_name: string | null
     } | null
     appointment_services: { service: { name: string } | null }[]
   }
@@ -166,6 +175,22 @@ export async function rescheduleMyAppointment(
     })
   } catch {
     // ignore — el turno ya fue movido
+  }
+
+  // Actualizar evento en Google Calendar (no bloqueante)
+  if (a.google_event_id) {
+    const serviceNames = a.appointment_services
+      .map((s) => s.service?.name)
+      .filter((n): n is string => Boolean(n))
+    updateCalendarEvent(a.google_event_id, {
+      appointmentId,
+      clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
+      serviceNames,
+      staffName: null,
+      startsAt: newDate,
+      endsAt,
+      notes: null,
+    }).catch(() => {})
   }
 
   revalidatePath("/portal")

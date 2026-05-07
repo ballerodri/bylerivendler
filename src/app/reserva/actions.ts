@@ -6,6 +6,7 @@ import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendBookingConfirmation } from "@/lib/email/booking-emails"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
+import { createCalendarEvent } from "@/lib/google-calendar"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -265,7 +266,37 @@ export async function createBooking(
 
   if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
 
-  // 7) Email de confirmación con los detalles del turno (no bloqueante).
+  // 7) Google Calendar event (no bloqueante)
+  try {
+    let staffName: string | null = null
+    if (mainStaffId) {
+      const { data: staffRow } = await supabase
+        .from("staff")
+        .select("full_name")
+        .eq("id", mainStaffId)
+        .maybeSingle()
+      staffName = staffRow?.full_name ?? null
+    }
+    const eventId = await createCalendarEvent({
+      appointmentId: appt.id,
+      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      serviceNames: services.map((s) => s.name),
+      staffName,
+      startsAt,
+      endsAt,
+      notes: null,
+    })
+    if (eventId) {
+      await supabase
+        .from("appointments")
+        .update({ google_event_id: eventId })
+        .eq("id", appt.id)
+    }
+  } catch {
+    // Non-fatal: el turno ya está creado
+  }
+
+  // 8) Email de confirmación con los detalles del turno (no bloqueante).
   try {
     await sendBookingConfirmation({
       to: email,

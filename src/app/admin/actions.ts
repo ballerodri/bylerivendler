@@ -5,6 +5,7 @@ import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
+import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 
 const StatusSchema = z.enum([
@@ -49,7 +50,7 @@ export async function updateAppointmentStatus(
   // exactamente una vez.
   const { data: prev } = await admin
     .from("appointments")
-    .select("status, client_id")
+    .select("status, client_id, google_event_id")
     .eq("id", appointmentId)
     .maybeSingle()
 
@@ -59,6 +60,11 @@ export async function updateAppointmentStatus(
     .eq("id", appointmentId)
 
   if (error) return { ok: false, error: error.message }
+
+  // Al cancelar: borrar el evento de Google Calendar (no bloqueante)
+  if (parsed.data === "cancelled" && prev?.google_event_id) {
+    deleteCalendarEvent(prev.google_event_id).catch(() => {})
+  }
 
   // Si pasó a `completed` (y antes no lo estaba), sumar puntos del Programa Cerca.
   if (
@@ -111,8 +117,9 @@ export async function rescheduleAppointment(
   const { data: appt } = await admin
     .from("appointments")
     .select(
-      `id, status, duration_min, total_cents,
-       client:clients(email, first_name),
+      `id, status, duration_min, total_cents, google_event_id,
+       client:clients(email, first_name, last_name),
+       staff:staff(full_name),
        appointment_services(id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
@@ -126,7 +133,9 @@ export async function rescheduleAppointment(
     status: string
     duration_min: number
     total_cents: number
-    client: { email: string; first_name: string | null } | null
+    google_event_id: string | null
+    client: { email: string; first_name: string | null; last_name: string | null } | null
+    staff: { full_name: string } | null
     appointment_services: SvcShape[]
   }
   const a = appt as unknown as ApptShape
@@ -172,6 +181,22 @@ export async function rescheduleAppointment(
     } catch {
       // ignore — el turno ya fue movido
     }
+  }
+
+  // Actualizar evento en Google Calendar (no bloqueante)
+  if (a.google_event_id) {
+    const serviceNames = a.appointment_services
+      .map((s) => s.service?.name)
+      .filter((n): n is string => Boolean(n))
+    updateCalendarEvent(a.google_event_id, {
+      appointmentId,
+      clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
+      serviceNames,
+      staffName: a.staff?.full_name ?? null,
+      startsAt: newDate,
+      endsAt,
+      notes: null,
+    }).catch(() => {})
   }
 
   revalidatePath("/admin/turnos")
@@ -805,6 +830,35 @@ export async function createAdminBooking(
 
   const { error: linkErr } = await admin.from("appointment_services").insert(apptServices)
   if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+
+  // Google Calendar event (no bloqueante)
+  try {
+    const { data: clientRow } = await admin
+      .from("clients")
+      .select("first_name, last_name")
+      .eq("id", clientId)
+      .maybeSingle()
+    const { data: staffRow } = mainStaffId
+      ? await admin.from("staff").select("full_name").eq("id", mainStaffId).maybeSingle()
+      : { data: null }
+    const eventId = await createCalendarEvent({
+      appointmentId: appt.id,
+      clientName: `${clientRow?.first_name ?? ""} ${clientRow?.last_name ?? ""}`.trim(),
+      serviceNames: services.map((s) => s.name),
+      staffName: staffRow?.full_name ?? null,
+      startsAt,
+      endsAt,
+      notes: input.notes || null,
+    })
+    if (eventId) {
+      await admin
+        .from("appointments")
+        .update({ google_event_id: eventId })
+        .eq("id", appt.id)
+    }
+  } catch {
+    // Non-fatal
+  }
 
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
