@@ -693,29 +693,34 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const FooterCTA = () => (
     <div className="footer">
       <div className="footer__row">
-        <div className="footer__summary">
-          {selectedDate && selectedTime && selectedDateObj ? (
-            <span>
-              <strong>
-                {DOW_NAMES[(selectedDateObj.getDay() + 6) % 7]}{" "}
-                {selectedDateObj.getDate()}
-              </strong>{" "}
-              · {selectedTime}hs
-            </span>
-          ) : (
-            "Seleccione día y horario"
-          )}
-        </div>
-        <button
-          className="btn btn--primary"
-          disabled={!selectedDate || !selectedTime}
-          onClick={onNext}
-        >
-          Continuar
-          <span className="btn__arrow">
-            <Icon.Arrow />
-          </span>
+        <button className="btn--back" onClick={onBack}>
+          ← Atrás
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="footer__summary">
+            {selectedDate && selectedTime && selectedDateObj ? (
+              <span>
+                <strong>
+                  {DOW_NAMES[(selectedDateObj.getDay() + 6) % 7]}{" "}
+                  {selectedDateObj.getDate()}
+                </strong>{" "}
+                · {selectedTime}hs
+              </span>
+            ) : (
+              "Seleccione día y horario"
+            )}
+          </div>
+          <button
+            className="btn btn--primary"
+            disabled={!selectedDate || !selectedTime}
+            onClick={onNext}
+          >
+            Continuar
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1105,19 +1110,24 @@ export function Screen3Details({
   const FooterCTA = () => (
     <div className="footer">
       <div className="footer__row">
-        <div className="footer__summary">
-          {saveError
-            ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
-            : mode === "new"
-              ? "Tus datos son privados y encriptados"
-              : "Link enviado al abrir tu email"}
-        </div>
-        <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
-          {saving ? "Guardando…" : "Continuar"}
-          <span className="btn__arrow">
-            <Icon.Arrow />
-          </span>
+        <button className="btn--back" onClick={onBack}>
+          ← Atrás
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="footer__summary">
+            {saveError
+              ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
+              : mode === "new"
+                ? "Tus datos son privados y encriptados"
+                : "Link enviado al abrir tu email"}
+          </div>
+          <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
+            {saving ? "Guardando…" : "Continuar"}
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1389,17 +1399,22 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
   const FooterCTA = () => (
     <div className="footer">
       <div className="footer__row">
-        <div className="footer__summary">
-          {saveError
-            ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
-            : <span>Tus respuestas quedan <strong>bajo secreto profesional</strong></span>}
-        </div>
-        <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
-          {saving ? "Guardando…" : "Continuar"}
-          <span className="btn__arrow">
-            <Icon.Arrow />
-          </span>
+        <button className="btn--back" onClick={onBack}>
+          ← Atrás
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div className="footer__summary">
+            {saveError
+              ? <span style={{ color: "var(--rose)" }}>{saveError}</span>
+              : <span>Tus respuestas quedan <strong>bajo secreto profesional</strong></span>}
+          </div>
+          <button className="btn btn--primary" disabled={!isValid || saving} onClick={handleContinue}>
+            {saving ? "Guardando…" : "Continuar"}
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1764,22 +1779,27 @@ export function Screen5Confirm({
         </div>
       )}
       <div className="footer__row">
-        <div>
-          <div className="footer__summary">Seña</div>
-          <div className="footer__total">{fmtPrice(deposit)}</div>
-        </div>
-        <button className="btn btn--primary" disabled={paying} onClick={pay}>
-          {paying ? (
-            "Confirmando…"
-          ) : (
-            <>
-              Confirmar reserva
-              <span className="btn__arrow">
-                <Icon.Arrow />
-              </span>
-            </>
-          )}
+        <button className="btn--back" onClick={onBack}>
+          ← Atrás
         </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div>
+            <div className="footer__summary">Seña</div>
+            <div className="footer__total">{fmtPrice(deposit)}</div>
+          </div>
+          <button className="btn btn--primary" disabled={paying} onClick={pay}>
+            {paying ? (
+              "Confirmando…"
+            ) : (
+              <>
+                Confirmar reserva
+                <span className="btn__arrow">
+                  <Icon.Arrow />
+                </span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   )
