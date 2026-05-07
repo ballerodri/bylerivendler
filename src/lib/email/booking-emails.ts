@@ -103,15 +103,7 @@ export async function sendBookingConfirmation(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
-      <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        Ver mis turnos
-      </a>
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar al calendario
-      </a>
-    </div>
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos", gcalLink(data))}
   `
 
   try {
@@ -204,15 +196,7 @@ export async function sendBookingReminder(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
-      <a href="${MAPS_LINK}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        Ver cómo llegar
-      </a>
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar al calendario
-      </a>
-    </div>
+    ${ctaButtons(MAPS_LINK, "Ver cómo llegar", gcalLink(data))}
   `
 
   try {
@@ -263,15 +247,7 @@ export async function sendBookingReschedule(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
-      <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        Ver mis turnos
-      </a>
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar al calendario
-      </a>
-    </div>
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos", gcalLink(data))}
   `
 
   try {
@@ -285,6 +261,22 @@ export async function sendBookingReschedule(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
+}
+
+function ctaButtons(primaryHref: string, primaryLabel: string, calHref: string): string {
+  return `
+    <div style="text-align:center;margin-bottom:24px;">
+      <a href="${primaryHref}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 32px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        ${primaryLabel}
+      </a>
+      <div style="margin-top:14px;">
+        <a href="${calHref}" style="display:inline-flex;align-items:center;gap:6px;color:#7a6e64;text-decoration:none;font-size:12px;font-family:Helvetica,Arial,sans-serif;">
+          <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="14" height="14" style="display:inline-block;vertical-align:middle;opacity:0.8;">
+          Agregar al calendario de Google
+        </a>
+      </div>
+    </div>
+  `
 }
 
 function gcalLink(data: BookingEmailData): string {
