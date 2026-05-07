@@ -134,7 +134,7 @@ export default async function AdminTodayPage() {
                 </div>
                 <div className="adm-actions">
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
-                    const msg = `Hola ${a.client!.first_name}! 🌸 Te recordamos que tenés turno *hoy a las ${time}hs* en By Leri Vendler.\n\nCualquier consulta estamos acá. ¡Te esperamos! ✨`
+                    const msg = `Hola ${a.client!.first_name}! \u{1F338} Te recordamos que tenés turno *hoy a las ${time}hs* en By Leri Vendler.\n\nCualquier consulta estamos acá. ¡Te esperamos! \u{2728}`
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
