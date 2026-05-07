@@ -5,6 +5,7 @@ import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "./_components/status-actions"
 import { fmtPrice } from "../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
+import WhatsAppButton from "./_components/whatsapp-button"
 
 export const dynamic = "force-dynamic"
 
@@ -134,11 +135,7 @@ export default async function AdminTodayPage() {
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
                     const msg = `Hola ${a.client!.first_name}, te recordamos que tenés turno *hoy a las ${time}* en By Leri Vendler. ¡Te esperamos! 🌸`
                     const link = clientWhatsappLink(a.client!.phone, msg)
-                    return link ? (
-                      <a href={link} target="_blank" rel="noopener noreferrer" className="adm-btn" style={{ fontSize: 12, padding: "4px 10px", color: "#25D366", borderColor: "#25D366" }}>
-                        WhatsApp
-                      </a>
-                    ) : null
+                    return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
                   <StatusActions appointmentId={a.id} currentStatus={a.status} />
                 </div>
