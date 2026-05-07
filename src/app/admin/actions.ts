@@ -113,20 +113,21 @@ export async function rescheduleAppointment(
     .select(
       `id, status, duration_min, total_cents,
        client:clients(email, first_name),
-       appointment_services(service:services(name))`
+       appointment_services(id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
 
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
+  type SvcShape = { id: string; starts_at: string | null; duration_min: number; service: { name: string } | null }
   type ApptShape = {
     id: string
     status: string
     duration_min: number
     total_cents: number
     client: { email: string; first_name: string | null } | null
-    appointment_services: { service: { name: string } | null }[]
+    appointment_services: SvcShape[]
   }
   const a = appt as unknown as ApptShape
 
@@ -137,6 +138,22 @@ export async function rescheduleAppointment(
     .update({ starts_at: newDate.toISOString(), ends_at: endsAt.toISOString() })
     .eq("id", appointmentId)
   if (error) return { ok: false, error: error.message }
+
+  // Update per-service starts_at sequentially (preserve existing order by their current starts_at)
+  const orderedSvcs = a.appointment_services
+    .slice()
+    .sort((x, y) => {
+      if (!x.starts_at || !y.starts_at) return 0
+      return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+    })
+  let svcMs = newDate.getTime()
+  for (const svc of orderedSvcs) {
+    await admin
+      .from("appointment_services")
+      .update({ starts_at: new Date(svcMs).toISOString() })
+      .eq("id", svc.id)
+    svcMs += svc.duration_min * 60_000
+  }
 
   if (a.client) {
     try {

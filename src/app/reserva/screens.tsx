@@ -17,7 +17,7 @@ import {
 } from "./data"
 import type { BookingState, Category, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
-import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability } from "./actions"
+import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability, joinWaitlist } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
@@ -284,6 +284,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // Sequential availability result
   const [seqResult, setSeqResult] = useState<import("./actions").SequentialAvailabilityResult | null>(null)
   const [slotsLoading, setSlotsLoading] = useState(false)
+  const [showWaitlist, setShowWaitlist] = useState(false)
+  const [waitlistDone, setWaitlistDone] = useState(false)
 
   // Stable key for service+staff combo to drive effect
   const assignmentKey = state.services.map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}`).join("|")
@@ -510,6 +512,35 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                   </div>
                 ))}
               </div>
+            )}
+
+            {/* Lista de espera — se muestra cuando no hay próximos disponibles */}
+            {!slotsLoading && next.length === 0 && !waitlistDone && (
+              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--line)" }}>
+                {!showWaitlist ? (
+                  <button
+                    onClick={() => setShowWaitlist(true)}
+                    style={{
+                      width: "100%", padding: "10px 16px", borderRadius: 10,
+                      border: "1px dashed var(--line)", background: "transparent",
+                      fontSize: 13, color: "var(--ink-soft)", cursor: "pointer", textAlign: "center",
+                    }}
+                  >
+                    ¿No encontrás horario? Anotarte en lista de espera →
+                  </button>
+                ) : (
+                  <WaitlistForm
+                    serviceNames={state.services.map((s) => s.name)}
+                    onSuccess={() => { setShowWaitlist(false); setWaitlistDone(true) }}
+                    onCancel={() => setShowWaitlist(false)}
+                  />
+                )}
+              </div>
+            )}
+            {!slotsLoading && waitlistDone && (
+              <p style={{ fontSize: 13, color: "var(--ink-soft)", marginTop: 16, padding: "10px 14px", background: "var(--linen)", borderRadius: 10 }}>
+                ¡Listo! Te avisamos en cuanto haya un horario disponible. 🌸
+              </p>
             )}
           </div>
         )}
@@ -1326,6 +1357,23 @@ export function Screen5Confirm({
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
   const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
 
+  // Per-service schedule for multi-professional bookings
+  const isMultiResolved = services.length > 1 && !!state.serviceOrder && !!state.resolvedStaff
+  const orderedItems = (() => {
+    if (!isMultiResolved || !state.serviceOrder || !state.selectedTime) return []
+    const [hh, mm] = state.selectedTime.split(":").map(Number)
+    let mins = hh * 60 + mm
+    return state.serviceOrder.map((id) => {
+      const svc = services.find((s) => s.id === id)
+      const staffId = state.resolvedStaff?.[id]
+      const assignedPro = professionals.find((p) => p.id === staffId)
+      const h = Math.floor(mins / 60), m = mins % 60
+      const startTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
+      if (svc) mins += svc.duration
+      return { svc, assignedPro, startTime }
+    }).filter((x): x is { svc: Service; assignedPro: Professional | undefined; startTime: string } => !!x.svc)
+  })()
+
   const [paying, setPaying] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -1402,17 +1450,24 @@ export function Screen5Confirm({
             Tratamiento{services.length > 1 ? "s" : ""}
           </span>
           <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
-            {services.map((s, i) => (
-              <div
-                key={s.id}
-                style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}
-              >
-                {s.name}
-                <small>
-                  {fmtDuration(s.duration)} · {fmtPrice(s.price)}
-                </small>
-              </div>
-            ))}
+            {isMultiResolved ? (
+              orderedItems.map(({ svc, assignedPro, startTime }) => (
+                <div key={svc.id} style={{ marginBottom: 8 }}>
+                  {svc.name}
+                  <small>
+                    {startTime}hs · {fmtDuration(svc.duration)} · {fmtPrice(svc.price)}
+                    {assignedPro ? ` · ${assignedPro.name}` : ""}
+                  </small>
+                </div>
+              ))
+            ) : (
+              services.map((s, i) => (
+                <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
+                  {s.name}
+                  <small>{fmtDuration(s.duration)} · {fmtPrice(s.price)}</small>
+                </div>
+              ))
+            )}
           </div>
         </div>
         <div className="summary__row">
@@ -1425,6 +1480,7 @@ export function Screen5Confirm({
             </small>
           </div>
         </div>
+        {!isMultiResolved && (
         <div className="summary__row">
           <span className="summary__label">Profesional</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
@@ -1432,6 +1488,7 @@ export function Screen5Confirm({
             <small>{pro.role}</small>
           </div>
         </div>
+        )}
         <div className="summary__row">
           <span className="summary__label">Dónde</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
@@ -1776,6 +1833,95 @@ export function Screen6Success({
         </button>
       </div>
       {Body()}
+    </div>
+  )
+}
+
+// ---------- Waitlist Form ----------
+function WaitlistForm({
+  serviceNames,
+  onSuccess,
+  onCancel,
+}: {
+  serviceNames: string[]
+  onSuccess: () => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState("")
+  const [email, setEmail] = useState("")
+  const [phone, setPhone] = useState("")
+  const [dates, setDates] = useState("")
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    setError(null)
+    setPending(true)
+    const r = await joinWaitlist({ name, email, phone, serviceNames, preferredDates: dates })
+    setPending(false)
+    if (r.ok) onSuccess()
+    else setError(r.error ?? "Error al enviar")
+  }
+
+  return (
+    <div style={{ background: "var(--linen)", borderRadius: 12, padding: 16 }}>
+      <p style={{ fontFamily: "var(--serif)", fontSize: 15, fontWeight: 500, margin: "0 0 4px" }}>
+        Lista de espera
+      </p>
+      <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "0 0 14px" }}>
+        Te avisamos cuando haya un turno disponible para{" "}
+        {serviceNames.join(" + ")}.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <input
+          className="field__input"
+          placeholder="Tu nombre"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13, background: "#fff" }}
+        />
+        <input
+          className="field__input"
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13, background: "#fff" }}
+        />
+        <input
+          className="field__input"
+          type="tel"
+          placeholder="WhatsApp / teléfono"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13, background: "#fff" }}
+        />
+        <input
+          className="field__input"
+          placeholder="Días / horarios preferidos (opcional)"
+          value={dates}
+          onChange={(e) => setDates(e.target.value)}
+          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13, background: "#fff" }}
+        />
+        {error && <p style={{ fontSize: 12, color: "#8c463c", margin: 0 }}>{error}</p>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn--primary"
+            style={{ flex: 1, fontSize: 13, padding: "10px 16px" }}
+            disabled={pending || !name || !email || !phone}
+            onClick={submit}
+          >
+            {pending ? "Enviando…" : "Anotarme"}
+          </button>
+          <button
+            className="btn"
+            style={{ fontSize: 13, padding: "10px 16px" }}
+            onClick={onCancel}
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

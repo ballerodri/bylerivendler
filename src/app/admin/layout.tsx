@@ -64,6 +64,12 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/horarios" className="adm-nav__item">
               Horarios
             </Link>
+            <Link href="/admin/estadisticas" className="adm-nav__item">
+              Estadísticas
+            </Link>
+            <Link href="/admin/espera" className="adm-nav__item">
+              Lista de espera
+            </Link>
           </nav>
 
           <div className="adm-side__user">

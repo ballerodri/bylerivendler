@@ -689,6 +689,28 @@ export async function fetchSequentialAvailability(
   return { slotsForDate, nextAvailable, hasSequentialToday: slotsForDate.length > 0, individualSlotsForDate }
 }
 
+export async function joinWaitlist(data: {
+  name: string
+  email: string
+  phone: string
+  serviceNames: string[]
+  preferredDates?: string
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!data.name.trim() || !data.email.trim() || !data.phone.trim()) {
+    return { ok: false, error: "Nombre, email y teléfono son obligatorios." }
+  }
+  const supabase = adminClient()
+  const { error } = await supabase.from("waitlist_entries").insert({
+    name: data.name.trim(),
+    email: data.email.trim().toLowerCase(),
+    phone: data.phone.trim(),
+    service_names: data.serviceNames,
+    preferred_dates: data.preferredDates?.trim() || null,
+  })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 // Parses "DD / MM / AAAA" or "DD/MM/YYYY" or ISO; returns ISO date or null.
 function parseDob(raw: string): string | null {
   const cleaned = raw.replace(/\s/g, "")

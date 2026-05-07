@@ -5,6 +5,12 @@ import { fmtPrice } from "../../reserva/data"
 
 export const dynamic = "force-dynamic"
 
+type ApptService = {
+  service: { name: string } | null
+  staff: { full_name: string } | null
+  starts_at: string | null
+}
+
 type ApptRow = {
   id: string
   starts_at: string
@@ -12,7 +18,7 @@ type ApptRow = {
   duration_min: number
   total_cents: number
   client: { id: string; first_name: string; last_name: string } | null
-  appointment_services: { service: { name: string } | null }[]
+  appointment_services: ApptService[]
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -24,6 +30,12 @@ const STATUS_LABEL: Record<string, string> = {
   no_show: "No vino",
 }
 
+const TZ = "America/Argentina/Buenos_Aires"
+
+function fmtTime(iso: string) {
+  return new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: TZ })
+}
+
 export default async function AdminTurnosPage({
   searchParams,
 }: {
@@ -31,7 +43,7 @@ export default async function AdminTurnosPage({
 }) {
   const sp = await searchParams
   const statusFilter = sp.status ?? "all"
-  const range = sp.range ?? "upcoming" // "upcoming" | "past" | "all"
+  const range = sp.range ?? "upcoming"
 
   const admin = createAdminClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -43,7 +55,11 @@ export default async function AdminTurnosPage({
     `
       id, starts_at, status, duration_min, total_cents,
       client:clients(id, first_name, last_name),
-      appointment_services(service:services(name))
+      appointment_services(
+        starts_at,
+        service:services(name),
+        staff:staff(full_name)
+      )
     `
   )
 
@@ -96,19 +112,21 @@ export default async function AdminTurnosPage({
           {appts.map((a) => {
             const date = new Date(a.starts_at)
             const dateLabel = date.toLocaleDateString("es-AR", {
+              weekday: "short",
               day: "2-digit",
               month: "short",
-              timeZone: "America/Argentina/Buenos_Aires",
+              timeZone: TZ,
             })
-            const time = date.toLocaleTimeString("es-AR", {
-              hour: "2-digit",
-              minute: "2-digit",
-              timeZone: "America/Argentina/Buenos_Aires",
-            })
-            const services = a.appointment_services
-              .map((as) => as.service?.name)
-              .filter(Boolean)
-              .join(", ")
+            const time = fmtTime(a.starts_at)
+            const svcItems = a.appointment_services
+              .slice()
+              .sort((x, y) => {
+                if (!x.starts_at) return 0
+                if (!y.starts_at) return 0
+                return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+              })
+            const isMulti = svcItems.length > 1 && svcItems.some((s) => s.starts_at)
+
             return (
               <div key={a.id} className="adm-list-row adm-list-row--turnos">
                 <div className="adm-time" style={{ fontSize: 14 }}>
@@ -117,19 +135,42 @@ export default async function AdminTurnosPage({
                     {time}
                   </div>
                 </div>
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div className="adm-name">
                     {a.client ? (
                       <Link href={`/admin/clientas/${a.client.id}`}>
                         {a.client.first_name} {a.client.last_name}
                       </Link>
-                    ) : (
-                      "—"
-                    )}
+                    ) : "—"}
                   </div>
-                  <div className="adm-sub">
-                    {services} · {a.duration_min} min · {fmtPrice(a.total_cents / 100)}
-                  </div>
+                  {isMulti ? (
+                    <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                      {svcItems.map((as, i) => (
+                        <div key={i} style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                          {as.starts_at && (
+                            <span style={{ fontVariantNumeric: "tabular-nums", marginRight: 4 }}>
+                              {fmtTime(as.starts_at)}
+                            </span>
+                          )}
+                          {as.service?.name}
+                          {as.staff?.full_name && (
+                            <span style={{ color: "var(--ink-mute)" }}> · {as.staff.full_name}</span>
+                          )}
+                        </div>
+                      ))}
+                      <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 2 }}>
+                        {a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="adm-sub">
+                      {svcItems.map((s) => s.service?.name).filter(Boolean).join(", ")}
+                      {svcItems[0]?.staff?.full_name && (
+                        <> · {svcItems[0].staff.full_name}</>
+                      )}
+                      {" · "}{a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <span className={`adm-pill adm-pill--${a.status}`}>

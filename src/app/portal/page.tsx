@@ -15,12 +15,19 @@ type ClientRow = {
   loyalty_points: number
 }
 
+type ApptService = {
+  service: { name: string } | null
+  staff: { full_name: string } | null
+  starts_at: string | null
+}
+
 type AppointmentRow = {
   id: string
   starts_at: string
   status: string
   duration_min: number
   total_cents: number
+  appointment_services: ApptService[]
 }
 
 export default async function PortalPage() {
@@ -50,7 +57,10 @@ export default async function PortalPage() {
     const [apptRes, photoRes] = await Promise.all([
       admin
         .from("appointments")
-        .select("id, starts_at, status, duration_min, total_cents")
+        .select(`
+          id, starts_at, status, duration_min, total_cents,
+          appointment_services(starts_at, service:services(name), staff:staff(full_name))
+        `)
         .eq("client_id", client.id)
         .order("starts_at", { ascending: true }),
       admin
@@ -176,6 +186,13 @@ export default async function PortalPage() {
                 const cancellable =
                   isUpcoming &&
                   (a.status === "pending" || a.status === "confirmed")
+                const svcItems = (a.appointment_services ?? [])
+                  .slice()
+                  .sort((x, y) => {
+                    if (!x.starts_at || !y.starts_at) return 0
+                    return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+                  })
+                const isMulti = svcItems.length > 1
                 return (
                 <div key={a.id} className="summary__row">
                   <span className="summary__label">
@@ -190,9 +207,30 @@ export default async function PortalPage() {
                   </span>
                   <div className="summary__value" style={{ fontSize: 13 }}>
                     {labelStatus(a.status)}
-                    <small>
-                      {a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}
-                    </small>
+                    {isMulti ? (
+                      <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+                        {svcItems.map((s, i) => (
+                          <small key={i} style={{ color: "var(--ink-soft)" }}>
+                            {s.starts_at && (
+                              <span style={{ marginRight: 4 }}>
+                                {new Date(s.starts_at).toLocaleTimeString("es-AR", {
+                                  hour: "2-digit", minute: "2-digit",
+                                  timeZone: "America/Argentina/Buenos_Aires",
+                                })}
+                              </span>
+                            )}
+                            {s.service?.name}
+                            {s.staff?.full_name && <> · {s.staff.full_name}</>}
+                          </small>
+                        ))}
+                        <small>{a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}</small>
+                      </div>
+                    ) : (
+                      <small>
+                        {svcItems[0]?.service?.name && <>{svcItems[0].service!.name} · </>}
+                        {a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}
+                      </small>
+                    )}
                     {cancellable && (
                       <small style={{ marginTop: 6 }}>
                         <CancelButton appointmentId={a.id} />
