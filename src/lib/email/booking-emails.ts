@@ -103,15 +103,13 @@ export async function sendBookingConfirmation(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:16px;">
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar a Google Calendar
-      </a>
-    </div>
-    <div style="text-align:center;margin-bottom:24px;">
+    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
       <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver mis turnos
+      </a>
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar al calendario
       </a>
     </div>
   `
@@ -206,15 +204,13 @@ export async function sendBookingReminder(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:16px;">
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar a Google Calendar
-      </a>
-    </div>
-    <div style="text-align:center;margin-bottom:24px;">
+    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
       <a href="${MAPS_LINK}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver cómo llegar
+      </a>
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar al calendario
       </a>
     </div>
   `
@@ -267,15 +263,13 @@ export async function sendBookingReschedule(
       </p>
     </div>
 
-    <div style="text-align:center;margin-bottom:16px;">
-      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
-        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
-        Agregar a Google Calendar
-      </a>
-    </div>
-    <div style="text-align:center;margin-bottom:24px;">
+    <div style="text-align:center;margin-bottom:24px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center;align-items:center;">
       <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver mis turnos
+      </a>
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:14px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar al calendario
       </a>
     </div>
   `
