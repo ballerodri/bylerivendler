@@ -86,6 +86,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                 <Link href="/admin/espera" className="adm-nav__item">
                   Lista de espera
                 </Link>
+                <Link href="/admin/configuracion" className="adm-nav__item" style={{ marginTop: 16, color: "var(--ink-mute)", fontSize: 12 }}>
+                  Configuración
+                </Link>
               </>
             )}
           </nav>

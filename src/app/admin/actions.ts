@@ -840,3 +840,50 @@ export async function deleteStaff(
   revalidatePath("/admin/staff")
   return { ok: true }
 }
+
+// ─── Reset de fábrica ─────────────────────────────────────────────────────────
+
+export async function factoryReset(): Promise<{ ok: boolean; error?: string }> {
+  const supabase = await createSsrClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Sin sesión." }
+
+  const admin = adminClient()
+
+  // Solo el admin principal puede hacer esto
+  const { data: staffRow } = await admin
+    .from("staff")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (staffRow?.role !== "admin") return { ok: false, error: "Solo el admin puede hacer esto." }
+
+  // 1. Borrar appointment_services primero (FK a appointments)
+  await admin.from("appointment_services").delete().gte("created_at", "2000-01-01")
+
+  // 2. Borrar turnos
+  await admin.from("appointments").delete().gte("created_at", "2000-01-01")
+
+  // 3. Borrar fichas médicas
+  await admin.from("client_records").delete().gte("created_at", "2000-01-01")
+
+  // 4. Borrar clientas
+  await admin.from("clients").delete().gte("created_at", "2000-01-01")
+
+  // 5. Borrar lista de espera
+  await admin.from("waitlist_entries").delete().gte("created_at", "2000-01-01")
+
+  // 6. Borrar staff excepto Leri Vendler
+  await admin.from("staff").delete().neq("email", "bylerivendler@gmail.com")
+
+  // 7. Asegurar que Leri queda como admin + profesional activa
+  await admin
+    .from("staff")
+    .update({ role: "admin", is_professional: true, active: true })
+    .ilike("email", "bylerivendler@gmail.com")
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
+  return { ok: true }
+}
