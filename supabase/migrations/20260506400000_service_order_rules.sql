@@ -11,5 +11,6 @@ create table if not exists public.service_order_rules (
 alter table public.service_order_rules enable row level security;
 
 -- Solo staff puede leer/escribir (acceso vía service role en server actions)
+drop policy if exists "order_rules_staff_read" on public.service_order_rules;
 create policy "order_rules_staff_read" on public.service_order_rules
   for select using (true);
