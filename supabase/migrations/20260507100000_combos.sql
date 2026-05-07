@@ -22,5 +22,7 @@ alter table combos enable row level security;
 alter table combo_services enable row level security;
 
 -- Lectura pública (reserva online necesita leer combos activos)
+drop policy if exists "combos_select_all" on combos;
+drop policy if exists "combo_services_select_all" on combo_services;
 create policy "combos_select_all" on combos for select using (true);
 create policy "combo_services_select_all" on combo_services for select using (true);
