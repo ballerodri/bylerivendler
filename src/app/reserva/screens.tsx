@@ -15,7 +15,7 @@ import {
   parseYmd,
   ymd,
 } from "./data"
-import type { BookingState, Category, Professional, Service } from "./data"
+import type { BookingState, Category, Combo, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability, joinWaitlist } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
@@ -39,6 +39,8 @@ const stepLabel = (n: number, label: string) =>
   `Paso ${String(n).padStart(2, "0")} — ${label}`
 
 // ---------- Screen 1: Services ----------
+const COMBOS_TAB = "__combos__"
+
 export function Screen1Services({
   state,
   setState,
@@ -48,23 +50,50 @@ export function Screen1Services({
   stepNumber,
   totalSteps,
   categories,
+  combos,
   knownFirstName,
-}: ScreenProps & { categories: Category[]; knownFirstName: string | null }) {
-  const fallbackCat = categories[0]?.id ?? "facial"
-  const [activeCat, setActiveCat] = useState(state.activeCat || fallbackCat)
+}: ScreenProps & { categories: Category[]; combos: Combo[]; knownFirstName: string | null }) {
+  const hasCombos = combos.length > 0
+  const fallbackCat = hasCombos ? COMBOS_TAB : (categories[0]?.id ?? "facial")
+  const [activeCat, setActiveCat] = useState(
+    state.combo ? COMBOS_TAB : (state.activeCat || fallbackCat)
+  )
   const selected = state.services || []
+  const selectedCombo = state.combo ?? null
+
+  const switchTab = (tab: string) => {
+    if (tab !== COMBOS_TAB && selectedCombo) {
+      // Al cambiar a servicios individuales, limpiamos el combo
+      setState({ ...state, combo: null, services: [], activeCat: tab })
+    } else {
+      setActiveCat(tab)
+    }
+    setActiveCat(tab)
+  }
+
+  const toggleCombo = (c: Combo) => {
+    if (selectedCombo?.id === c.id) {
+      setState({ ...state, combo: null, services: [] })
+    } else {
+      setState({ ...state, combo: c, services: c.services })
+    }
+  }
 
   const toggle = (svc: Service) => {
     const exists = selected.find((s) => s.id === svc.id)
     const next = exists ? selected.filter((s) => s.id !== svc.id) : [...selected, svc]
-    setState({ ...state, services: next, activeCat })
+    setState({ ...state, combo: null, services: next, activeCat })
   }
 
-  const total = selected.reduce((a, s) => a + s.price, 0)
-  const totalMin = selected.reduce((a, s) => a + s.duration, 0)
-  const activeCategory =
-    categories.find((c) => c.id === activeCat) ?? categories[0]
-  if (!activeCategory) {
+  const displayPrice = selectedCombo ? selectedCombo.price : selected.reduce((a, s) => a + s.price, 0)
+  const displayMin   = selectedCombo ? selectedCombo.duration : selected.reduce((a, s) => a + s.duration, 0)
+  const hasSelection = selectedCombo !== null || selected.length > 0
+
+  const activeCategory = activeCat === COMBOS_TAB
+    ? null
+    : (categories.find((c) => c.id === activeCat) ?? categories[0])
+
+  if (!hasCombos && !activeCategory) {
     return (
       <div className="screen">
         <div className="screen__body">
@@ -93,8 +122,7 @@ export function Screen1Services({
           )}
         </h1>
         <p className="lede">
-          Elegí uno o varios tratamientos. Podés combinar categorías; ajustamos
-          la duración en tu ficha.
+          Elegí un combo o uno a varios tratamientos sueltos.
         </p>
       </div>
     </div>
@@ -102,12 +130,21 @@ export function Screen1Services({
 
   const CatTabs = () => (
     <div className="cattabs" role="tablist">
+      {hasCombos && (
+        <button
+          role="tab"
+          className={`cattab ${activeCat === COMBOS_TAB ? "is-active" : ""}`}
+          onClick={() => switchTab(COMBOS_TAB)}
+        >
+          Combos
+        </button>
+      )}
       {categories.map((c) => (
         <button
           key={c.id}
           role="tab"
           className={`cattab ${activeCat === c.id ? "is-active" : ""}`}
-          onClick={() => setActiveCat(c.id)}
+          onClick={() => switchTab(c.id)}
         >
           {c.name}
         </button>
@@ -115,49 +152,46 @@ export function Screen1Services({
     </div>
   )
 
-  const ServiceList = () => (
+  const ComboList = () => (
     <div className="svc-group">
       <div className="svc-group__head">
         <h2 className="svc-group__title">
-          {activeCategory.name} <em>— {activeCategory.tagline}</em>
+          Combos <em>— precio especial</em>
         </h2>
         <span className="svc-group__count">
-          {String(activeCategory.services.length).padStart(2, "0")}
+          {String(combos.length).padStart(2, "0")}
         </span>
       </div>
-      {activeCategory.services.map((s) => {
-        const isSel = !!selected.find((x) => x.id === s.id)
+      {combos.map((c) => {
+        const isSel = selectedCombo?.id === c.id
+        const fullPrice = c.services.reduce((a, s) => a + s.price, 0)
         return (
           <button
-            key={s.id}
+            key={c.id}
             className={`svc ${isSel ? "is-selected" : ""}`}
-            onClick={() => toggle(s)}
+            onClick={() => toggleCombo(c)}
           >
             <div className="svc__top">
               <div style={{ paddingRight: 28, flex: 1 }}>
-                <h3 className="svc__name">{s.name}</h3>
+                <h3 className="svc__name">{c.name}</h3>
                 <div className="svc__meta">
                   <Icon.Clock />
-                  <span>{fmtDuration(s.duration)}</span>
+                  <span>{fmtDuration(c.duration)}</span>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--ink-mute)", marginTop: 4 }}>
+                  {c.services.map((s) => s.name).join(" + ")}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div className="svc__price">{fmtPrice(s.price)}</div>
-                {s.pointsCost > 0 && (
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "var(--gold)",
-                      letterSpacing: "0.04em",
-                      marginTop: 2,
-                    }}
-                  >
-                    o {s.pointsCost} pts
+                <div className="svc__price">{fmtPrice(c.price)}</div>
+                {fullPrice > c.price && (
+                  <div style={{ fontSize: 11, color: "var(--ink-mute)", textDecoration: "line-through", marginTop: 2 }}>
+                    {fmtPrice(fullPrice)}
                   </div>
                 )}
               </div>
             </div>
-            <p className="svc__desc">{s.desc}</p>
+            {c.description && <p className="svc__desc">{c.description}</p>}
             <span className="svc__check">
               <Icon.CheckSmall />
             </span>
@@ -167,27 +201,77 @@ export function Screen1Services({
     </div>
   )
 
+  const ServiceList = () => {
+    if (!activeCategory) return null
+    return (
+      <div className="svc-group">
+        <div className="svc-group__head">
+          <h2 className="svc-group__title">
+            {activeCategory.name} <em>— {activeCategory.tagline}</em>
+          </h2>
+          <span className="svc-group__count">
+            {String(activeCategory.services.length).padStart(2, "0")}
+          </span>
+        </div>
+        {activeCategory.services.map((s) => {
+          const isSel = !selectedCombo && !!selected.find((x) => x.id === s.id)
+          return (
+            <button
+              key={s.id}
+              className={`svc ${isSel ? "is-selected" : ""}`}
+              onClick={() => toggle(s)}
+            >
+              <div className="svc__top">
+                <div style={{ paddingRight: 28, flex: 1 }}>
+                  <h3 className="svc__name">{s.name}</h3>
+                  <div className="svc__meta">
+                    <Icon.Clock />
+                    <span>{fmtDuration(s.duration)}</span>
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div className="svc__price">{fmtPrice(s.price)}</div>
+                  {s.pointsCost > 0 && (
+                    <div style={{ fontSize: 11, color: "var(--gold)", letterSpacing: "0.04em", marginTop: 2 }}>
+                      o {s.pointsCost} pts
+                    </div>
+                  )}
+                </div>
+              </div>
+              <p className="svc__desc">{s.desc}</p>
+              <span className="svc__check">
+                <Icon.CheckSmall />
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
+
   const FooterCTA = () => (
     <div className="footer">
       <div className="footer__row">
         <div>
           <div className="footer__summary">
-            {selected.length === 0 ? (
+            {!hasSelection ? (
               "Sin tratamientos seleccionados"
+            ) : selectedCombo ? (
+              <span><strong>{selectedCombo.name}</strong> · {fmtDuration(displayMin)}</span>
             ) : (
               <span>
                 <strong>{selected.length}</strong> tratamiento
-                {selected.length > 1 ? "s" : ""} · {fmtDuration(totalMin)}
+                {selected.length > 1 ? "s" : ""} · {fmtDuration(displayMin)}
               </span>
             )}
           </div>
-          {selected.length > 0 && (
-            <div className="footer__total">{fmtPrice(total)}</div>
+          {hasSelection && (
+            <div className="footer__total">{fmtPrice(displayPrice)}</div>
           )}
         </div>
         <button
           className="btn btn--primary"
-          disabled={selected.length === 0}
+          disabled={!hasSelection}
           onClick={onNext}
         >
           Continuar
@@ -220,11 +304,10 @@ export function Screen1Services({
             )}
           </h1>
           <p className="lede">
-            Elegí uno o varios tratamientos. Podés combinar categorías; el
-            equipo ajusta la secuencia en cabina.
+            Elegí un combo o uno a varios tratamientos sueltos.
           </p>
           {CatTabs()}
-          {ServiceList()}
+          {activeCat === COMBOS_TAB ? ComboList() : ServiceList()}
         </div>
         {FooterCTA()}
       </div>
@@ -244,7 +327,7 @@ export function Screen1Services({
       <div className="screen__body">
         {Hero()}
         {CatTabs()}
-        {ServiceList()}
+        {activeCat === COMBOS_TAB ? ComboList() : ServiceList()}
       </div>
       {FooterCTA()}
     </div>
@@ -1357,10 +1440,11 @@ export function Screen5Confirm({
   professionals,
 }: ScreenProps & { loyaltyPoints: number; professionals: Professional[] }) {
   const services = state.services || []
-  const total = services.reduce((a, s) => a + s.price, 0)
-  const totalMin = services.reduce((a, s) => a + s.duration, 0)
-  const totalPointsCost = services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
-  const canRedeem = loyaltyPoints >= totalPointsCost && totalPointsCost > 0
+  const combo = state.combo ?? null
+  const total = combo ? combo.price : services.reduce((a, s) => a + s.price, 0)
+  const totalMin = combo ? combo.duration : services.reduce((a, s) => a + s.duration, 0)
+  const totalPointsCost = combo ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
+  const canRedeem = !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const deposit = redeeming ? 0 : Math.round(total * 0.3)
   const remaining = redeeming ? 0 : total - deposit
@@ -1412,6 +1496,7 @@ export function Screen5Confirm({
       redeemWithPoints: redeeming,
       savedClientId: state.savedClientId,
       medicalNote: state.medicalNote,
+      comboId: state.combo?.id,
       client: {
         firstName: state.form.firstName,
         lastName: state.form.lastName,

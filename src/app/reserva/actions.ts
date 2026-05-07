@@ -17,6 +17,7 @@ const BookingInput = z.object({
   redeemWithPoints: z.boolean().optional(),
   savedClientId: z.string().uuid().optional(),
   medicalNote: z.string().optional(),
+  comboId: z.string().uuid().optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -75,7 +76,19 @@ export async function createBooking(
   }
 
   const totalDuration = services.reduce((a, s) => a + s.duration_min, 0)
-  const totalCents = services.reduce((a, s) => a + s.price_cents, 0)
+  let totalCents = services.reduce((a, s) => a + s.price_cents, 0)
+
+  // Si es un combo, reemplazamos el precio por el del combo
+  if (input.comboId) {
+    const { data: combo } = await supabase
+      .from("combos")
+      .select("total_price_cents, active")
+      .eq("id", input.comboId)
+      .eq("active", true)
+      .maybeSingle()
+    if (combo) totalCents = combo.total_price_cents
+  }
+
   const depositCents = Math.round(totalCents * 0.3)
   const totalPointsCost = services.reduce(
     (a, s) => a + (s.points_cost ?? 0),

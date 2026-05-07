@@ -149,8 +149,18 @@ export type MedicalForm = {
   consent: boolean
 }
 
+export type Combo = {
+  id: string
+  name: string
+  description: string
+  price: number        // total_price_cents / 100
+  duration: number     // suma de duraciones de servicios
+  services: Service[]  // en order_index
+}
+
 export type BookingState = {
   services: Service[]
+  combo?: Combo | null  // si se eligió un combo, services viene de aquí
   activeCat?: string
   selectedDate?: string
   selectedTime?: string | null

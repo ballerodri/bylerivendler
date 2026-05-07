@@ -80,6 +80,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                 <Link href="/admin/horarios" className="adm-nav__item">
                   Horarios
                 </Link>
+                <Link href="/admin/combos" className="adm-nav__item">
+                  Combos
+                </Link>
                 <Link href="/admin/estadisticas" className="adm-nav__item">
                   Estadísticas
                 </Link>

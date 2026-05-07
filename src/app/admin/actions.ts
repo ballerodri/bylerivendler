@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { isStaffUser } from "@/lib/staff"
+import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 
 const StatusSchema = z.enum([
@@ -886,4 +886,84 @@ export async function factoryReset(): Promise<{ ok: boolean; error?: string }> {
   revalidatePath("/admin/turnos")
   revalidatePath("/admin/clientas")
   return { ok: true }
+}
+
+// ─── Combos ───────────────────────────────────────────────────────────────────
+
+export type ComboInput = {
+  name: string
+  description?: string
+  totalPriceCents: number
+  serviceIds: string[]  // en orden
+}
+
+export async function createCombo(input: ComboInput): Promise<{ ok: boolean; error?: string; id?: string }> {
+  await requireAdmin_action()
+  const admin = adminClient()
+
+  const { data: combo, error: comboErr } = await admin
+    .from("combos")
+    .insert({ name: input.name.trim(), description: input.description?.trim() || null, total_price_cents: input.totalPriceCents, active: false })
+    .select("id")
+    .single()
+  if (comboErr || !combo) return { ok: false, error: comboErr?.message }
+
+  if (input.serviceIds.length > 0) {
+    const { error: linkErr } = await admin.from("combo_services").insert(
+      input.serviceIds.map((sid, i) => ({ combo_id: combo.id, service_id: sid, order_index: i }))
+    )
+    if (linkErr) return { ok: false, error: linkErr.message }
+  }
+
+  revalidatePath("/admin/combos")
+  return { ok: true, id: combo.id }
+}
+
+export async function updateCombo(id: string, input: ComboInput): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin_action()
+  const admin = adminClient()
+
+  const { error: updateErr } = await admin
+    .from("combos")
+    .update({ name: input.name.trim(), description: input.description?.trim() || null, total_price_cents: input.totalPriceCents })
+    .eq("id", id)
+  if (updateErr) return { ok: false, error: updateErr.message }
+
+  // Replace services
+  await admin.from("combo_services").delete().eq("combo_id", id)
+  if (input.serviceIds.length > 0) {
+    const { error: linkErr } = await admin.from("combo_services").insert(
+      input.serviceIds.map((sid, i) => ({ combo_id: id, service_id: sid, order_index: i }))
+    )
+    if (linkErr) return { ok: false, error: linkErr.message }
+  }
+
+  revalidatePath("/admin/combos")
+  revalidatePath(`/admin/combos/${id}`)
+  return { ok: true }
+}
+
+export async function toggleComboActive(id: string, active: boolean): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin_action()
+  const admin = adminClient()
+  const { error } = await admin.from("combos").update({ active }).eq("id", id)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/combos")
+  return { ok: true }
+}
+
+export async function deleteCombo(id: string): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin_action()
+  const admin = adminClient()
+  const { error } = await admin.from("combos").delete().eq("id", id)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/combos")
+  return { ok: true }
+}
+
+async function requireAdmin_action() {
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  if (!user) throw new Error("Sin sesión")
+  await requireAdmin(user.id)
 }

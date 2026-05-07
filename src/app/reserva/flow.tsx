@@ -6,6 +6,7 @@ import {
   SCREEN_LABEL,
   type BookingState,
   type Category,
+  type Combo,
   type Professional,
   type ScreenId,
 } from "./data"
@@ -95,12 +96,14 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
 
 export default function ReservaFlow({
   categories,
+  combos,
   professionals,
   businessHours,
   currentClient,
   authProfile,
 }: {
   categories: Category[]
+  combos: Combo[]
   professionals: Professional[]
   businessHours: BusinessHour[]
   currentClient: CurrentClient | null
@@ -224,6 +227,7 @@ export default function ReservaFlow({
           <Screen1Services
             {...screenProps}
             categories={categories}
+            combos={combos}
             knownFirstName={currentClient?.firstName ?? null}
           />
         )

@@ -1,6 +1,6 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
-import type { Category, Professional, Service } from "./data"
+import type { Category, Combo, Professional, Service } from "./data"
 
 export type CurrentClient = {
   id: string
@@ -174,4 +174,61 @@ export async function fetchProfessionals(): Promise<Professional[]> {
   )
 
   return [AUTO_PROFESSIONAL, ...staff]
+}
+
+type DbComboRow = {
+  id: string
+  name: string
+  description: string | null
+  total_price_cents: number
+  combo_services: {
+    order_index: number
+    service: {
+      id: string
+      name: string
+      description: string | null
+      duration_min: number
+      price_cents: number
+      points_cost: number
+      active: boolean
+      visible_public: boolean
+    } | null
+  }[]
+}
+
+export async function fetchCombos(): Promise<Combo[]> {
+  const supabase = adminClient()
+  const { data } = await supabase
+    .from("combos")
+    .select(`
+      id, name, description, total_price_cents,
+      combo_services(order_index, service:services(id, name, description, duration_min, price_cents, points_cost, active, visible_public))
+    `)
+    .eq("active", true)
+    .order("name", { ascending: true })
+
+  if (!data) return []
+
+  return (data as unknown as DbComboRow[]).map((c): Combo => {
+    const services = c.combo_services
+      .filter((cs) => cs.service?.active && cs.service?.visible_public)
+      .sort((a, b) => a.order_index - b.order_index)
+      .map((cs): Service => ({
+        id: cs.service!.id,
+        name: cs.service!.name,
+        duration: cs.service!.duration_min,
+        price: Math.round(cs.service!.price_cents / 100),
+        desc: cs.service!.description ?? "",
+        pointsCost: cs.service!.points_cost,
+      }))
+    const duration = services.reduce((a, s) => a + s.duration, 0)
+    return {
+      id: c.id,
+      name: c.name,
+      description: c.description ?? "",
+      price: Math.round(c.total_price_cents / 100),
+      duration,
+      services,
+    }
+  })
 }

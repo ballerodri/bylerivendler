@@ -318,6 +318,15 @@
   flex-wrap: wrap;
 }
 
+.adm-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 6px;
+}
+
 .adm-input {
   padding: 9px 12px;
   border-radius: 8px;
