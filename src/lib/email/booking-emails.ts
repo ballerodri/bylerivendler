@@ -27,6 +27,7 @@ function fmtDateAR(d: Date): string {
     month: "long",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
     timeZone: "America/Argentina/Buenos_Aires",
   })
 }
@@ -102,6 +103,12 @@ export async function sendBookingConfirmation(
       </p>
     </div>
 
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar a Google Calendar
+      </a>
+    </div>
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver mis turnos
@@ -199,6 +206,12 @@ export async function sendBookingReminder(
       </p>
     </div>
 
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar a Google Calendar
+      </a>
+    </div>
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${MAPS_LINK}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver cómo llegar
@@ -254,6 +267,12 @@ export async function sendBookingReschedule(
       </p>
     </div>
 
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="${gcalLink(data)}" style="display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #dadce0;color:#3c4043;padding:12px 22px;border-radius:999px;text-decoration:none;font-size:13px;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
+        <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="16" height="16" style="display:inline-block;vertical-align:middle;">
+        Agregar a Google Calendar
+      </a>
+    </div>
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${SITE}/portal" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
         Ver mis turnos
@@ -272,6 +291,17 @@ export async function sendBookingReschedule(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
+}
+
+function gcalLink(data: BookingEmailData): string {
+  const fmt = (d: Date) =>
+    d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")
+  const endsAt = new Date(data.startsAt.getTime() + data.durationMin * 60_000)
+  const text = encodeURIComponent(`Turno en By Leri Vendler — ${data.servicesNames.join(" + ")}`)
+  const dates = `${fmt(data.startsAt)}/${fmt(endsAt)}`
+  const location = encodeURIComponent("Sanguinetti 297, Villa Morra, Pilar, Buenos Aires")
+  const details = encodeURIComponent(`Tratamiento: ${data.servicesNames.join(" + ")}\nDuración: ${data.durationMin} min`)
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${dates}&location=${location}&details=${details}`
 }
 
 // Minimal HTML escape for user-provided strings inside email content.

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { isStaffUser } from "@/lib/staff"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import LogoutButton from "@/app/portal/logout-button"
+import AdminNotifications from "./_components/admin-notifications"
 import "./admin.css"
 
 type StaffRow = {
@@ -107,6 +108,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
         <main className="adm-main">{children}</main>
       </div>
+      <AdminNotifications />
     </div>
   )
 }
