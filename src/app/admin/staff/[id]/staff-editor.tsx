@@ -30,10 +30,12 @@ export default function StaffEditor({
   staff,
   availability,
   businessHours,
+  canEditRole,
 }: {
   staff: StaffRow
   availability: AvailabilityRow[]
   businessHours: BusinessHourRow[]
+  canEditRole: boolean
 }) {
   const [isProfessional, setIsProfessional] = useState(staff.is_professional)
   const [days, setDays] = useState<DayState[]>(() => initDays(availability, businessHours))
@@ -82,6 +84,7 @@ export default function StaffEditor({
 
   return (
     <>
+      {canEditRole && (
       <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
         <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 16 }}>
           Roles
@@ -128,6 +131,7 @@ export default function StaffEditor({
           {roleStatus === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{roleError}</span>}
         </div>
       </div>
+      )}
 
       <div className="adm-card" style={{ padding: 24 }}>
         <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 4 }}>
