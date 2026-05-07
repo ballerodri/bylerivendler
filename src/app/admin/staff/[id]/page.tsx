@@ -28,6 +28,18 @@ export type BusinessHourRow = {
   slots: string[]
 }
 
+export type ServiceRow = {
+  id: string
+  name: string
+  category: string | null
+}
+
+export type CommissionRow = {
+  service_id: string
+  commission_type: "percentage" | "fixed"
+  commission_value: number
+}
+
 export default async function AdminStaffDetailPage({
   params,
 }: {
@@ -46,7 +58,7 @@ export default async function AdminStaffDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: staffMember }, { data: availData }, { data: bhData }] = await Promise.all([
+  const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }] = await Promise.all([
     admin
       .from("staff")
       .select("id, full_name, role, email, active, is_professional")
@@ -61,12 +73,24 @@ export default async function AdminStaffDetailPage({
       .from("business_hours")
       .select("day_of_week, is_open, slots")
       .order("day_of_week"),
+    admin
+      .from("services")
+      .select("id, name, category")
+      .eq("active", true)
+      .order("category")
+      .order("name"),
+    admin
+      .from("staff_service_commissions")
+      .select("service_id, commission_type, commission_value")
+      .eq("staff_id", id),
   ])
 
   if (!staffMember) notFound()
 
   const availability = (availData ?? []) as AvailabilityRow[]
   const businessHours = (bhData ?? []) as BusinessHourRow[]
+  const services = (servicesData ?? []) as ServiceRow[]
+  const commissions = (commissionsData ?? []) as CommissionRow[]
 
   return (
     <>
@@ -85,6 +109,8 @@ export default async function AdminStaffDetailPage({
         availability={availability}
         businessHours={businessHours}
         canEditRole={viewerIsAdmin}
+        services={services}
+        commissions={commissions}
       />
     </>
   )

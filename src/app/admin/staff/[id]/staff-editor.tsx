@@ -2,7 +2,8 @@
 
 import { useState, useTransition } from "react"
 import { updateStaffProfessional, updateStaffAvailability } from "../../actions"
-import type { StaffRow, AvailabilityRow, BusinessHourRow } from "./page"
+import type { StaffRow, AvailabilityRow, BusinessHourRow, ServiceRow, CommissionRow } from "./page"
+import CommissionsEditor from "./commissions-editor"
 
 const ROLE_LABEL: Record<string, string> = {
   admin: "Admin",
@@ -31,11 +32,15 @@ export default function StaffEditor({
   availability,
   businessHours,
   canEditRole,
+  services,
+  commissions,
 }: {
   staff: StaffRow
   availability: AvailabilityRow[]
   businessHours: BusinessHourRow[]
   canEditRole: boolean
+  services: ServiceRow[]
+  commissions: CommissionRow[]
 }) {
   const [isProfessional, setIsProfessional] = useState(staff.is_professional)
   const [days, setDays] = useState<DayState[]>(() => initDays(availability, businessHours))
@@ -211,6 +216,14 @@ export default function StaffEditor({
           {availStatus === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{availError}</span>}
         </div>
       </div>
+
+      {canEditRole && (
+        <CommissionsEditor
+          staffId={staff.id}
+          services={services}
+          commissions={commissions}
+        />
+      )}
     </>
   )
 }

@@ -686,6 +686,38 @@ export async function updateStaffAvailability(
   return { ok: true }
 }
 
+// ─── Comisiones por servicio ──────────────────────────────────────────────────
+
+export type CommissionInput = {
+  service_id: string
+  commission_type: "percentage" | "fixed"
+  commission_value: number
+}
+
+export async function updateStaffCommissions(
+  staffId: string,
+  rows: CommissionInput[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { error: delErr } = await admin
+    .from("staff_service_commissions")
+    .delete()
+    .eq("staff_id", staffId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (rows.length > 0) {
+    const { error: insErr } = await admin
+      .from("staff_service_commissions")
+      .insert(rows.map((r) => ({ staff_id: staffId, ...r })))
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+
+  revalidatePath(`/admin/staff/${staffId}`)
+  return { ok: true }
+}
+
 // ─── Búsqueda de clientas ─────────────────────────────────────────────────────
 
 export type ClientSearchResult = {
