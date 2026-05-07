@@ -270,9 +270,8 @@ function ctaButtons(primaryHref: string, primaryLabel: string, calHref: string):
         ${primaryLabel}
       </a>
       <div style="margin-top:14px;">
-        <a href="${calHref}" style="display:inline-flex;align-items:center;gap:6px;color:#7a6e64;text-decoration:none;font-size:12px;font-family:Helvetica,Arial,sans-serif;">
-          <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="14" height="14" style="display:inline-block;vertical-align:middle;opacity:0.8;">
-          Agregar al calendario de Google
+        <a href="${calHref}" title="Agregar al calendario de Google" style="display:inline-block;text-decoration:none;opacity:0.7;">
+          <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="Agregar al calendario de Google" width="24" height="24" style="display:inline-block;vertical-align:middle;">
         </a>
       </div>
     </div>
