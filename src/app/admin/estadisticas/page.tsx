@@ -1,4 +1,6 @@
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { getStaffProfile } from "@/lib/staff"
 import { fmtPrice } from "../../reserva/data"
 
 export const dynamic = "force-dynamic"
@@ -14,35 +16,43 @@ type ApptRow = {
   starts_at: string
   status: string
   total_cents: number
-  appointment_services: { service: { name: string } | null }[]
+  appointment_services: { service: { name: string } | null; staff: { id: string } | null }[]
 }
 
 export default async function EstadisticasPage() {
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  const staffProfile = user ? await getStaffProfile(user.id) : null
+  const isProfessionalOnly = staffProfile?.isProfessionalOnly ?? false
+
   const admin = createAdminClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  // Fetch last 12 months of non-cancelled appointments
   const since = new Date()
   since.setMonth(since.getMonth() - 11)
   since.setDate(1)
   since.setHours(0, 0, 0, 0)
 
-  const { data } = await admin
+  let q = admin
     .from("appointments")
     .select(`
       id, starts_at, status, total_cents,
-      appointment_services(service:services(name))
+      appointment_services(service:services(name), staff:staff(id))
     `)
     .gte("starts_at", since.toISOString())
     .not("status", "in", '("cancelled","no_show")')
     .order("starts_at", { ascending: true })
 
+  if (isProfessionalOnly && staffProfile) {
+    q = q.eq("staff_id", staffProfile.id)
+  }
+
+  const { data } = await q
   const appts = (data ?? []) as unknown as ApptRow[]
 
-  // Group by month (Argentina time)
   const byMonth: Record<string, { count: number; revenue: number }> = {}
   const serviceCounts: Record<string, number> = {}
 
@@ -55,12 +65,13 @@ export default async function EstadisticasPage() {
     if (a.status === "completed") byMonth[key].revenue += a.total_cents
 
     for (const as of a.appointment_services) {
+      // For professionals: only count services they performed
+      if (isProfessionalOnly && staffProfile && as.staff?.id !== staffProfile.id) continue
       const name = as.service?.name
       if (name) serviceCounts[name] = (serviceCounts[name] ?? 0) + 1
     }
   }
 
-  // Fill in all 12 months even if empty
   const months: { key: string; label: string; count: number; revenue: number }[] = []
   for (let i = 11; i >= 0; i--) {
     const d = new Date()
@@ -87,11 +98,17 @@ export default async function EstadisticasPage() {
 
   return (
     <>
-      <p className="adm-eyebrow">Resumen</p>
+      <p className="adm-eyebrow">
+        {isProfessionalOnly ? `${staffProfile!.full_name} · ` : ""}Resumen
+      </p>
       <h1 className="adm-h1">
-        Estadís<em>ticas</em>
+        {isProfessionalOnly ? "Mis " : ""}Estadís<em>ticas</em>
       </h1>
-      <p className="adm-lede">Últimos 12 meses · turnos activos (excluye cancelados y no-shows).</p>
+      <p className="adm-lede">
+        {isProfessionalOnly
+          ? "Tus turnos de los últimos 12 meses (excluye cancelados y no-shows)."
+          : "Últimos 12 meses · turnos activos (excluye cancelados y no-shows)."}
+      </p>
 
       {/* KPIs */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 16, marginBottom: 32 }}>
@@ -101,12 +118,14 @@ export default async function EstadisticasPage() {
           </p>
           <p style={{ fontFamily: "var(--serif)", fontSize: 32, fontWeight: 500, margin: 0 }}>{totalAppts}</p>
         </div>
-        <div className="adm-card" style={{ padding: "20px 24px" }}>
-          <p style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--ink-mute)", margin: "0 0 6px" }}>
-            Ingresos completados
-          </p>
-          <p style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 500, margin: 0 }}>{fmtPrice(totalRevenue / 100)}</p>
-        </div>
+        {!isProfessionalOnly && (
+          <div className="adm-card" style={{ padding: "20px 24px" }}>
+            <p style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--ink-mute)", margin: "0 0 6px" }}>
+              Ingresos completados
+            </p>
+            <p style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 500, margin: 0 }}>{fmtPrice(totalRevenue / 100)}</p>
+          </div>
+        )}
         <div className="adm-card" style={{ padding: "20px 24px" }}>
           <p style={{ fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--ink-mute)", margin: "0 0 6px" }}>
             Promedio / mes
@@ -147,40 +166,44 @@ export default async function EstadisticasPage() {
         </div>
       </div>
 
-      {/* Ingresos por mes */}
-      <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
-        <p className="adm-eyebrow" style={{ marginBottom: 12 }}>Ingresos por mes (completados)</p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {months.filter((m) => m.revenue > 0).reverse().slice(0, 6).reverse().map((m) => (
-            <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
-              <span style={{ width: 90, color: "var(--ink-mute)", flexShrink: 0 }}>{m.label}</span>
-              <div style={{ flex: 1, background: "var(--linen)", borderRadius: 4, height: 8, overflow: "hidden" }}>
-                <div
-                  style={{
-                    height: "100%",
-                    background: "var(--gold)",
-                    width: `${(m.revenue / Math.max(...months.map((x) => x.revenue), 1)) * 100}%`,
-                    borderRadius: 4,
-                  }}
-                />
+      {/* Ingresos por mes — solo admins */}
+      {!isProfessionalOnly && (
+        <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
+          <p className="adm-eyebrow" style={{ marginBottom: 12 }}>Ingresos por mes (completados)</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {months.filter((m) => m.revenue > 0).reverse().slice(0, 6).reverse().map((m) => (
+              <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+                <span style={{ width: 90, color: "var(--ink-mute)", flexShrink: 0 }}>{m.label}</span>
+                <div style={{ flex: 1, background: "var(--linen)", borderRadius: 4, height: 8, overflow: "hidden" }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      background: "var(--gold)",
+                      width: `${(m.revenue / Math.max(...months.map((x) => x.revenue), 1)) * 100}%`,
+                      borderRadius: 4,
+                    }}
+                  />
+                </div>
+                <span style={{ width: 90, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "var(--ink-soft)" }}>
+                  {fmtPrice(m.revenue / 100)}
+                </span>
               </div>
-              <span style={{ width: 90, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "var(--ink-soft)" }}>
-                {fmtPrice(m.revenue / 100)}
-              </span>
-            </div>
-          ))}
-          {months.every((m) => m.revenue === 0) && (
-            <p style={{ fontSize: 13, color: "var(--ink-mute)", margin: 0 }}>
-              Los ingresos se registran al completar los turnos.
-            </p>
-          )}
+            ))}
+            {months.every((m) => m.revenue === 0) && (
+              <p style={{ fontSize: 13, color: "var(--ink-mute)", margin: 0 }}>
+                Los ingresos se registran al completar los turnos.
+              </p>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Servicios más pedidos */}
       {topServices.length > 0 && (
         <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
-          <p className="adm-eyebrow" style={{ marginBottom: 12 }}>Servicios más pedidos</p>
+          <p className="adm-eyebrow" style={{ marginBottom: 12 }}>
+            {isProfessionalOnly ? "Mis servicios más realizados" : "Servicios más pedidos"}
+          </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {topServices.map(([name, count]) => (
               <div key={name} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
@@ -201,6 +224,12 @@ export default async function EstadisticasPage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {topServices.length === 0 && (
+        <div className="adm-card">
+          <div className="adm-empty">Sin datos de servicios en los últimos 12 meses.</div>
         </div>
       )}
     </>

@@ -36,6 +36,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     .eq("user_id", user.id)
     .maybeSingle<StaffRow>()
 
+  const isProfessionalOnly = staffRow?.role === "professional"
+
   return (
     <div className="admin">
       <div className="adm-shell">
@@ -52,24 +54,37 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/turnos" className="adm-nav__item">
               Turnos
             </Link>
-            <Link href="/admin/clientas" className="adm-nav__item">
-              Clientas
-            </Link>
-            <Link href="/admin/servicios" className="adm-nav__item">
-              Servicios
-            </Link>
-            <Link href="/admin/staff" className="adm-nav__item">
-              Personal
-            </Link>
-            <Link href="/admin/horarios" className="adm-nav__item">
-              Horarios
-            </Link>
-            <Link href="/admin/estadisticas" className="adm-nav__item">
-              Estadísticas
-            </Link>
-            <Link href="/admin/espera" className="adm-nav__item">
-              Lista de espera
-            </Link>
+            {isProfessionalOnly ? (
+              <>
+                <Link href="/admin/estadisticas" className="adm-nav__item">
+                  Estadísticas
+                </Link>
+                <Link href={`/admin/staff/${staffRow!.id}`} className="adm-nav__item">
+                  Mi disponibilidad
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link href="/admin/clientas" className="adm-nav__item">
+                  Clientas
+                </Link>
+                <Link href="/admin/servicios" className="adm-nav__item">
+                  Servicios
+                </Link>
+                <Link href="/admin/staff" className="adm-nav__item">
+                  Personal
+                </Link>
+                <Link href="/admin/horarios" className="adm-nav__item">
+                  Horarios
+                </Link>
+                <Link href="/admin/estadisticas" className="adm-nav__item">
+                  Estadísticas
+                </Link>
+                <Link href="/admin/espera" className="adm-nav__item">
+                  Lista de espera
+                </Link>
+              </>
+            )}
           </nav>
 
           <div className="adm-side__user">

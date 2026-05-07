@@ -1,5 +1,7 @@
 import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/staff"
 import StaffForm from "./staff-form"
 import StaffActiveToggle from "./active-toggle"
 
@@ -23,6 +25,10 @@ const ROLE_LABEL: Record<string, string> = {
 }
 
 export default async function AdminStaffPage() {
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  if (user) await requireAdmin(user.id)
+
   const admin = createAdminClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,

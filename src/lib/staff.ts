@@ -1,4 +1,5 @@
 import "server-only"
+import { redirect } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 
 /**
@@ -46,6 +47,20 @@ export async function getStaffProfile(userId: string): Promise<StaffProfile | nu
     role: data.role,
     isProfessionalOnly: data.role === "professional",
   }
+}
+
+/**
+ * Redirige a /admin si el usuario es profesional puro (role !== admin/reception).
+ * Llamar al inicio de páginas que solo admins pueden ver.
+ */
+export async function requireAdmin(userId: string): Promise<void> {
+  const admin = adminClient()
+  const { data } = await admin
+    .from("staff")
+    .select("role")
+    .eq("user_id", userId)
+    .maybeSingle()
+  if (data?.role === "professional") redirect("/admin")
 }
 
 /**

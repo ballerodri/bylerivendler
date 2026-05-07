@@ -1,5 +1,7 @@
 import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/staff"
 
 export const dynamic = "force-dynamic"
 
@@ -18,6 +20,9 @@ export default async function AdminClientasPage({
 }: {
   searchParams: Promise<{ q?: string }>
 }) {
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  if (user) await requireAdmin(user.id)
   const sp = await searchParams
   const search = (sp.q ?? "").trim()
 
