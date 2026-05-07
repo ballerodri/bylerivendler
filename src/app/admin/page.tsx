@@ -96,6 +96,7 @@ export default async function AdminTodayPage() {
             const time = new Date(a.starts_at).toLocaleTimeString("es-AR", {
               hour: "2-digit",
               minute: "2-digit",
+              hour12: false,
               timeZone: TZ,
             })
             const services = a.appointment_services
@@ -133,7 +134,7 @@ export default async function AdminTodayPage() {
                 </div>
                 <div className="adm-actions">
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
-                    const msg = `Hola ${a.client!.first_name}, te recordamos que tenés turno *hoy a las ${time}* en By Leri Vendler. ¡Te esperamos! 🌸`
+                    const msg = `Hola ${a.client!.first_name}! Te recordamos tu turno *hoy a las ${time}hs* en By Leri Vendler. Te esperamos!`
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}

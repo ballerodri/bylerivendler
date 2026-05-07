@@ -37,7 +37,11 @@ const STATUS_LABEL: Record<string, string> = {
 const TZ = "America/Argentina/Buenos_Aires"
 
 function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: TZ })
+  return new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ })
+}
+
+function fmtDateLong(iso: string) {
+  return new Date(iso).toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long", timeZone: TZ })
 }
 
 export default async function AdminTurnosPage({
@@ -193,8 +197,8 @@ export default async function AdminTurnosPage({
                 <div className="adm-actions">
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
                     const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
-                    const when = isToday ? `hoy a las ${time}` : `el ${dateLabel} a las ${time}`
-                    const msg = `Hola ${a.client!.first_name}, te recordamos que tenés turno *${when}* en By Leri Vendler. ¡Te esperamos! 🌸`
+                    const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
+                    const msg = `Hola ${a.client!.first_name}! Te recordamos tu turno *${when}* en By Leri Vendler. Te esperamos!`
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
