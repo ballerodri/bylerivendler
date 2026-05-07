@@ -659,3 +659,154 @@ export async function updateStaffAvailability(
   revalidatePath("/admin")
   return { ok: true }
 }
+
+// ─── Búsqueda de clientas ─────────────────────────────────────────────────────
+
+export type ClientSearchResult = {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  phone: string | null
+}
+
+export async function searchClients(q: string): Promise<ClientSearchResult[]> {
+  await requireStaff()
+  if (!q.trim()) return []
+  const admin = adminClient()
+  const term = `%${q.trim()}%`
+  const { data } = await admin
+    .from("clients")
+    .select("id, first_name, last_name, email, phone")
+    .or(`first_name.ilike.${term},last_name.ilike.${term},email.ilike.${term},phone.ilike.${term}`)
+    .order("last_name")
+    .limit(10)
+  return (data ?? []) as ClientSearchResult[]
+}
+
+// ─── Crear turno desde admin ──────────────────────────────────────────────────
+
+export type AdminBookingInput = {
+  clientId?: string
+  newClient?: { firstName: string; lastName: string; phone: string; email?: string }
+  serviceIds: string[]
+  serviceOrder: string[]
+  resolvedStaff: Record<string, string>
+  startsAt: string
+  notes?: string
+}
+
+export async function createAdminBooking(
+  input: AdminBookingInput
+): Promise<{ ok: boolean; error?: string; appointmentId?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // 1) Resolve services
+  const { data: services, error: svcErr } = await admin
+    .from("services")
+    .select("id, name, duration_min, price_cents")
+    .in("id", input.serviceIds)
+  if (svcErr || !services?.length) return { ok: false, error: "Servicios no encontrados." }
+
+  const totalDuration = services.reduce((a, s) => a + s.duration_min, 0)
+  const totalCents = services.reduce((a, s) => a + s.price_cents, 0)
+  const startsAt = new Date(input.startsAt)
+  const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
+
+  // 2) Find or create client
+  let clientId: string
+  if (input.clientId) {
+    clientId = input.clientId
+  } else if (input.newClient) {
+    const nc = input.newClient
+    const email = nc.email?.trim().toLowerCase() || null
+
+    // Check if client already exists by email
+    let existing = null
+    if (email) {
+      const { data } = await admin.from("clients").select("id").eq("email", email).maybeSingle()
+      existing = data
+    }
+
+    if (existing) {
+      clientId = existing.id
+    } else {
+      const { data: created, error: insErr } = await admin
+        .from("clients")
+        .insert({
+          first_name: nc.firstName.trim(),
+          last_name: nc.lastName.trim(),
+          email: email ?? `admin_created_${Date.now()}@noemail.local`,
+          phone: nc.phone.trim(),
+          source: "admin",
+        })
+        .select("id")
+        .single()
+      if (insErr || !created) return { ok: false, error: `No se pudo crear la clienta: ${insErr?.message}` }
+      clientId = created.id
+    }
+  } else {
+    return { ok: false, error: "Falta clienta." }
+  }
+
+  // 3) Room
+  const { data: room } = await admin
+    .from("rooms")
+    .select("id")
+    .eq("active", true)
+    .limit(1)
+    .maybeSingle()
+
+  // 4) Main staff (first service in order)
+  const mainStaffId = input.serviceOrder[0]
+    ? (input.resolvedStaff[input.serviceOrder[0]] ?? null)
+    : Object.values(input.resolvedStaff)[0] ?? null
+
+  // 5) Create appointment
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: clientId,
+      staff_id: mainStaffId,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      duration_min: totalDuration,
+      total_cents: totalCents,
+      deposit_cents: Math.round(totalCents * 0.3),
+      deposit_paid: true,
+      status: "confirmed",
+      source: "admin",
+      notes_internal: input.notes?.trim() || null,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `Turno: ${apptErr?.message}` }
+
+  // 6) Link services sequentially
+  const orderedServices = input.serviceOrder
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+
+  let ms = startsAt.getTime()
+  const apptServices = orderedServices.map((s) => {
+    const sStartsAt = new Date(ms)
+    ms += s.duration_min * 60_000
+    return {
+      appointment_id: appt.id,
+      service_id: s.id,
+      duration_min: s.duration_min,
+      price_cents: s.price_cents,
+      staff_id: input.resolvedStaff[s.id] ?? mainStaffId,
+      starts_at: sStartsAt.toISOString(),
+    }
+  })
+
+  const { error: linkErr } = await admin.from("appointment_services").insert(apptServices)
+  if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  return { ok: true, appointmentId: appt.id }
+}
