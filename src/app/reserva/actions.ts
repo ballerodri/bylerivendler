@@ -5,7 +5,7 @@ import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendBookingConfirmation } from "@/lib/email/booking-emails"
-import { ymd, filterFutureSlots } from "./data"
+import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -400,8 +400,10 @@ export async function fetchDayAvailability(
 
   const supabase = adminClient()
 
-  const dayStart = new Date(dateStr + "T00:00:00").toISOString()
-  const dayEnd   = new Date(dateStr + "T23:59:59").toISOString()
+  const [dy, dm, dd] = dateStr.split("-").map(Number)
+  const dayStartMs = Date.UTC(dy, dm - 1, dd, AR_UTC_OFFSET, 0, 0)
+  const dayStart = new Date(dayStartMs).toISOString()
+  const dayEnd = new Date(dayStartMs + 24 * 3_600_000).toISOString()
 
   let apptQuery = supabase
     .from("appointments")
@@ -429,10 +431,7 @@ export async function fetchDayAvailability(
   }
 
   return candidateSlots.filter((slot) => {
-    const [hh, mm] = slot.split(":").map(Number)
-    const slotDate = new Date(dateStr + "T00:00:00")
-    slotDate.setHours(hh, mm, 0, 0)
-    const slotStart = slotDate.getTime()
+    const slotStart = slotToUtcMs(dateStr, slot)
     const slotEnd   = slotStart + durationMin * 60_000
 
     if (proHint === "auto") {
@@ -539,10 +538,7 @@ function trySlot(
   allPros: string[],
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
-  const [hh, mm] = slot.split(":").map(Number)
-  const base = new Date(dateStr + "T00:00:00")
-  base.setHours(hh, mm, 0, 0)
-  const startMs = base.getTime()
+  const startMs = slotToUtcMs(dateStr, slot)
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
@@ -613,9 +609,10 @@ export async function fetchSequentialAvailability(
     return true
   }
 
-  const from = new Date(fromDate + "T00:00:00")
-  const to = new Date(fromDate + "T00:00:00")
-  to.setDate(to.getDate() + daysAhead)
+  const [fy, fm, fd] = fromDate.split("-").map(Number)
+  const fromMs = Date.UTC(fy, fm - 1, fd, AR_UTC_OFFSET, 0, 0)
+  const from = new Date(fromMs)
+  const to = new Date(fromMs + daysAhead * 24 * 3_600_000)
 
   const { data: apptData } = await supabase
     .from("appointments")
@@ -666,10 +663,7 @@ export async function fetchSequentialAvailability(
 
       for (const svc of services) {
         const slots = candidates.filter((slot) => {
-          const [hh, mm] = slot.split(":").map(Number)
-          const base = new Date(fromDate + "T00:00:00")
-          base.setHours(hh, mm, 0, 0)
-          const sStart = base.getTime()
+          const sStart = slotToUtcMs(fromDate, slot)
           const sEnd = sStart + svc.duration * 60_000
           if (svc.staffId === "auto") {
             // Available if at least one pro is free

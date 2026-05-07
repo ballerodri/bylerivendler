@@ -185,6 +185,7 @@ export default async function PortalPage() {
                       month: "long",
                       hour: "2-digit",
                       minute: "2-digit",
+                      timeZone: "America/Argentina/Buenos_Aires",
                     })}
                   </span>
                   <div className="summary__value" style={{ fontSize: 13 }}>

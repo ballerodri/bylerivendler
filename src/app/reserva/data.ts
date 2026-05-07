@@ -63,19 +63,34 @@ export function generateAvailability(
  * Filtra los slots de un día que ya pasaron (o que están dentro del margen
  * mínimo de antelación).
  */
+// Argentina is always UTC-3 (no DST since 2008).
+// All slot/appointment times in this app are in Argentina local time.
+export const AR_UTC_OFFSET = 3 // hours to add to convert Argentina → UTC
+
+/**
+ * Returns the UTC timestamp (ms) for a slot time treated as Argentina local time.
+ * Works consistently on both server (UTC) and client (any timezone).
+ */
+export function slotToUtcMs(dateStr: string, timeStr: string): number {
+  const [y, m, d] = dateStr.split("-").map(Number)
+  const [hh, mm] = timeStr.split(":").map(Number)
+  return Date.UTC(y, m - 1, d, hh + AR_UTC_OFFSET, mm, 0, 0)
+}
+
 export function filterFutureSlots(dateStr: string, slots: string[], now = new Date()): string[] {
-  const d = parseYmd(dateStr)
-  d.setHours(0, 0, 0, 0)
-  const today = new Date(now)
-  today.setHours(0, 0, 0, 0)
-  if (d.getTime() > today.getTime()) return slots // día futuro: todos válidos
+  const [y, m, d] = dateStr.split("-").map(Number)
+  // Midnight Argentina = 03:00 UTC
+  const dayStartUtc = Date.UTC(y, m - 1, d, AR_UTC_OFFSET, 0, 0)
+  const todayStartUtc = (() => {
+    // Current Argentina date: subtract offset from UTC
+    const ar = new Date(now.getTime() - AR_UTC_OFFSET * 3_600_000)
+    return Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate(), AR_UTC_OFFSET, 0, 0)
+  })()
+
+  if (dayStartUtc > todayStartUtc) return slots // future day: all slots valid
 
   const minTs = now.getTime() + MIN_ADVANCE_MIN * 60_000
-  return slots.filter((t) => {
-    const [hh, mm] = t.split(":").map(Number)
-    const slotTs = parseYmd(dateStr).setHours(hh, mm, 0, 0)
-    return slotTs >= minTs
-  })
+  return slots.filter((t) => slotToUtcMs(dateStr, t) >= minTs)
 }
 
 export const MONTH_NAMES = [
@@ -112,11 +127,8 @@ export const formatDob = (raw: string): string => {
   return `${dd}/${mm}/${yyyy}`
 }
 
-export const combineDateTime = (ymdStr: string, hm: string): Date => {
-  const [y, m, d] = ymdStr.split("-").map(Number)
-  const [hh, mm] = hm.split(":").map(Number)
-  return new Date(y, m - 1, d, hh, mm, 0, 0)
-}
+export const combineDateTime = (ymdStr: string, hm: string): Date =>
+  new Date(slotToUtcMs(ymdStr, hm))
 
 export type ClientForm = {
   firstName: string

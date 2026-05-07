@@ -98,10 +98,12 @@ export default async function AdminTurnosPage({
             const dateLabel = date.toLocaleDateString("es-AR", {
               day: "2-digit",
               month: "short",
+              timeZone: "America/Argentina/Buenos_Aires",
             })
             const time = date.toLocaleTimeString("es-AR", {
               hour: "2-digit",
               minute: "2-digit",
+              timeZone: "America/Argentina/Buenos_Aires",
             })
             const services = a.appointment_services
               .map((as) => as.service?.name)

@@ -71,6 +71,7 @@ export default function AdminRescheduleForm({
     month: "long",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: "America/Argentina/Buenos_Aires",
   })
 
   const confirm = () => {
