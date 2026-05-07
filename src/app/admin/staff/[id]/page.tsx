@@ -14,6 +14,7 @@ export type StaffRow = {
   email: string | null
   active: boolean
   is_professional: boolean
+  calendar_color_id: string | null
 }
 
 export type AvailabilityRow = {
@@ -61,7 +62,7 @@ export default async function AdminStaffDetailPage({
   const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }] = await Promise.all([
     admin
       .from("staff")
-      .select("id, full_name, role, email, active, is_professional")
+      .select("id, full_name, role, email, active, is_professional, calendar_color_id")
       .eq("id", id)
       .maybeSingle<StaffRow>(),
     admin

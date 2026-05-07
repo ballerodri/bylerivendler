@@ -119,7 +119,7 @@ export async function rescheduleAppointment(
     .select(
       `id, status, duration_min, total_cents, google_event_id,
        client:clients(email, first_name, last_name),
-       staff:staff(full_name, email),
+       staff:staff(full_name, email, calendar_color_id),
        appointment_services(id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
@@ -135,7 +135,7 @@ export async function rescheduleAppointment(
     total_cents: number
     google_event_id: string | null
     client: { email: string; first_name: string | null; last_name: string | null } | null
-    staff: { full_name: string; email: string | null } | null
+    staff: { full_name: string; email: string | null; calendar_color_id: string | null } | null
     appointment_services: SvcShape[]
   }
   const a = appt as unknown as ApptShape
@@ -194,6 +194,7 @@ export async function rescheduleAppointment(
       serviceNames,
       staffName: a.staff?.full_name ?? null,
       staffEmail: a.staff?.email ?? null,
+      staffColorId: a.staff?.calendar_color_id ?? null,
       startsAt: newDate,
       endsAt,
       notes: null,
@@ -686,6 +687,23 @@ export async function updateStaffAvailability(
   return { ok: true }
 }
 
+// ─── Color de calendario ──────────────────────────────────────────────────────
+
+export async function updateStaffCalendarColor(
+  staffId: string,
+  colorId: string | null
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const { error } = await admin
+    .from("staff")
+    .update({ calendar_color_id: colorId })
+    .eq("id", staffId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath(`/admin/staff/${staffId}`)
+  return { ok: true }
+}
+
 // ─── Comisiones por servicio ──────────────────────────────────────────────────
 
 export type CommissionInput = {
@@ -872,7 +890,7 @@ export async function createAdminBooking(
       .eq("id", clientId)
       .maybeSingle()
     const { data: staffRow } = mainStaffId
-      ? await admin.from("staff").select("full_name, email").eq("id", mainStaffId).maybeSingle()
+      ? await admin.from("staff").select("full_name, email, calendar_color_id").eq("id", mainStaffId).maybeSingle()
       : { data: null }
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
@@ -880,6 +898,7 @@ export async function createAdminBooking(
       serviceNames: services.map((s) => s.name),
       staffName: staffRow?.full_name ?? null,
       staffEmail: staffRow?.email ?? null,
+      staffColorId: (staffRow as any)?.calendar_color_id ?? null,
       startsAt,
       endsAt,
       notes: input.notes || null,

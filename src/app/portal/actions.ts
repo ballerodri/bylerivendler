@@ -117,6 +117,7 @@ export async function rescheduleMyAppointment(
     .select(
       `id, status, duration_min, total_cents, google_event_id,
        client:clients(id, user_id, email, first_name, last_name),
+       staff:staff(full_name, calendar_color_id),
        appointment_services(service:services(name))`
     )
     .eq("id", appointmentId)
@@ -186,8 +187,9 @@ export async function rescheduleMyAppointment(
       appointmentId,
       clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
       serviceNames,
-      staffName: null,
+      staffName: (a as any).staff?.full_name ?? null,
       staffEmail: null,
+      staffColorId: (a as any).staff?.calendar_color_id ?? null,
       startsAt: newDate,
       endsAt,
       notes: null,

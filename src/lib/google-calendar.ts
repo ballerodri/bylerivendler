@@ -25,6 +25,7 @@ export type CalendarEventInput = {
   serviceNames: string[]
   staffName: string | null
   staffEmail: string | null
+  staffColorId?: string | null
   startsAt: Date
   endsAt: Date
   notes?: string | null
@@ -50,6 +51,7 @@ function buildRequestBody(input: CalendarEventInput) {
     start: { dateTime: input.startsAt.toISOString(), timeZone: AR_TZ },
     end: { dateTime: input.endsAt.toISOString(), timeZone: AR_TZ },
     attendees,
+    ...(input.staffColorId ? { colorId: input.staffColorId } : {}),
     reminders: {
       useDefault: false,
       overrides: [{ method: "popup" as const, minutes: 60 }],

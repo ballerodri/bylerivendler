@@ -4,6 +4,7 @@ import { useState, useTransition } from "react"
 import { updateStaffProfessional, updateStaffAvailability } from "../../actions"
 import type { StaffRow, AvailabilityRow, BusinessHourRow, ServiceRow, CommissionRow } from "./page"
 import CommissionsEditor from "./commissions-editor"
+import CalendarColorPicker from "./calendar-color-picker"
 
 const ROLE_LABEL: Record<string, string> = {
   admin: "Admin",
@@ -222,6 +223,13 @@ export default function StaffEditor({
           staffId={staff.id}
           services={services}
           commissions={commissions}
+        />
+      )}
+
+      {canEditRole && staff.is_professional && (
+        <CalendarColorPicker
+          staffId={staff.id}
+          initialColorId={staff.calendar_color_id}
         />
       )}
     </>

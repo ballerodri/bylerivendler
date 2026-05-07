@@ -270,14 +270,16 @@ export async function createBooking(
   try {
     let staffName: string | null = null
     let staffEmail: string | null = null
+    let staffColorId: string | null = null
     if (mainStaffId) {
       const { data: staffRow } = await supabase
         .from("staff")
-        .select("full_name, email")
+        .select("full_name, email, calendar_color_id")
         .eq("id", mainStaffId)
         .maybeSingle()
       staffName = staffRow?.full_name ?? null
       staffEmail = staffRow?.email ?? null
+      staffColorId = (staffRow as any)?.calendar_color_id ?? null
     }
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
@@ -285,6 +287,7 @@ export async function createBooking(
       serviceNames: services.map((s) => s.name),
       staffName,
       staffEmail,
+      staffColorId,
       startsAt,
       endsAt,
       notes: null,
