@@ -1,6 +1,8 @@
 import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { requireAdmin } from "@/lib/staff"
 import ResetForm from "./reset-form"
+import GoogleCalendarCard from "./google-calendar-card"
 
 export const dynamic = "force-dynamic"
 
@@ -9,12 +11,32 @@ export default async function ConfiguracionPage() {
   const { data: { user } } = await ssr.auth.getUser()
   if (user) await requireAdmin(user.id)
 
+  const admin = createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false, autoRefreshToken: false } }
+  )
+
+  const { data: gcal } = await admin
+    .from("google_calendar_config")
+    .select("refresh_token, google_email, connected_at")
+    .eq("id", 1)
+    .maybeSingle()
+
+  const connected = !!gcal?.refresh_token
+
   return (
     <>
       <p className="adm-eyebrow">Admin</p>
       <h1 className="adm-h1">Configura<em>ción</em></h1>
 
-      <div className="adm-card" style={{ padding: 28, border: "1px solid #d9534f", marginTop: 8 }}>
+      <GoogleCalendarCard
+        connected={connected}
+        googleEmail={gcal?.google_email ?? null}
+        connectedAt={gcal?.connected_at ?? null}
+      />
+
+      <div className="adm-card" style={{ padding: 28, border: "1px solid #d9534f", marginTop: 24 }}>
         <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, color: "#8c463c", marginBottom: 8 }}>
           Zona de peligro
         </h3>

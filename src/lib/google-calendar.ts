@@ -1,23 +1,22 @@
 import { google } from "googleapis"
+import { createClient } from "@supabase/supabase-js"
+import { getOAuth2Client } from "./google-oauth"
 
 const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID ?? "primary"
 const AR_TZ = "America/Argentina/Buenos_Aires"
 
-function oauthClient() {
-  const client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
+async function getRefreshToken(): Promise<string | null> {
+  const admin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false, autoRefreshToken: false } }
   )
-  client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
-  return client
-}
-
-function isConfigured(): boolean {
-  return !!(
-    process.env.GOOGLE_CLIENT_ID &&
-    process.env.GOOGLE_CLIENT_SECRET &&
-    process.env.GOOGLE_REFRESH_TOKEN
-  )
+  const { data } = await admin
+    .from("google_calendar_config")
+    .select("refresh_token")
+    .eq("id", 1)
+    .maybeSingle()
+  return data?.refresh_token ?? null
 }
 
 export type CalendarEventInput = {
@@ -25,7 +24,7 @@ export type CalendarEventInput = {
   clientName: string
   serviceNames: string[]
   staffName: string | null
-  staffEmail: string | null  // invitada al evento → aparece en su propio Google Calendar
+  staffEmail: string | null
   startsAt: Date
   endsAt: Date
   notes?: string | null
@@ -61,14 +60,16 @@ function buildRequestBody(input: CalendarEventInput) {
 export async function createCalendarEvent(
   input: CalendarEventInput
 ): Promise<string | null> {
-  if (!isConfigured()) return null
+  const refreshToken = await getRefreshToken()
+  if (!refreshToken) return null
 
   try {
-    const auth = oauthClient()
+    const auth = getOAuth2Client()
+    auth.setCredentials({ refresh_token: refreshToken })
     const calendar = google.calendar({ version: "v3", auth })
     const { data } = await calendar.events.insert({
       calendarId: CALENDAR_ID,
-      sendUpdates: "all",  // envía invitación por email a la profesional
+      sendUpdates: "all",
       requestBody: buildRequestBody(input),
     })
     return data.id ?? null
@@ -78,15 +79,17 @@ export async function createCalendarEvent(
 }
 
 export async function deleteCalendarEvent(eventId: string): Promise<void> {
-  if (!isConfigured()) return
+  const refreshToken = await getRefreshToken()
+  if (!refreshToken) return
 
   try {
-    const auth = oauthClient()
+    const auth = getOAuth2Client()
+    auth.setCredentials({ refresh_token: refreshToken })
     const calendar = google.calendar({ version: "v3", auth })
     await calendar.events.delete({
       calendarId: CALENDAR_ID,
       eventId,
-      sendUpdates: "all",  // notifica a la profesional que el turno fue cancelado
+      sendUpdates: "all",
     })
   } catch {
     // Non-fatal
@@ -97,15 +100,17 @@ export async function updateCalendarEvent(
   eventId: string,
   input: CalendarEventInput
 ): Promise<void> {
-  if (!isConfigured()) return
+  const refreshToken = await getRefreshToken()
+  if (!refreshToken) return
 
   try {
-    const auth = oauthClient()
+    const auth = getOAuth2Client()
+    auth.setCredentials({ refresh_token: refreshToken })
     const calendar = google.calendar({ version: "v3", auth })
     await calendar.events.patch({
       calendarId: CALENDAR_ID,
       eventId,
-      sendUpdates: "all",  // notifica a la profesional el nuevo horario
+      sendUpdates: "all",
       requestBody: buildRequestBody(input),
     })
   } catch {
