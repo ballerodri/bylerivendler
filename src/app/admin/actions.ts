@@ -626,3 +626,36 @@ export async function updateServiceOrderRules(
   revalidatePath("/admin/servicios")
   return { ok: true }
 }
+
+// ─── Disponibilidad por profesional ───────────────────────────────────────────
+
+export type StaffAvailabilityInput = {
+  day_of_week: number
+  from_time: string
+  to_time: string
+}
+
+export async function updateStaffAvailability(
+  staffId: string,
+  availRows: StaffAvailabilityInput[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { error: delErr } = await admin
+    .from("staff_availability")
+    .delete()
+    .eq("staff_id", staffId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (availRows.length > 0) {
+    const { error: insErr } = await admin
+      .from("staff_availability")
+      .insert(availRows.map((r) => ({ staff_id: staffId, ...r })))
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+
+  revalidatePath("/admin/staff")
+  revalidatePath("/admin")
+  return { ok: true }
+}

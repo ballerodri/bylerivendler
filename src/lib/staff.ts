@@ -22,6 +22,32 @@ function adminClient() {
   )
 }
 
+export type StaffProfile = {
+  id: string
+  full_name: string
+  role: string
+  isProfessionalOnly: boolean // true si es professional y no admin/reception
+}
+
+/**
+ * Devuelve el perfil de staff del usuario, o null si no es staff activo.
+ */
+export async function getStaffProfile(userId: string): Promise<StaffProfile | null> {
+  const admin = adminClient()
+  const { data } = await admin
+    .from("staff")
+    .select("id, full_name, role, active")
+    .eq("user_id", userId)
+    .maybeSingle()
+  if (!data?.active) return null
+  return {
+    id: data.id,
+    full_name: data.full_name,
+    role: data.role,
+    isProfessionalOnly: data.role === "professional",
+  }
+}
+
 /**
  * ¿El user actual es staff activo? Consulta la tabla, no el env var.
  * Usar después de tener una sesión autenticada.

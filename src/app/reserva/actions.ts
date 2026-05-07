@@ -16,6 +16,7 @@ const BookingInput = z.object({
   resolvedStaff: z.record(z.string(), z.string()).optional(),
   redeemWithPoints: z.boolean().optional(),
   savedClientId: z.string().uuid().optional(),
+  medicalNote: z.string().optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -214,9 +215,10 @@ export async function createBooking(
       deposit_paid: redeem,
       status: redeem ? "confirmed" : "pending",
       source: "web",
-      notes_internal: redeem
-        ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
-        : null,
+      notes_internal: [
+        redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
+        input.medicalNote ? `Cambio en ficha: ${input.medicalNote}` : null,
+      ].filter(Boolean).join(" | ") || null,
     })
     .select("id")
     .single()
@@ -404,6 +406,7 @@ export async function fetchDayAvailability(
   const dayStartMs = Date.UTC(dy, dm - 1, dd, AR_UTC_OFFSET, 0, 0)
   const dayStart = new Date(dayStartMs).toISOString()
   const dayEnd = new Date(dayStartMs + 24 * 3_600_000).toISOString()
+  const dayOfWeek = new Date(dayStartMs).getUTCDay()
 
   let apptQuery = supabase
     .from("appointments")
@@ -416,39 +419,51 @@ export async function fetchDayAvailability(
     apptQuery = apptQuery.eq("staff_id", proHint)
   }
 
-  const { data: appointments } = await apptQuery
-  if (!appointments?.length) return candidateSlots
+  let availQuery = supabase
+    .from("staff_availability")
+    .select("staff_id, day_of_week, from_time, to_time")
+  if (proHint !== "auto") availQuery = availQuery.eq("staff_id", proHint)
 
-  // For "auto": how many active professionals exist in total
-  let totalPros = 1
-  if (proHint === "auto") {
-    const { count } = await supabase
-      .from("staff")
-      .select("id", { count: "exact", head: true })
-      .eq("is_professional", true)
-      .eq("active", true)
-    totalPros = count ?? 1
-  }
+  const [{ data: appointments }, { data: prosData }, { data: availData }] = await Promise.all([
+    apptQuery,
+    proHint === "auto"
+      ? supabase.from("staff").select("id").eq("is_professional", true).eq("active", true)
+      : Promise.resolve({ data: [] as { id: string }[] }),
+    availQuery,
+  ])
+
+  const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
+  const availRows = (availData ?? []) as { staff_id: string; day_of_week: number; from_time: string; to_time: string }[]
+  const staffHasAvail = new Set(availRows.map((r) => r.staff_id))
+  const availMap: AvailMap = new Map(
+    availRows.map((r) => [`${r.staff_id}|${r.day_of_week}`, { from_time: r.from_time, to_time: r.to_time }])
+  )
 
   return candidateSlots.filter((slot) => {
     const slotStart = slotToUtcMs(dateStr, slot)
     const slotEnd   = slotStart + durationMin * 60_000
 
     if (proHint === "auto") {
-      // Count distinct busy professionals in this window.
-      // Appointments without staff_id (auto-assigned) count as 1 anonymous slot.
+      // Count pros actually available at this slot (day + hours)
+      const availableAtSlot = activePros.filter(
+        (pid) => proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, staffHasAvail, availMap)
+      )
+      if (!availableAtSlot.length) return false
+
+      // Count distinct busy professionals in this window
       const busyIds = new Set<string>()
       let anonymousBusy = 0
-      for (const appt of appointments) {
+      for (const appt of (appointments ?? [])) {
         const aStart = new Date(appt.starts_at).getTime()
         const aEnd   = aStart + (appt.duration_min as number) * 60_000
-        if (slotStart >= aEnd || slotEnd <= aStart) continue // no overlap
+        if (slotStart >= aEnd || slotEnd <= aStart) continue
         if (appt.staff_id) busyIds.add(appt.staff_id as string)
         else anonymousBusy++
       }
-      return busyIds.size + anonymousBusy < totalPros
+      return busyIds.size + anonymousBusy < availableAtSlot.length
     } else {
-      return !appointments.some((appt) => {
+      if (!proWorksAtSlot(proHint, dayOfWeek, slotStart, slotEnd, staffHasAvail, availMap)) return false
+      return !(appointments ?? []).some((appt) => {
         const aStart = new Date(appt.starts_at).getTime()
         const aEnd   = aStart + (appt.duration_min as number) * 60_000
         return slotStart < aEnd && slotEnd > aStart
@@ -487,12 +502,39 @@ function permutations(arr: number[]): number[][] {
 
 type Appt = { starts_at: string; duration_min: number; staff_id: string | null }
 
+type AvailMap = Map<string, { from_time: string; to_time: string }>
+
+function utcMsToArTime(ms: number): string {
+  const arMs = ms - AR_UTC_OFFSET * 3_600_000
+  const d = new Date(arMs)
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`
+}
+
+function proWorksAtSlot(
+  staffId: string,
+  dayOfWeek: number,
+  slotStartMs: number,
+  slotEndMs: number,
+  staffHasAvail: Set<string>,
+  availMap: AvailMap
+): boolean {
+  if (!staffHasAvail.has(staffId)) return true // no availability config = always available
+  const avail = availMap.get(`${staffId}|${dayOfWeek}`)
+  if (!avail) return false // configured for other days but not this one
+  const startStr = utcMsToArTime(slotStartMs)
+  const endStr = utcMsToArTime(slotEndMs)
+  return avail.from_time <= startStr && endStr <= avail.to_time
+}
+
 function checkPerm(
   startMs: number,
   perm: number[],
   services: ServiceInput[],
   appts: Appt[],
-  allPros: string[]
+  allPros: string[],
+  dayOfWeek: number,
+  staffHasAvail: Set<string>,
+  availMap: AvailMap
 ): Record<string, string> | null {
   const assignment: Record<string, string> = {}
   // Tracks which professionals are concurrently busy within THIS permutation's
@@ -514,14 +556,19 @@ function checkPerm(
       })
 
     if (svc.staffId !== "auto") {
+      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, staffHasAvail, availMap)) return null
       if (overlaps(svc.staffId)) return null
       assignment[svc.id] = svc.staffId
     } else {
       // Prefer already-assigned professionals (same pro can do sequential services).
-      // Among those free, pick any available one.
+      // Among those free and available, pick one.
       const assignedValues = Object.values(assignment)
-      const preferred = assignedValues.find((pid) => !overlaps(pid))
-      const free = preferred ?? allPros.find((pid) => !overlaps(pid))
+      const preferred = assignedValues.find(
+        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, staffHasAvail, availMap) && !overlaps(pid)
+      )
+      const free = preferred ?? allPros.find(
+        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, staffHasAvail, availMap) && !overlaps(pid)
+      )
       if (!free) return null
       assignment[svc.id] = free
     }
@@ -536,13 +583,16 @@ function trySlot(
   services: ServiceInput[],
   appts: Appt[],
   allPros: string[],
+  dayOfWeek: number,
+  staffHasAvail: Set<string>,
+  availMap: AvailMap,
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const assignment = checkPerm(startMs, perm, services, appts, allPros)
+    const assignment = checkPerm(startMs, perm, services, appts, allPros, dayOfWeek, staffHasAvail, availMap)
     if (assignment) {
       return {
         date: dateStr,
@@ -572,7 +622,7 @@ export async function fetchSequentialAvailability(
 
   const serviceIds = services.map((s) => s.id)
 
-  const [bhRes, prosRes, rulesRes] = await Promise.all([
+  const [bhRes, prosRes, rulesRes, availRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
     supabase
@@ -580,6 +630,7 @@ export async function fetchSequentialAvailability(
       .select("service_first_id, service_second_id")
       .in("service_first_id", serviceIds)
       .in("service_second_id", serviceIds),
+    supabase.from("staff_availability").select("staff_id, day_of_week, from_time, to_time"),
   ])
 
   const byDow = new Map(
@@ -588,6 +639,12 @@ export async function fetchSequentialAvailability(
     )
   )
   const allPros = ((prosRes.data ?? []) as { id: string }[]).map((p) => p.id)
+
+  const seqAvailRows = (availRes.data ?? []) as { staff_id: string; day_of_week: number; from_time: string; to_time: string }[]
+  const seqStaffHasAvail = new Set(seqAvailRows.map((r) => r.staff_id))
+  const seqAvailMap: AvailMap = new Map(
+    seqAvailRows.map((r) => [`${r.staff_id}|${r.day_of_week}`, { from_time: r.from_time, to_time: r.to_time }])
+  )
 
   // Set of "first_id|second_id" — first must go before second
   const orderRules = new Set<string>(
@@ -630,8 +687,9 @@ export async function fetchSequentialAvailability(
     const d = new Date(fromDate + "T00:00:00")
     d.setDate(d.getDate() + i)
     const dateStr = ymd(d)
+    const dayOfWeek = d.getDay()
 
-    const bh = byDow.get(d.getDay())
+    const bh = byDow.get(dayOfWeek)
     if (!bh || !bh.is_open || !bh.slots.length) continue
 
     const candidates = i === 0
@@ -641,7 +699,7 @@ export async function fetchSequentialAvailability(
     const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === dateStr)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayAppts, allPros, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayAppts, allPros, dayOfWeek, seqStaffHasAvail, seqAvailMap, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
@@ -656,7 +714,8 @@ export async function fetchSequentialAvailability(
   // Individual slots per service when no sequential slots today
   const individualSlotsForDate: SequentialAvailabilityResult["individualSlotsForDate"] = []
   if (!slotsForDate.length) {
-    const todayBh = byDow.get(new Date(fromDate + "T00:00:00").getDay())
+    const todayDow = new Date(fromDate + "T00:00:00").getDay()
+    const todayBh = byDow.get(todayDow)
     if (todayBh?.is_open && todayBh.slots.length) {
       const candidates = filterFutureSlots(fromDate, todayBh.slots, now)
       const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === fromDate)
@@ -666,15 +725,18 @@ export async function fetchSequentialAvailability(
           const sStart = slotToUtcMs(fromDate, slot)
           const sEnd = sStart + svc.duration * 60_000
           if (svc.staffId === "auto") {
-            // Available if at least one pro is free
+            // Available if at least one pro is free AND available today
             return allPros.some(
-              (pid) => !dayAppts.some((a) => {
-                if (a.staff_id !== pid) return false
-                const aS = new Date(a.starts_at).getTime()
-                return sStart < aS + a.duration_min * 60_000 && sEnd > aS
-              })
+              (pid) =>
+                proWorksAtSlot(pid, todayDow, sStart, sEnd, seqStaffHasAvail, seqAvailMap) &&
+                !dayAppts.some((a) => {
+                  if (a.staff_id !== pid) return false
+                  const aS = new Date(a.starts_at).getTime()
+                  return sStart < aS + a.duration_min * 60_000 && sEnd > aS
+                })
             )
           }
+          if (!proWorksAtSlot(svc.staffId, todayDow, sStart, sEnd, seqStaffHasAvail, seqAvailMap)) return false
           return !dayAppts.some((a) => {
             if (a.staff_id !== svc.staffId) return false
             const aS = new Date(a.starts_at).getTime()

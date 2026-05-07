@@ -164,6 +164,7 @@ export type BookingState = {
   medical?: MedicalForm
   redeemWithPoints?: boolean
   savedClientId?: string
+  medicalNote?: string   // nota de "algo cambió" para clientas existentes con ficha
 }
 
 export type ScreenId =

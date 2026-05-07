@@ -14,6 +14,12 @@ export type StaffRow = {
   is_professional: boolean
 }
 
+export type AvailabilityRow = {
+  day_of_week: number
+  from_time: string
+  to_time: string
+}
+
 export default async function AdminStaffDetailPage({
   params,
 }: {
@@ -26,13 +32,22 @@ export default async function AdminStaffDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const { data: staffMember } = await admin
-    .from("staff")
-    .select("id, full_name, role, email, active, is_professional")
-    .eq("id", id)
-    .maybeSingle<StaffRow>()
+  const [{ data: staffMember }, { data: availData }] = await Promise.all([
+    admin
+      .from("staff")
+      .select("id, full_name, role, email, active, is_professional")
+      .eq("id", id)
+      .maybeSingle<StaffRow>(),
+    admin
+      .from("staff_availability")
+      .select("day_of_week, from_time, to_time")
+      .eq("staff_id", id)
+      .order("day_of_week"),
+  ])
 
   if (!staffMember) notFound()
+
+  const availability = (availData ?? []) as AvailabilityRow[]
 
   return (
     <>
@@ -44,7 +59,7 @@ export default async function AdminStaffDetailPage({
       <h1 className="adm-h1">{staffMember.full_name}</h1>
       <p className="adm-lede">{staffMember.email ?? "Sin email registrado"}</p>
 
-      <StaffEditor staff={staffMember} />
+      <StaffEditor staff={staffMember} availability={availability} />
     </>
   )
 }

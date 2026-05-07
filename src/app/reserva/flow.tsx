@@ -86,10 +86,8 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
 
   // Nota: "success" ya no es parte del flujo; tras confirmar redirigimos a
   // /reserva/exito que es una página propia.
-  if (hasFullData && hasRecord) {
-    return ["services", "date", "confirm"]
-  }
-  if (hasFullData && !hasRecord) {
+  if (hasFullData) {
+    // hasRecord → Screen4Medical shows "¿Algo cambió?"; no record → shows full form
     return ["medical", "services", "date", "confirm"]
   }
   return ["details", "medical", "services", "date", "confirm"]
@@ -240,7 +238,7 @@ export default function ReservaFlow({
           />
         )
       case "medical":
-        return <Screen4Medical {...screenProps} />
+        return <Screen4Medical {...screenProps} hasExistingRecord={!!(currentClient?.hasMedicalRecord)} />
       case "confirm":
         return (
           <Screen5Confirm

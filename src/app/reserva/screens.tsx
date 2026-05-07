@@ -1123,7 +1123,23 @@ const EMPTY_MED = {
   consent: false,
 }
 
-export function Screen4Medical({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+export function Screen4Medical({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, hasExistingRecord }: ScreenProps & { hasExistingRecord?: boolean }) {
+  // Clienta existente CON ficha: mostrar vista "¿Algo cambió?" en lugar del form completo
+  if (hasExistingRecord && state.clientMode === "existing") {
+    return (
+      <MedicalUpdateScreen
+        state={state}
+        setState={setState}
+        onNext={onNext}
+        onBack={onBack}
+        onClose={onClose}
+        variant={variant}
+        stepNumber={stepNumber}
+        totalSteps={totalSteps}
+      />
+    )
+  }
+
   const med = state.medical || EMPTY_MED
   const setM = (patch: Partial<typeof EMPTY_MED>) =>
     setState({ ...state, medical: { ...med, ...patch } })
@@ -1395,6 +1411,7 @@ export function Screen5Confirm({
       resolvedStaff: state.resolvedStaff,
       redeemWithPoints: redeeming,
       savedClientId: state.savedClientId,
+      medicalNote: state.medicalNote,
       client: {
         firstName: state.form.firstName,
         lastName: state.form.lastName,
@@ -1833,6 +1850,119 @@ export function Screen6Success({
         </button>
       </div>
       {Body()}
+    </div>
+  )
+}
+
+// ---------- Medical Update Screen (clienta existente con ficha) ----------
+function MedicalUpdateScreen({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps }: ScreenProps) {
+  const [changed, setChanged] = useState<boolean | null>(null)
+  const [note, setNote] = useState(state.medicalNote ?? "")
+
+  const confirm = () => {
+    setState({
+      ...state,
+      medicalNote: changed && note.trim() ? note.trim() : undefined,
+    })
+    onNext()
+  }
+
+  const Body = () => (
+    <>
+      <p className="eyebrow">{stepLabel(stepNumber, "Ficha clínica")}</p>
+      <h1 className="headline">
+        ¿Todo <em>igual</em>?
+      </h1>
+      <p className="lede">
+        Ya tenemos tu ficha clínica. ¿Cambió algo desde tu última visita que debamos saber antes del tratamiento?
+      </p>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+        <button
+          onClick={() => setChanged(false)}
+          style={{
+            padding: "14px 18px",
+            borderRadius: 12,
+            border: `2px solid ${changed === false ? "var(--gold)" : "var(--line)"}`,
+            background: changed === false ? "var(--linen)" : "transparent",
+            fontFamily: "var(--serif)",
+            fontSize: 15,
+            textAlign: "left",
+            cursor: "pointer",
+            color: "var(--ink)",
+          }}
+        >
+          Todo igual, no hay cambios
+        </button>
+        <button
+          onClick={() => setChanged(true)}
+          style={{
+            padding: "14px 18px",
+            borderRadius: 12,
+            border: `2px solid ${changed === true ? "var(--gold)" : "var(--line)"}`,
+            background: changed === true ? "var(--linen)" : "transparent",
+            fontFamily: "var(--serif)",
+            fontSize: 15,
+            textAlign: "left",
+            cursor: "pointer",
+            color: "var(--ink)",
+          }}
+        >
+          Sí, hay algo nuevo que deben saber
+        </button>
+      </div>
+
+      {changed === true && (
+        <div style={{ marginBottom: 24 }}>
+          <textarea
+            className="field__input"
+            style={{ width: "100%", minHeight: 100, padding: 12, lineHeight: 1.5, resize: "vertical" }}
+            placeholder="Contanos brevemente qué cambió (nueva medicación, alergia, embarazo, etc.)"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+          <p style={{ fontSize: 11, color: "var(--ink-mute)", marginTop: 6 }}>
+            El equipo lo revisará antes de tu turno.
+          </p>
+        </div>
+      )}
+    </>
+  )
+
+  const FooterCTA = () => (
+    <div className="footer">
+      <div className="footer__row">
+        <div className="footer__summary" />
+        <button
+          className="btn btn--primary"
+          disabled={changed === null || (changed === true && !note.trim())}
+          onClick={confirm}
+        >
+          Continuar
+        </button>
+      </div>
+    </div>
+  )
+
+  if (variant === "desktop") {
+    return (
+      <div className="dmain">
+        <div className="dmain__inner">
+          {Body()}
+        </div>
+        {FooterCTA()}
+      </div>
+    )
+  }
+
+  return (
+    <div className="screen">
+      <TopBar onBack={onBack} onClose={onClose} />
+      <Progress step={stepNumber} total={totalSteps} />
+      <div className="screen__body">
+        {Body()}
+      </div>
+      {FooterCTA()}
     </div>
   )
 }

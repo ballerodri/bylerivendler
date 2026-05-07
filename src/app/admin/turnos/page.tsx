@@ -1,5 +1,7 @@
 import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
 import { fmtPrice } from "../../reserva/data"
 
@@ -45,6 +47,10 @@ export default async function AdminTurnosPage({
   const statusFilter = sp.status ?? "all"
   const range = sp.range ?? "upcoming"
 
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  const staffProfile = user ? await getStaffProfile(user.id) : null
+
   const admin = createAdminClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
@@ -69,6 +75,7 @@ export default async function AdminTurnosPage({
   else q = q.order("starts_at", { ascending: false })
 
   if (statusFilter !== "all") q = q.eq("status", statusFilter)
+  if (staffProfile?.isProfessionalOnly) q = q.eq("staff_id", staffProfile.id)
 
   const { data } = await q.limit(200)
   const appts = (data ?? []) as unknown as ApptRow[]
@@ -77,9 +84,13 @@ export default async function AdminTurnosPage({
     <>
       <p className="adm-eyebrow">Agenda</p>
       <h1 className="adm-h1">
-        Todos los <em>turnos</em>
+        {staffProfile?.isProfessionalOnly ? "Mis " : "Todos los "}<em>turnos</em>
       </h1>
       <p className="adm-lede">
+        {staffProfile?.isProfessionalOnly
+          ? `Tus turnos asignados · `
+          : ""
+        }
         {appts.length} resultado{appts.length === 1 ? "" : "s"}.
       </p>
 
