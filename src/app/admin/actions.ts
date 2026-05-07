@@ -810,3 +810,33 @@ export async function createAdminBooking(
   revalidatePath("/admin/turnos")
   return { ok: true, appointmentId: appt.id }
 }
+
+// ─── Eliminar miembro del personal ───────────────────────────────────────────
+
+export async function deleteStaff(
+  staffId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // Verificar si tiene turnos futuros asignados
+  const { count } = await admin
+    .from("appointments")
+    .select("id", { count: "exact", head: true })
+    .eq("staff_id", staffId)
+    .gte("starts_at", new Date().toISOString())
+    .in("status", ["pending", "confirmed"])
+
+  if (count && count > 0) {
+    return {
+      ok: false,
+      error: `Tiene ${count} turno${count === 1 ? "" : "s"} futuro${count === 1 ? "" : "s"} asignado${count === 1 ? "" : "s"}. Reasigná o cancelá los turnos antes de eliminar.`,
+    }
+  }
+
+  const { error } = await admin.from("staff").delete().eq("id", staffId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/admin/staff")
+  return { ok: true }
+}

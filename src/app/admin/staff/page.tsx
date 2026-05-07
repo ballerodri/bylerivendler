@@ -4,6 +4,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
 import StaffForm from "./staff-form"
 import StaffActiveToggle from "./active-toggle"
+import StaffDeleteButton from "./delete-button"
 
 export const dynamic = "force-dynamic"
 
@@ -92,6 +93,7 @@ export default async function AdminStaffPage() {
                   Editar →
                 </Link>
                 <StaffActiveToggle staffId={s.id} active={s.active} />
+                <StaffDeleteButton staffId={s.id} name={s.full_name} />
               </div>
             </div>
           ))}
