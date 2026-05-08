@@ -120,7 +120,7 @@ export async function rescheduleAppointment(
       `id, status, duration_min, total_cents, google_event_id, staff_id,
        client:clients(email, first_name, last_name),
        staff:staff(full_name, email),
-       appointment_services(id, starts_at, duration_min, service:services(name))`
+       appointment_services(service_id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -128,7 +128,7 @@ export async function rescheduleAppointment(
   if (apptErr) return { ok: false, error: apptErr.message }
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
-  type SvcShape = { id: string; starts_at: string | null; duration_min: number; service: { name: string } | null }
+  type SvcShape = { service_id: string; starts_at: string | null; duration_min: number; service: { name: string } | null }
   type ApptShape = {
     id: string
     status: string
@@ -162,7 +162,8 @@ export async function rescheduleAppointment(
     await admin
       .from("appointment_services")
       .update({ starts_at: new Date(svcMs).toISOString() })
-      .eq("id", svc.id)
+      .eq("appointment_id", appointmentId)
+      .eq("service_id", svc.service_id)
     svcMs += svc.duration_min * 60_000
   }
 
