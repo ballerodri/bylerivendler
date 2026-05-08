@@ -73,7 +73,9 @@ const jsonLd = {
     "Estética profesional en Pilar, Buenos Aires. Tratamientos faciales, corporales y masajes.",
   address: {
     "@type": "PostalAddress",
+    streetAddress: "Sanguinetti 297",
     addressLocality: "Pilar",
+    postalCode: "B1629",
     addressRegion: "Buenos Aires",
     addressCountry: "AR",
   },
