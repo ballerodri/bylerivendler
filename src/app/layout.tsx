@@ -64,6 +64,30 @@ export const metadata: Metadata = {
   },
 }
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BeautySalon",
+  name: "By Leri Vendler",
+  url: "https://bylerivendler.com",
+  description:
+    "Estética profesional en Pilar, Buenos Aires. Tratamientos faciales, corporales y masajes.",
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Pilar",
+    addressRegion: "Buenos Aires",
+    addressCountry: "AR",
+  },
+  geo: {
+    "@type": "GeoCoordinates",
+    latitude: -34.4587,
+    longitude: -58.9142,
+  },
+  areaServed: "Pilar, Buenos Aires",
+  priceRange: "$$",
+  image: "https://bylerivendler.com/og-image.jpg",
+  sameAs: [],
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -74,6 +98,12 @@ export default function RootLayout({
       lang="es-AR"
       className={`${serif.variable} ${sans.variable} ${script.variable} ${mono.variable} h-full antialiased`}
     >
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      </head>
       <body className="min-h-full flex flex-col">
         <QueryProvider>{children}</QueryProvider>
       </body>
