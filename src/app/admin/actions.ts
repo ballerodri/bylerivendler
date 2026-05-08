@@ -114,17 +114,18 @@ export async function rescheduleAppointment(
 
   const admin = adminClient()
 
-  const { data: appt } = await admin
+  const { data: appt, error: apptErr } = await admin
     .from("appointments")
     .select(
-      `id, status, duration_min, total_cents, google_event_id,
+      `id, status, duration_min, total_cents, google_event_id, staff_id,
        client:clients(email, first_name, last_name),
-       staff:staff(full_name, email, calendar_color_id),
+       staff:staff(full_name, email),
        appointment_services(id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
 
+  if (apptErr) return { ok: false, error: apptErr.message }
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
   type SvcShape = { id: string; starts_at: string | null; duration_min: number; service: { name: string } | null }
@@ -134,8 +135,9 @@ export async function rescheduleAppointment(
     duration_min: number
     total_cents: number
     google_event_id: string | null
+    staff_id: string | null
     client: { email: string; first_name: string | null; last_name: string | null } | null
-    staff: { full_name: string; email: string | null; calendar_color_id: string | null } | null
+    staff: { full_name: string; email: string | null } | null
     appointment_services: SvcShape[]
   }
   const a = appt as unknown as ApptShape
@@ -194,7 +196,9 @@ export async function rescheduleAppointment(
       serviceNames,
       staffName: a.staff?.full_name ?? null,
       staffEmail: a.staff?.email ?? null,
-      staffColorId: a.staff?.calendar_color_id ?? null,
+      staffColorId: a.staff_id
+        ? ((await admin.from("staff").select("calendar_color_id").eq("id", a.staff_id).maybeSingle()).data as any)?.calendar_color_id ?? null
+        : null,
       startsAt: newDate,
       endsAt,
       notes: null,
