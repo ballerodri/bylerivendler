@@ -52,9 +52,9 @@ export default function GoogleCalendarCard({ connected, googleEmail, connectedAt
       </div>
 
       <p style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 20, lineHeight: 1.6 }}>
-        Los turnos confirmados se agregan automáticamente al calendario de{" "}
-        <strong>bylerivendler@gmail.com</strong> y las profesionales reciben
-        una invitación por email.
+        {connected && googleEmail
+          ? <>Los turnos confirmados se agregan automáticamente al calendario de <strong>{googleEmail}</strong>.</>
+          : "Conectá tu cuenta de Google para sincronizar los turnos confirmados con Google Calendar."}
       </p>
 
       {connected && googleEmail && (
