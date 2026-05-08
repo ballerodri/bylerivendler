@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { updateAppointmentStatus } from "../actions"
+import { updateAppointmentStatus, deleteAppointment } from "../actions"
 
 const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: string }[]> = {
   pending: [
@@ -33,12 +33,21 @@ export default function StatusActions({
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const actions = NEXT_ACTIONS[currentStatus] ?? []
 
   const change = (status: string) => {
     setError(null)
     startTransition(async () => {
       const r = await updateAppointmentStatus(appointmentId, status)
+      if (!r.ok) setError(r.error ?? "Error")
+    })
+  }
+
+  const handleDelete = () => {
+    setError(null)
+    startTransition(async () => {
+      const r = await deleteAppointment(appointmentId)
       if (!r.ok) setError(r.error ?? "Error")
     })
   }
@@ -68,6 +77,30 @@ export default function StatusActions({
         >
           Reagendar
         </a>
+      )}
+      {confirmDelete ? (
+        <>
+          <span style={{ fontSize: 12, color: "#8c463c" }}>¿Eliminar?</span>
+          <button
+            className="adm-btn adm-btn--danger"
+            disabled={pending}
+            onClick={handleDelete}
+          >
+            Sí, eliminar
+          </button>
+          <button className="adm-btn" onClick={() => setConfirmDelete(false)}>
+            No
+          </button>
+        </>
+      ) : (
+        <button
+          className="adm-btn"
+          disabled={pending}
+          onClick={() => setConfirmDelete(true)}
+          style={{ color: "var(--ink-mute)", fontSize: 12 }}
+        >
+          Eliminar
+        </button>
       )}
       {error && (
         <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>

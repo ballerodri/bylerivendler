@@ -103,6 +103,35 @@ export async function updateAppointmentStatus(
   return { ok: true }
 }
 
+export async function deleteAppointment(
+  appointmentId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // Borrar evento de Google Calendar si existe
+  const { data: appt } = await admin
+    .from("appointments")
+    .select("google_event_id")
+    .eq("id", appointmentId)
+    .maybeSingle()
+  if (appt?.google_event_id) {
+    deleteCalendarEvent(appt.google_event_id).catch(() => {})
+  }
+
+  const { error } = await admin
+    .from("appointments")
+    .delete()
+    .eq("id", appointmentId)
+
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/portal")
+  return { ok: true }
+}
+
 export async function rescheduleAppointment(
   appointmentId: string,
   newStartsAt: string
