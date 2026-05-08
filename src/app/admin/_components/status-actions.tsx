@@ -11,8 +11,12 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
   confirmed: [
     { status: "in_progress", label: "Iniciar" },
     { status: "no_show", label: "No vino", variant: "danger" },
+    { status: "cancelled", label: "Cancelar", variant: "danger" },
   ],
-  in_progress: [{ status: "completed", label: "Completar", variant: "primary" }],
+  in_progress: [
+    { status: "completed", label: "Completar", variant: "primary" },
+    { status: "cancelled", label: "Cancelar", variant: "danger" },
+  ],
   completed: [],
   cancelled: [{ status: "pending", label: "Reactivar" }],
   no_show: [{ status: "pending", label: "Reactivar" }],
