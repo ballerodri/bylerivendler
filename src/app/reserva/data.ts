@@ -175,6 +175,15 @@ export type BookingState = {
   redeemWithPoints?: boolean
   savedClientId?: string
   medicalNote?: string   // nota de "algo cambió" para clientas existentes con ficha
+  depilationConsent?: {
+    nombreApellido: string
+    zonasTratamiento: string[]
+    contraindicaciones: string
+    checkboxConsentimiento: boolean
+    checkboxIndicaciones: boolean
+    checkboxSalud: boolean
+    checkboxRegistro: boolean
+  }
 }
 
 export type ScreenId =

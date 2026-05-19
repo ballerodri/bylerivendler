@@ -434,6 +434,35 @@ export async function saveMedicalEarly(
   return { ok: true }
 }
 
+export async function saveDepilationConsent(
+  clientId: string,
+  data: {
+    nombreApellido: string
+    zonasTratamiento: string[]
+    contraindicaciones: string
+    checkboxConsentimiento: boolean
+    checkboxIndicaciones: boolean
+    checkboxSalud: boolean
+    checkboxRegistro: boolean
+  }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = adminClient()
+
+  const { error } = await supabase.from("medical_intake_depilation").insert({
+    client_id: clientId,
+    nombre_apellido: data.nombreApellido,
+    zonas_tratamiento: data.zonasTratamiento,
+    contraindicaciones: data.contraindicaciones || null,
+    checkbox_consentimiento: data.checkboxConsentimiento,
+    checkbox_indicaciones: data.checkboxIndicaciones,
+    checkbox_salud: data.checkboxSalud,
+    checkbox_registro: data.checkboxRegistro,
+  })
+
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 /**
  * Returns the candidate slots (from business hours) that are actually free,
  * considering existing appointments for the day and the total duration of

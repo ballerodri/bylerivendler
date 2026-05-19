@@ -17,10 +17,11 @@ import {
 } from "./data"
 import type { BookingState, Category, Combo, Professional, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
-import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability, joinWaitlist } from "./actions"
+import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability, joinWaitlist, saveDepilationConsent } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
+import { DepilationConsent } from "./depilation-consent"
 
 type Variant = "mobile" | "desktop"
 
@@ -1245,7 +1246,27 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
     setM({ [key]: next })
   }
 
-  const isValid = med.consent
+  const hasDepilation = (state.services || []).some((s) => s.name?.toLowerCase().includes("depilación"))
+  const depilationData = state.depilationConsent || {
+    nombreApellido: "",
+    zonasTratamiento: [],
+    contraindicaciones: "",
+    checkboxConsentimiento: false,
+    checkboxIndicaciones: false,
+    checkboxSalud: false,
+    checkboxRegistro: false,
+  }
+
+  const isDepilationValid = hasDepilation
+    ? depilationData.nombreApellido.trim() &&
+      depilationData.zonasTratamiento.length > 0 &&
+      depilationData.checkboxConsentimiento &&
+      depilationData.checkboxIndicaciones &&
+      depilationData.checkboxSalud &&
+      depilationData.checkboxRegistro
+    : true
+
+  const isValid = med.consent && isDepilationValid
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -1265,6 +1286,14 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
       setSaving(false)
       if (!r.ok) { setSaveError(r.error); return }
     }
+
+    if (hasDepilation && state.savedClientId) {
+      setSaving(true)
+      const r = await saveDepilationConsent(state.savedClientId, depilationData)
+      setSaving(false)
+      if (!r.ok) { setSaveError(r.error); return }
+    }
+
     onNext()
   }
 
@@ -1278,6 +1307,15 @@ export function Screen4Medical({ state, setState, onNext, onBack, onClose, varia
         Esta ficha es confidencial y sólo la consulta el equipo profesional. La
         completás una sola vez.
       </p>
+
+      {hasDepilation && (
+        <div style={{ marginBottom: 32, paddingBottom: 32, borderBottom: "1px solid #e0d9d0" }}>
+          <DepilationConsent
+            data={depilationData}
+            onChange={(newData) => setState({ ...state, depilationConsent: newData })}
+          />
+        </div>
+      )}
 
       <div className="med-group">
         <p className="med-q">
