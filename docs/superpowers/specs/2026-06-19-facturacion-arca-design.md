@@ -39,7 +39,7 @@ Fuera de alcance en esta versión (YAGNI):
 | Condición fiscal | **Monotributista → Factura C** | Confirmado por la usuaria. No discrimina IVA. |
 | Trigger de facturación | **Desde turno completado + factura manual suelta** | Cubre el día a día y casos sueltos (productos, señas). |
 | Salida | **PDF oficial + envío automático por email** | Reusa Resend. Comprobante listo para la clienta. |
-| Conexión con ARCA | **Librería local `arca-facturacion`** | Datos van directo a ARCA, sin terceros ni costo mensual. Firma en **JavaScript puro** (no requiere binario OpenSSL) → funciona en Vercel serverless. Genera QR oficial. |
+| Conexión con ARCA | **Capa propia liviana: WSAA + WSFE con `soap` + `node-forge`, token persistido en Supabase** | Datos van directo a ARCA, sin terceros ni costo mensual. La firma se hace en **JavaScript puro** con `node-forge` (no requiere binario OpenSSL) → funciona en Vercel serverless. **Por qué no una librería AFIP de alto nivel:** las disponibles (`arca-facturacion`, etc.) no permiten **guardar y reutilizar** el token de WSAA; en Vercel serverless el servidor se reinicia y volvería a pedir token dentro de las 12 h, lo cual ARCA **rechaza** (fault "ya posee un TA válido"), haciendo fallar facturas. Manejando WSAA nosotros y persistiendo el token, el problema desaparece. |
 | Estado del trámite ARCA | **CUIT sí, certificado no** | Hay trámite previo (Sección 8). Empezamos por homologación. |
 
 ---
@@ -48,14 +48,24 @@ Fuera de alcance en esta versión (YAGNI):
 
 Capas chicas y aisladas, cada una con una sola responsabilidad:
 
-- **`src/lib/arca/client.ts`** — envuelve `arca-facturacion`. Autentica y pide el CAE.
-  No conoce la base de datos ni el PDF.
-- **`src/lib/arca/token-store.ts`** — persiste y reutiliza el token de ARCA (vale 12 h)
-  en una tabla de Supabase. *Por qué:* en Vercel cada request puede correr en un servidor
-  distinto y ARCA bloquea pedir un token nuevo teniendo uno válido. Hay que persistirlo,
-  no alcanza con cache en memoria.
-- **`src/lib/arca/pdf.ts`** — arma el PDF de la Factura C (`@react-pdf/renderer`) y el QR
-  (`qrcode`). Recibe datos puros, devuelve un PDF.
+- **`src/lib/arca/config.ts`** — lee variables de entorno, elige URLs de homologación o
+  producción, y entrega el certificado/clave en memoria.
+- **`src/lib/arca/wsaa-sign.ts`** — arma el TRA (login ticket) y lo firma como CMS/PKCS#7
+  con `node-forge` (JavaScript puro). Sin red, sin base de datos. Testeable.
+- **`src/lib/arca/token-store.ts`** — persiste y reutiliza el token de WSAA (vale 12 h)
+  en la tabla `arca_tokens` de Supabase. *Por qué:* en Vercel cada request puede correr en un
+  servidor distinto y ARCA bloquea pedir un token nuevo teniendo uno válido. Hay que
+  persistirlo, no alcanza con cache en memoria.
+- **`src/lib/arca/auth.ts`** — obtiene el token: si hay uno válido en Supabase lo reutiliza;
+  si no, firma el TRA y llama a WSAA `LoginCms` (vía `soap`), guarda el nuevo token.
+- **`src/lib/arca/wsfe-payload.ts`** — arma el pedido `FeCAEReq` (importes en pesos,
+  concepto, `CondicionIVAReceptorId`, fechas). Sin red. Testeable.
+- **`src/lib/arca/wsfe.ts`** — llama a `FECompUltimoAutorizado` y `FECAESolicitar` (vía `soap`)
+  y mapea la respuesta (CAE, vencimiento, número).
+- **`src/lib/arca/qr.ts`** — construye la URL del QR oficial de ARCA. Sin red. Testeable.
+- **`src/lib/arca/invoice-service.ts`** — orquesta: auth → WSFE → guarda fila en `invoices`.
+- **`src/lib/arca/pdf.tsx`** — arma el PDF de la Factura C (`@react-pdf/renderer`) y el QR
+  como imagen (`qrcode`). Recibe datos puros, devuelve un PDF.
 - **`src/app/admin/facturacion/`** — pantallas: historial/listado + form de factura manual.
 - **`src/app/admin/facturacion/actions.ts`** — Server Actions que orquestan:
   validar → pedir CAE → guardar en DB → generar PDF → enviar email.
@@ -69,7 +79,7 @@ Turno completado / Form manual
         ↓
 Server Action "emitirFactura"
         ↓
-arca/client → pide CAE a ARCA   →   guarda invoice en Supabase
+invoice-service → auth (token persistido) → WSFE pide CAE   →   guarda invoice en Supabase
         ↓
 arca/pdf → genera PDF + QR
         ↓
@@ -185,10 +195,15 @@ el `.crt`.
 
 ## 10. Dependencias nuevas
 
-- `arca-facturacion` — conexión WSAA + WSFE + QR.
+- `soap` — cliente SOAP para WSAA (`LoginCms`) y WSFE (`FECAESolicitar`,
+  `FECompUltimoAutorizado`). Battle-tested en el ecosistema AFIP de Node.
+- `node-forge` — firma CMS/PKCS#7 del TRA y generación de clave privada + CSR (script de setup).
+  JavaScript puro → no requiere binario OpenSSL → funciona en Vercel.
+- `xml2js` — parseo de respuestas XML de WSAA.
 - `@react-pdf/renderer` — generación del PDF (compatible con Vercel serverless).
 - `qrcode` — render del QR a imagen para el PDF.
-- `node-forge` (o `node:crypto`) — generación de clave privada + CSR (script de setup).
+- `vitest` — runner de tests (el proyecto no tenía tests; se agrega para TDD de la lógica pura:
+  firma, armado de payload, importes, QR).
 
 ---
 
