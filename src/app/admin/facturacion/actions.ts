@@ -6,9 +6,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser } from "@/lib/staff"
 import { emitirFactura } from "@/lib/arca/invoice-service"
-import { loadInvoicePdfData } from "@/lib/arca/invoice-pdf"
-import { renderInvoicePdf } from "@/lib/arca/pdf"
-import { sendInvoiceEmail } from "@/lib/email/invoice-emails"
+import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
 import { pesosToCents } from "@/lib/arca/format"
 
 async function requireStaff() {
@@ -23,31 +21,6 @@ function adminClient() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
-}
-
-// Envía el PDF por email. Siempre retorna un resultado, nunca lanza.
-async function enviarPdfPorEmail(
-  invoiceId: string,
-  to: string | null,
-  firstName: string
-): Promise<{ ok: boolean; error?: string }> {
-  if (!to) return { ok: false, error: "Sin email de destinatario" }
-  try {
-    const data = await loadInvoicePdfData(invoiceId)
-    if (!data) return { ok: false, error: "No se pudo cargar la factura para el PDF" }
-    const pdf = await renderInvoicePdf(data)
-    return await sendInvoiceEmail({
-      to,
-      firstName,
-      cbteNro: data.nro,
-      ptoVta: data.ptoVta,
-      fecha: data.fecha,
-      totalCents: data.totalCents,
-      pdf,
-    })
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
 }
 
 const ManualSchema = z.object({
@@ -77,7 +50,7 @@ export async function emitirFacturaManual(
       totalCents: pesosToCents(v.montoPesos),
       descripcion: v.descripcion,
     })
-    await enviarPdfPorEmail(factura.id, v.email || null, v.receptorNombre || "")
+    await renderAndEmailInvoice(factura.id, v.email || null, v.receptorNombre || "")
     revalidatePath("/admin/facturacion")
     return { ok: true, id: factura.id }
   } catch (e) {
@@ -128,7 +101,7 @@ export async function emitirFacturaTurno(
       totalCents: appt.total_cents,
       descripcion,
     })
-    await enviarPdfPorEmail(factura.id, client?.email ?? null, client?.first_name ?? "")
+    await renderAndEmailInvoice(factura.id, client?.email ?? null, client?.first_name ?? "")
     revalidatePath("/admin/facturacion")
     revalidatePath("/admin/turnos")
     return { ok: true, id: factura.id }
@@ -162,6 +135,6 @@ export async function reenviarFacturaEmail(
   }
   if (!to) return { ok: false, error: "La factura no tiene un email asociado" }
 
-  const r = await enviarPdfPorEmail(invoiceId, to, firstName)
+  const r = await renderAndEmailInvoice(invoiceId, to, firstName)
   return r.ok ? { ok: true } : { ok: false, error: r.error }
 }
