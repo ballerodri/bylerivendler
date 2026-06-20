@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { requireAdmin } from "@/lib/staff"
+import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { emitirFactura } from "@/lib/arca/invoice-service"
 import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
 
@@ -18,7 +18,7 @@ function adminClient() {
 async function requireAdminAction() {
   const ssr = await createSsrClient()
   const { data: { user } } = await ssr.auth.getUser()
-  if (!user) throw new Error("Sin sesión")
+  if (!user || !(await isStaffUser(user.id))) throw new Error("Acceso denegado")
   await requireAdmin(user.id)
 }
 
@@ -51,13 +51,13 @@ export async function venderPack(input: {
 
   let facturaError: string | undefined
   if (input.facturar) {
-    const { data: client } = await admin
-      .from("clients")
-      .select("first_name, dni, email")
-      .eq("id", input.clientId)
-      .maybeSingle()
-    const dni = client?.dni ?? null
     try {
+      const { data: client } = await admin
+        .from("clients")
+        .select("first_name, dni, email")
+        .eq("id", input.clientId)
+        .maybeSingle()
+      const dni = client?.dni ?? null
       const factura = await emitirFactura({
         clientId: input.clientId,
         concepto: 2,

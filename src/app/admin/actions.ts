@@ -154,7 +154,7 @@ export async function deleteAppointment(
   // Borrar evento de Google Calendar si existe
   const { data: appt } = await admin
     .from("appointments")
-    .select("google_event_id")
+    .select("google_event_id, pack_purchase_id")
     .eq("id", appointmentId)
     .maybeSingle()
   if (appt?.google_event_id) {
@@ -168,8 +168,24 @@ export async function deleteAppointment(
 
   if (error) return { ok: false, error: error.message }
 
+  // Devolver la sesión al pack si el turno tenía uno asignado
+  if (appt?.pack_purchase_id) {
+    const { data: pp } = await admin
+      .from("pack_purchases")
+      .select("sessions_used")
+      .eq("id", appt.pack_purchase_id)
+      .maybeSingle()
+    if (pp && pp.sessions_used > 0) {
+      await admin
+        .from("pack_purchases")
+        .update({ sessions_used: pp.sessions_used - 1 })
+        .eq("id", appt.pack_purchase_id)
+    }
+  }
+
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
   revalidatePath("/portal")
   return { ok: true }
 }
