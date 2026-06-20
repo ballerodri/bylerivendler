@@ -285,8 +285,9 @@
   letter-spacing: 0.1em;
 }
 
-.adm-btn--primary:hover {
+.adm-btn.adm-btn--primary:hover {
   background: #1d1917;
+  color: var(--paper);
 }
 
 .adm-btn--danger {

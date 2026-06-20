@@ -78,7 +78,12 @@ export default function ManualForm() {
 
       {error && <p style={{ color: "#8c463c", fontSize: 13 }}>{error}</p>}
 
-      <button className="adm-btn adm-btn--primary" type="submit" disabled={pending}>
+      <button
+        className="adm-btn adm-btn--primary"
+        type="submit"
+        disabled={pending}
+        style={{ justifyContent: "center", padding: "12px 16px", fontSize: 13, marginTop: 4 }}
+      >
         {pending ? "Emitiendo…" : "Emitir factura"}
       </button>
     </form>
