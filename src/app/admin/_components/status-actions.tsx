@@ -54,7 +54,7 @@ export default function StatusActions({
 
   const canReschedule = RESCHEDULABLE.has(currentStatus)
 
-  if (actions.length === 0 && !canReschedule) {
+  if (actions.length === 0 && !canReschedule && currentStatus !== "completed") {
     return <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>—</span>
   }
 
@@ -70,6 +70,11 @@ export default function StatusActions({
           {a.label}
         </button>
       ))}
+      {currentStatus === "completed" && (
+        <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
+          Facturar
+        </a>
+      )}
       {canReschedule && (
         <a
           href={`/admin/turnos/${appointmentId}/reagendar`}

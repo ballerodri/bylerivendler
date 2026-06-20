@@ -86,6 +86,12 @@ export default async function AdminTurnosPage({
   const { data } = await q.limit(200)
   const appts = (data ?? []) as unknown as ApptRow[]
 
+  const { data: facturadas } = await admin
+    .from("invoices")
+    .select("appointment_id")
+    .not("appointment_id", "is", null)
+  const facturadasSet = new Set((facturadas ?? []).map((f) => f.appointment_id as string))
+
   return (
     <>
       <p className="adm-eyebrow">Agenda</p>
@@ -193,6 +199,9 @@ export default async function AdminTurnosPage({
                   <span className={`adm-pill adm-pill--${a.status}`}>
                     {STATUS_LABEL[a.status] ?? a.status}
                   </span>
+                  {facturadasSet.has(a.id) && (
+                    <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
+                  )}
                 </div>
                 <div className="adm-actions">
                   {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
