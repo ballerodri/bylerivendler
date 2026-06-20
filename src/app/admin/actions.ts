@@ -38,7 +38,8 @@ function adminClient() {
 
 export async function updateAppointmentStatus(
   appointmentId: string,
-  status: string
+  status: string,
+  packPurchaseId?: string
 ): Promise<{ ok: boolean; error?: string }> {
   await requireStaff()
   const parsed = StatusSchema.safeParse(status)
@@ -50,7 +51,7 @@ export async function updateAppointmentStatus(
   // exactamente una vez.
   const { data: prev } = await admin
     .from("appointments")
-    .select("status, client_id, google_event_id")
+    .select("status, client_id, google_event_id, pack_purchase_id")
     .eq("id", appointmentId)
     .maybeSingle()
 
@@ -97,8 +98,49 @@ export async function updateAppointmentStatus(
     }
   }
 
+  // ── Packs: descontar al entrar a completed; devolver al salir ──
+  const enteringCompleted = parsed.data === "completed" && prev?.status !== "completed"
+  const leavingCompleted = prev?.status === "completed" && parsed.data !== "completed"
+
+  if (enteringCompleted && packPurchaseId) {
+    const { data: pp } = await admin
+      .from("pack_purchases")
+      .select("sessions_total, sessions_used")
+      .eq("id", packPurchaseId)
+      .maybeSingle()
+    if (pp && pp.sessions_used < pp.sessions_total) {
+      await admin
+        .from("pack_purchases")
+        .update({ sessions_used: pp.sessions_used + 1 })
+        .eq("id", packPurchaseId)
+      await admin
+        .from("appointments")
+        .update({ pack_purchase_id: packPurchaseId })
+        .eq("id", appointmentId)
+    }
+  }
+
+  if (leavingCompleted && prev?.pack_purchase_id) {
+    const { data: pp } = await admin
+      .from("pack_purchases")
+      .select("sessions_used")
+      .eq("id", prev.pack_purchase_id)
+      .maybeSingle()
+    if (pp && pp.sessions_used > 0) {
+      await admin
+        .from("pack_purchases")
+        .update({ sessions_used: pp.sessions_used - 1 })
+        .eq("id", prev.pack_purchase_id)
+    }
+    await admin
+      .from("appointments")
+      .update({ pack_purchase_id: null })
+      .eq("id", appointmentId)
+  }
+
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
   revalidatePath("/portal")
   return { ok: true }
 }
