@@ -5,6 +5,7 @@ import { isStaffUser } from "@/lib/staff"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import LogoutButton from "@/app/portal/logout-button"
 import AdminNotifications from "./_components/admin-notifications"
+import Sidebar from "./_components/sidebar"
 import "./admin.css"
 
 type StaffRow = {
@@ -42,7 +43,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   return (
     <div className="admin">
       <div className="adm-shell">
-        <aside className="adm-side">
+        <Sidebar>
           <Link href="/admin" className="adm-side__brand">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/assets/logo-crop.png" alt="By Leri Vendler" />
@@ -110,7 +111,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             </span>
             <LogoutButton />
           </div>
-        </aside>
+        </Sidebar>
 
         <main className="adm-main">{children}</main>
       </div>
