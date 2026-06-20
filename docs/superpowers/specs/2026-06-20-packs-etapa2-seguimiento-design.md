@@ -76,8 +76,12 @@ En `/admin/clientas/[id]`, sección "Packs": lista de compras con
     `sessions_used`** (tope = total).
   - **No** → completa normal (sin tocar packs).
 - Si la clienta **no** tiene pack activo que matchee, "Completar" funciona como hoy (sin preguntar).
-- **Reversa:** si un turno con `pack_purchase_id` sale del estado `completed` (reactivar/cancelar),
-  se **decrementa** `sessions_used` y se limpia `pack_purchase_id` (devuelve la sesión).
+- **Reversa (corrección de error):** en la UI un turno "completado" es **terminal** (no se reactiva,
+  para no duplicar los puntos de fidelidad que se suman al completar). La forma de corregir un
+  descuento equivocado es **eliminar el turno**: `deleteAppointment` devuelve la sesión
+  (`sessions_used − 1`, con piso en 0) si el turno tenía `pack_purchase_id`. La lógica de
+  "salir de completed" en `updateAppointmentStatus` queda como defensa por si en el futuro se
+  agrega "Reactivar" (con reversa de puntos incluida).
 - Integración: extender la acción existente `updateAppointmentStatus` con un parámetro opcional
   `packPurchaseId`, manejando el incremento al entrar a `completed` y el decremento al salir.
   Para mostrar la opción, `/admin/turnos` calcula los packs activos que matchean por turno y se
