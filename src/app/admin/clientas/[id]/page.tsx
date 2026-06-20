@@ -4,6 +4,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../../reserva/data"
 import RecordEditor from "./record-editor"
 import PhotosManager from "./photos-manager"
+import SellPack, { type SellablePack } from "./sell-pack"
 
 export const dynamic = "force-dynamic"
 
@@ -88,6 +89,28 @@ export default async function AdminClientDetailPage({
     .order("starts_at", { ascending: false })
     .limit(50)
   const appts = (apptsData ?? []) as unknown as ApptRow[]
+
+  type PurchaseRow = {
+    id: string
+    pack_name: string
+    service_name: string
+    sessions_total: number
+    sessions_used: number
+  }
+  const { data: purchasesData } = await admin
+    .from("pack_purchases")
+    .select("id, pack_name, service_name, sessions_total, sessions_used")
+    .eq("client_id", id)
+    .order("created_at", { ascending: false })
+  const purchases = (purchasesData ?? []) as PurchaseRow[]
+
+  const { data: activePacksData } = await admin
+    .from("packs")
+    .select("id, name, sessions, total_price_cents")
+    .eq("active", true)
+    .order("name", { ascending: true })
+  const sellablePacks: SellablePack[] = ((activePacksData ?? []) as { id: string; name: string; sessions: number; total_price_cents: number }[])
+    .map((p) => ({ id: p.id, label: `${p.name} · ${p.sessions} sesiones · ${fmtPrice(p.total_price_cents / 100)}` }))
 
   type PhotoRow = { id: string; storage_path: string; type: "before" | "after"; visible_to_client: boolean }
   const { data: photosData } = await admin
@@ -181,6 +204,37 @@ export default async function AdminClientDetailPage({
 
       <h2 className="adm-section-title">Fotos antes / después</h2>
       <PhotosManager clientId={client.id} photos={photos} />
+
+      <h2 className="adm-section-title">Packs</h2>
+      <div className="adm-card" style={{ padding: 16 }}>
+        {purchases.length === 0 ? (
+          <div className="adm-empty" style={{ padding: 16 }}>Sin packs comprados.</div>
+        ) : (
+          purchases.map((p) => {
+            const remaining = p.sessions_total - p.sessions_used
+            const done = remaining <= 0
+            return (
+              <div key={p.id} className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                <div>
+                  <div className="adm-name">{p.pack_name}</div>
+                  <div className="adm-sub">{p.service_name}</div>
+                </div>
+                <div style={{ fontSize: 13, textAlign: "right" }}>
+                  usó {p.sessions_used} / quedan {Math.max(0, remaining)}
+                </div>
+                <div>
+                  <span className={`adm-pill ${done ? "adm-pill--inactive" : "adm-pill--active"}`}>
+                    {done ? "Completado" : "Activo"}
+                  </span>
+                </div>
+              </div>
+            )
+          })
+        )}
+        <div style={{ marginTop: 12 }}>
+          <SellPack clientId={client.id} packs={sellablePacks} />
+        </div>
+      </div>
 
       <h2 className="adm-section-title">Historial de turnos</h2>
       {appts.length === 0 ? (
