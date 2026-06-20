@@ -56,7 +56,7 @@ const ManualSchema = z.object({
   receptorNombre: z.string().trim(),
   email: z.string().trim(),
   descripcion: z.string().trim().min(1, "Falta la descripción"),
-  montoPesos: z.number().positive("El monto debe ser mayor a 0"),
+  montoPesos: z.number().positive("El monto debe ser mayor a 0").max(20_000_000, "Monto demasiado alto"),
 })
 
 export async function emitirFacturaManual(
@@ -77,7 +77,7 @@ export async function emitirFacturaManual(
       totalCents: pesosToCents(v.montoPesos),
       descripcion: v.descripcion,
     })
-    await enviarPdfPorEmail(factura.id, v.email || null, v.receptorNombre || "Hola")
+    await enviarPdfPorEmail(factura.id, v.email || null, v.receptorNombre || "")
     revalidatePath("/admin/facturacion")
     return { ok: true, id: factura.id }
   } catch (e) {
@@ -102,6 +102,15 @@ export async function emitirFacturaTurno(
     .maybeSingle()
 
   if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  const { data: yaFacturada } = await admin
+    .from("invoices")
+    .select("id")
+    .eq("appointment_id", appointmentId)
+    .eq("estado", "emitida")
+    .maybeSingle()
+  if (yaFacturada) return { ok: false, error: "Este turno ya tiene una factura emitida." }
+
   const client = appt.client as unknown as { id: string; first_name: string; last_name: string; email: string | null; dni: string | null } | null
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
   const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"
@@ -119,7 +128,7 @@ export async function emitirFacturaTurno(
       totalCents: appt.total_cents,
       descripcion,
     })
-    await enviarPdfPorEmail(factura.id, client?.email ?? null, client?.first_name ?? "Hola")
+    await enviarPdfPorEmail(factura.id, client?.email ?? null, client?.first_name ?? "")
     revalidatePath("/admin/facturacion")
     revalidatePath("/admin/turnos")
     return { ok: true, id: factura.id }
@@ -141,7 +150,7 @@ export async function reenviarFacturaEmail(
   if (!inv) return { ok: false, error: "Factura no encontrada" }
 
   let to: string | null = null
-  let firstName = inv.receptor_nombre ?? "Hola"
+  let firstName = inv.receptor_nombre ?? ""
   if (inv.client_id) {
     const { data: c } = await admin
       .from("clients")

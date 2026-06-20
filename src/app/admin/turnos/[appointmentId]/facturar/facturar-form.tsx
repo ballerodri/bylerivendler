@@ -25,6 +25,7 @@ export default function FacturarForm({ appointmentId, tieneDni }: { appointmentI
 
       <div style={{ display: "flex", gap: 10 }}>
         <button
+          type="button"
           className="adm-btn adm-btn--primary"
           disabled={pending}
           onClick={() =>
@@ -37,7 +38,7 @@ export default function FacturarForm({ appointmentId, tieneDni }: { appointmentI
         >
           {pending ? "Emitiendo…" : "Emitir factura"}
         </button>
-        <button className="adm-btn" onClick={() => router.back()} disabled={pending}>Cancelar</button>
+        <button type="button" className="adm-btn" onClick={() => router.back()} disabled={pending}>Cancelar</button>
       </div>
     </div>
   )

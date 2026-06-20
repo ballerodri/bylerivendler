@@ -1,7 +1,7 @@
 import "server-only"
 import { renderToBuffer, Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer"
 import QRCode from "qrcode"
-import { fmtPrice } from "@/app/reserva/data"
+import { fmtMoneyCents } from "./format"
 
 export interface InvoicePdfData {
   emisor: {
@@ -45,6 +45,7 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   const qrPng = await QRCode.toDataURL(data.qrUrl, { margin: 1, width: 220 })
   const nroFmt = String(data.nro).padStart(8, "0")
   const ptoFmt = String(data.ptoVta).padStart(4, "0")
+  const totalFmt = fmtMoneyCents(data.totalCents)
 
   const doc = (
     <Document>
@@ -70,20 +71,22 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
           <Text style={styles.label}>Receptor</Text>
           <Text>{data.receptorNombre}</Text>
           <Text style={styles.small}>{data.receptorDoc}</Text>
+          {/* v1: CondicionIVAReceptorId siempre 5 (Consumidor Final) */}
           <Text style={styles.small}>Condición IVA: Consumidor Final</Text>
         </View>
 
         <View style={styles.section}>
           <View style={styles.row}>
             <Text>{data.descripcion}</Text>
-            <Text>{fmtPrice(data.totalCents / 100)}</Text>
+            <Text>{totalFmt}</Text>
           </View>
           <View style={styles.totalRow}>
-            <Text style={styles.total}>Total: {fmtPrice(data.totalCents / 100)}</Text>
+            <Text style={styles.total}>Total: {totalFmt}</Text>
           </View>
         </View>
 
         <View style={styles.footer}>
+          {/* eslint-disable-next-line jsx-a11y/alt-text */}
           <Image style={styles.qr} src={qrPng} />
           <View>
             <Text style={styles.cae}>CAE: {data.cae}</Text>

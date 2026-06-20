@@ -12,3 +12,7 @@ export function receptorDocLabel(docTipo: number, docNro: string): string {
   if (docTipo === 80) return `CUIT ${docNro}`
   return "Consumidor Final"
 }
+
+export function fmtMoneyCents(cents: number): string {
+  return "$" + (cents / 100).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}

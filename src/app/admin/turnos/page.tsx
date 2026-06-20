@@ -89,7 +89,7 @@ export default async function AdminTurnosPage({
   const { data: facturadas } = await admin
     .from("invoices")
     .select("appointment_id")
-    .not("appointment_id", "is", null)
+    .in("appointment_id", appts.map((a) => a.id))
   const facturadasSet = new Set((facturadas ?? []).map((f) => f.appointment_id as string))
 
   return (
