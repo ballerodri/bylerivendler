@@ -1,0 +1,154 @@
+"use server"
+
+import { revalidatePath } from "next/cache"
+import { z } from "zod"
+import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { isStaffUser } from "@/lib/staff"
+import { emitirFactura } from "@/lib/arca/invoice-service"
+import { loadInvoicePdfData } from "@/lib/arca/invoice-pdf"
+import { renderInvoicePdf } from "@/lib/arca/pdf"
+import { sendInvoiceEmail } from "@/lib/email/invoice-emails"
+import { pesosToCents } from "@/lib/arca/format"
+
+async function requireStaff() {
+  const supabase = await createSsrClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user || !(await isStaffUser(user.id))) throw new Error("Acceso denegado")
+}
+
+function adminClient() {
+  return createAdminClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false, autoRefreshToken: false } }
+  )
+}
+
+// Envía el PDF por email si hay destinatario. No interrumpe si el email falla.
+async function enviarPdfPorEmail(invoiceId: string, to: string | null, firstName: string) {
+  if (!to) return
+  const data = await loadInvoicePdfData(invoiceId)
+  if (!data) return
+  const pdf = await renderInvoicePdf(data)
+  await sendInvoiceEmail({
+    to,
+    firstName,
+    cbteNro: data.nro,
+    ptoVta: data.ptoVta,
+    fecha: data.fecha,
+    totalCents: data.totalCents,
+    pdf,
+  })
+}
+
+const ManualSchema = z.object({
+  docTipo: z.union([z.literal(99), z.literal(96), z.literal(80)]),
+  docNro: z.string().trim(),
+  receptorNombre: z.string().trim(),
+  email: z.string().trim(),
+  descripcion: z.string().trim().min(1, "Falta la descripción"),
+  montoPesos: z.number().positive("El monto debe ser mayor a 0"),
+})
+
+export async function emitirFacturaManual(
+  input: z.infer<typeof ManualSchema>
+): Promise<{ ok: boolean; error?: string; id?: string }> {
+  await requireStaff()
+  const parsed = ManualSchema.safeParse(input)
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Datos inválidos" }
+  const v = parsed.data
+
+  try {
+    const factura = await emitirFactura({
+      concepto: 2,
+      docTipo: v.docTipo,
+      docNro: v.docTipo === 99 ? "0" : v.docNro,
+      receptorNombre: v.receptorNombre || undefined,
+      condIvaReceptor: 5,
+      totalCents: pesosToCents(v.montoPesos),
+      descripcion: v.descripcion,
+    })
+    await enviarPdfPorEmail(factura.id, v.email || null, v.receptorNombre || "Hola")
+    revalidatePath("/admin/facturacion")
+    return { ok: true, id: factura.id }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export async function emitirFacturaTurno(
+  appointmentId: string,
+  identificar: boolean
+): Promise<{ ok: boolean; error?: string; id?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select(`
+      id, total_cents, client:clients(id, first_name, last_name, email, dni),
+      appointment_services(service:services(name))
+    `)
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+  const client = appt.client as unknown as { id: string; first_name: string; last_name: string; email: string | null; dni: string | null } | null
+  const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
+  const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"
+
+  const useDni = identificar && !!client?.dni
+  try {
+    const factura = await emitirFactura({
+      clientId: client?.id,
+      appointmentId,
+      concepto: 2,
+      docTipo: useDni ? 96 : 99,
+      docNro: useDni ? client!.dni! : "0",
+      receptorNombre: client ? `${client.first_name} ${client.last_name}` : undefined,
+      condIvaReceptor: 5,
+      totalCents: appt.total_cents,
+      descripcion,
+    })
+    await enviarPdfPorEmail(factura.id, client?.email ?? null, client?.first_name ?? "Hola")
+    revalidatePath("/admin/facturacion")
+    revalidatePath("/admin/turnos")
+    return { ok: true, id: factura.id }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+export async function reenviarFacturaEmail(
+  invoiceId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const { data: inv } = await admin
+    .from("invoices")
+    .select("client_id, receptor_nombre")
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (!inv) return { ok: false, error: "Factura no encontrada" }
+
+  let to: string | null = null
+  let firstName = inv.receptor_nombre ?? "Hola"
+  if (inv.client_id) {
+    const { data: c } = await admin
+      .from("clients")
+      .select("email, first_name")
+      .eq("id", inv.client_id)
+      .maybeSingle()
+    to = c?.email ?? null
+    if (c?.first_name) firstName = c.first_name
+  }
+  if (!to) return { ok: false, error: "La factura no tiene un email asociado" }
+
+  try {
+    await enviarPdfPorEmail(invoiceId, to, firstName)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
