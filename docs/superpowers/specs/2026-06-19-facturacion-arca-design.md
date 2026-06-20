@@ -213,3 +213,56 @@ el `.crt`.
 - WSAA (autenticación): https://www.afip.gob.ar/ws/documentacion/wsaa.asp
 - Manual WSASS: https://www.afip.gob.ar/ws/WSASS/WSASS_manual.pdf
 - Librería: https://github.com/ramiidv/arca-facturacion
+
+---
+
+## 12. Estado y Plan B (agregado 2026-06-19)
+
+### Plan A — VALIDADO en homologación
+El núcleo (Plan A) está implementado, revisado y mergeado a `main`, y **validado de punta a
+punta en homologación**: se emitió una Factura C de prueba con CAE real. Se corrigió un bug
+real (el cliente `soap` devuelve `FeDetResp.FECAEDetResponse` como **array**; el acceso directo
+leía una aprobación como rechazo). La decisión final de conexión (capa propia `soap` +
+`node-forge` + token persistido) quedó firme.
+
+### Plan B — diseño aprobado
+
+**Objetivo:** hacer usable el motor — PDF + email + pantallas en el admin. Sigue todo sobre
+**homologación** hasta pasar a producción.
+
+**PDF (al vuelo):** se genera con `@react-pdf/renderer` en el momento (al descargar o enviar),
+a partir de los datos guardados de la factura. **No** se almacenan archivos; se regenera idéntico
+cuando haga falta. Contiene emisor (de las `ARCA_*`), receptor, concepto, total, CAE + vto, y el
+QR oficial (render con `qrcode`). Descarga: `/api/admin/facturacion/[id]/pdf` (solo staff).
+
+**Email:** nueva función en `src/lib/email/invoice-emails.ts` (mismo estilo que `booking-emails.ts`),
+manda el PDF **adjunto** con Resend. Se envía al emitir (si la clienta tiene email) y se puede
+**reenviar** desde el historial.
+
+**Dato nuevo — `environment`:** se agrega columna `environment` (`homologacion`/`produccion`) a
+`invoices`, se estampa al emitir, y el historial muestra una etiqueta "PRUEBA". Separa las
+facturas de prueba de las reales.
+
+**Pantallas (menú "Facturación", roles no-`professional`):**
+- **Historial:** lista (fecha, número, receptor, total, estado, entorno) con acciones
+  **Descargar PDF** y **Reenviar email**.
+- **Factura manual:** receptor (Consumidor Final por defecto, o **identificar con DNI/CUIT +
+  nombre**), **una línea** (concepto/descripción) y **monto**. Emitir.
+- **Botón "Facturar" en turno completado** → **pantalla de confirmación** (clienta, servicios,
+  total, receptor — toma el DNI de la clienta si lo tiene, sino Consumidor Final) → Emitir.
+  Si el turno ya tiene factura, avisa.
+
+**Errores:** si ARCA rechaza, se muestra el motivo en pantalla y **no** se manda email. En v1
+las facturas con error **no** se persisten (se reintenta). *(Revisa la sección 6, que preveía
+persistir `estado='error'`; para v1 se simplifica a no persistir.)*
+
+**Fuera de alcance (YAGNI):** notas de crédito/débito, varios ítems por factura, almacenamiento
+de PDFs, Factura A/B.
+
+**Dependencias nuevas Plan B:** `@react-pdf/renderer`, `qrcode` (ya previstas en la sección 10).
+
+**Archivos:** `src/lib/arca/pdf.tsx`, `src/lib/email/invoice-emails.ts`,
+`src/app/admin/facturacion/` (historial + manual + confirmación de turno + actions),
+`src/app/api/admin/facturacion/[id]/pdf/route.ts`, ítem "Facturación" en
+`src/app/admin/layout.tsx`, y botón "Facturar" en las acciones del turno
+(`src/app/admin/_components/status-actions.tsx`).
