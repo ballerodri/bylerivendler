@@ -46,9 +46,10 @@ export async function solicitarCae(input: InvoiceInput): Promise<CaeResult> {
     throw new Error(`ARCA rechazó la factura: ${errs}`)
   }
 
-  const det = result.FeDetResp.FECAEDetResponse
-  if (det.Resultado !== "A") {
-    const rawObs = det.Observaciones?.Obs
+  const detRaw = result.FeDetResp?.FECAEDetResponse
+  const det = Array.isArray(detRaw) ? detRaw[0] : detRaw
+  if (!det || det.Resultado !== "A") {
+    const rawObs = det?.Observaciones?.Obs
     const obs = rawObs
       ? (Array.isArray(rawObs) ? rawObs : [rawObs] as ArcaItem[])
           .map((o: ArcaItem) => `${o.Code}: ${o.Msg}`)
