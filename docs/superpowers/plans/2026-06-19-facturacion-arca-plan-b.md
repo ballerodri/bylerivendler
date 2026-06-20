@@ -621,8 +621,6 @@ import { renderInvoicePdf } from "@/lib/arca/pdf"
 import { sendInvoiceEmail } from "@/lib/email/invoice-emails"
 import { pesosToCents } from "@/lib/arca/format"
 
-export const runtime = "nodejs"
-
 async function requireStaff() {
   const supabase = await createSsrClient()
   const { data: { user } } = await supabase.auth.getUser()
