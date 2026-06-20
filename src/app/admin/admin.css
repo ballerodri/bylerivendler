@@ -121,7 +121,9 @@
 }
 
 /* ── Menú mobile: botón hamburguesa + drawer ── */
-.adm-burger {
+/* Prefijo .admin para ganarle en especificidad a `.admin button` (que pone
+   background:none y dejaba el botón traslúcido). */
+.admin .adm-burger {
   position: fixed;
   top: 12px;
   left: 12px;
@@ -129,26 +131,25 @@
   display: none; /* oculto en desktop */
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  color: var(--ink);
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: 9px;
+  background: var(--ink); /* sólido, opaco, alto contraste */
+  color: var(--paper);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
-.adm-side__close {
+.admin .adm-side__close {
   display: none; /* oculto en desktop */
   position: absolute;
   top: 12px;
   right: 12px;
   width: 32px;
   height: 32px;
-  border: none;
   background: transparent;
   color: var(--ink-mute);
   font-size: 18px;
@@ -159,7 +160,7 @@
 .adm-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.45);
   z-index: 45;
 }
 
@@ -167,7 +168,7 @@
   .adm-shell {
     grid-template-columns: 1fr;
   }
-  .adm-burger {
+  .admin .adm-burger {
     display: inline-flex;
   }
   .adm-side {
@@ -186,7 +187,7 @@
     transform: translateX(0);
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
   }
-  .adm-side__close {
+  .admin .adm-side__close {
     display: block;
   }
   .adm-main {

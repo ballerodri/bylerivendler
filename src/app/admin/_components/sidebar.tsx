@@ -12,14 +12,16 @@ export default function Sidebar({ children }: { children: React.ReactNode }) {
 
   return (
     <>
-      <button
-        type="button"
-        className="adm-burger"
-        aria-label="Abrir menú"
-        onClick={() => setOpen(true)}
-      >
-        ☰
-      </button>
+      {!open && (
+        <button
+          type="button"
+          className="adm-burger"
+          aria-label="Abrir menú"
+          onClick={() => setOpen(true)}
+        >
+          ☰
+        </button>
+      )}
 
       {open && <div className="adm-backdrop" aria-hidden onClick={() => setOpen(false)} />}
 
