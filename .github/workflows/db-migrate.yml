@@ -29,11 +29,15 @@ jobs:
       - name: Link to project
         run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
 
-      # One-time bootstrap: la migración inicial se corrió a mano vía SQL Editor.
-      # Marcamos como aplicada para evitar que el CLI intente reaplicarla.
+      # Bootstrap: estas migraciones se corrieron a mano vía SQL Editor, así que
+      # las marcamos como aplicadas para que el CLI no intente reaplicarlas.
       # Idempotente (|| true): a partir de la segunda corrida es un no-op.
       - name: Bootstrap migration history
-        run: supabase migration repair --status applied 20260504120000 || true
+        run: |
+          supabase migration repair --status applied 20260504120000 || true
+          supabase migration repair --status applied 20260619000000 || true
+          supabase migration repair --status applied 20260620000001 || true
+          supabase migration repair --status applied 20260620000002 || true
 
       - name: Push migrations
         run: supabase db push --include-all
