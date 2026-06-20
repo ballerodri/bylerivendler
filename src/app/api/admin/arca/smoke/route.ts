@@ -14,6 +14,15 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "Acceso denegado" }, { status: 403 })
   }
 
+  // Seguridad: en producción esta ruta emitiría una factura REAL de $1.
+  // Solo se permite en homologación (pruebas).
+  if ((process.env.ARCA_ENV ?? "homologacion") === "produccion") {
+    return NextResponse.json(
+      { ok: false, error: "El smoke-test está deshabilitado en producción (emitiría una factura real)." },
+      { status: 400 }
+    )
+  }
+
   try {
     const result = await emitirFactura({
       concepto: 2,
