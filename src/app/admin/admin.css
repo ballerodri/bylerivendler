@@ -120,75 +120,76 @@
   overflow-x: auto;
 }
 
-/* ── Menú mobile: botón hamburguesa + drawer ── */
-/* Prefijo .admin para ganarle en especificidad a `.admin button` (que pone
-   background:none y dejaba el botón traslúcido). */
-.admin .adm-burger {
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  z-index: 60;
+/* ── Menú mobile: barra superior fija + drawer ── */
+.adm-topbar {
   display: none; /* oculto en desktop */
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border: none;
-  border-radius: 9px;
-  background: var(--ink); /* sólido, opaco, alto contraste */
-  color: var(--paper);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-
-.admin .adm-side__close {
-  display: none; /* oculto en desktop */
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 32px;
-  height: 32px;
-  background: transparent;
-  color: var(--ink-mute);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.adm-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  z-index: 45;
 }
 
 @media (max-width: 768px) {
   .adm-shell {
     grid-template-columns: 1fr;
   }
-  .admin .adm-burger {
-    display: inline-flex;
-  }
-  .adm-side {
+
+  /* Barra superior fija — siempre arriba, ocupa el ancho (no flotante) */
+  .adm-topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     position: fixed;
     top: 0;
     left: 0;
-    height: 100vh;
+    right: 0;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--paper-deep);
+    border-bottom: 1px solid var(--line);
+    z-index: 60;
+  }
+  .admin .adm-burger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ink);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .adm-topbar__title {
+    font-family: var(--serif);
+    font-size: 16px;
+    color: var(--ink);
+  }
+
+  /* Drawer: baja debajo de la barra superior */
+  .adm-side {
+    position: fixed;
+    top: 52px;
+    left: 0;
+    height: calc(100vh - 52px);
+    height: calc(100dvh - 52px);
     width: 260px;
     max-width: 84vw;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
-    z-index: 50;
+    z-index: 55;
     overflow-y: auto;
   }
   .adm-side--open {
     transform: translateX(0);
     box-shadow: 0 0 24px rgba(0, 0, 0, 0.25);
   }
-  .admin .adm-side__close {
-    display: block;
+  .adm-backdrop {
+    position: fixed;
+    top: 52px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 50;
   }
   .adm-main {
     padding: 64px 18px 32px;

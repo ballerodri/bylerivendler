@@ -3,43 +3,39 @@
 import { useState } from "react"
 
 /**
- * Envuelve el menú lateral del admin. En desktop se ve siempre (columna fija).
- * En mobile se colapsa: un botón hamburguesa lo abre como drawer deslizable,
- * y se cierra al tocar el fondo, la ✕, o cualquier link del menú.
+ * Menú lateral del admin.
+ * - Desktop: columna fija de siempre.
+ * - Mobile: una BARRA SUPERIOR fija (siempre arriba, no flotante) con el botón
+ *   del menú. El botón alterna ☰ / ✕ y abre un drawer que baja debajo de la barra.
+ *   El drawer se cierra al tocar el fondo o cualquier link del menú.
  */
 export default function Sidebar({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false)
 
   return (
     <>
-      {!open && (
+      <header className="adm-topbar">
         <button
           type="button"
           className="adm-burger"
-          aria-label="Abrir menú"
-          onClick={() => setOpen(true)}
+          aria-label={open ? "Cerrar menú" : "Abrir menú"}
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
         >
-          ☰
+          {open ? "✕" : "☰"}
         </button>
-      )}
+        <span className="adm-topbar__title">By Leri Vendler</span>
+      </header>
 
       {open && <div className="adm-backdrop" aria-hidden onClick={() => setOpen(false)} />}
 
       <aside
         className={`adm-side${open ? " adm-side--open" : ""}`}
         onClick={(e) => {
-          // Cerrar el drawer al tocar un link del menú.
+          // Cerrar al tocar un link del menú.
           if ((e.target as HTMLElement).closest("a")) setOpen(false)
         }}
       >
-        <button
-          type="button"
-          className="adm-side__close"
-          aria-label="Cerrar menú"
-          onClick={() => setOpen(false)}
-        >
-          ✕
-        </button>
         {children}
       </aside>
     </>
