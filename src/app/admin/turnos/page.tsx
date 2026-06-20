@@ -10,7 +10,7 @@ import WhatsAppButton from "../_components/whatsapp-button"
 export const dynamic = "force-dynamic"
 
 type ApptService = {
-  service: { name: string } | null
+  service: { id: string; name: string } | null
   staff: { full_name: string } | null
   starts_at: string | null
 }
@@ -69,7 +69,7 @@ export default async function AdminTurnosPage({
       client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
-        service:services(name),
+        service:services(id, name),
         staff:staff(full_name)
       )
     `
@@ -91,6 +91,24 @@ export default async function AdminTurnosPage({
     .select("appointment_id")
     .in("appointment_id", appts.map((a) => a.id))
   const facturadasSet = new Set((facturadas ?? []).map((f) => f.appointment_id as string))
+
+  const clientIds = Array.from(new Set(appts.map((a) => a.client?.id).filter(Boolean))) as string[]
+  type ActivePackRow = { id: string; client_id: string; service_id: string | null; pack_name: string; sessions_total: number; sessions_used: number }
+  const { data: ppData } = clientIds.length
+    ? await admin
+        .from("pack_purchases")
+        .select("id, client_id, service_id, pack_name, sessions_total, sessions_used")
+        .in("client_id", clientIds)
+    : { data: [] as ActivePackRow[] }
+  const activePacks = ((ppData ?? []) as ActivePackRow[]).filter((p) => p.sessions_used < p.sessions_total)
+
+  function packsForAppt(a: ApptRow): { id: string; label: string }[] {
+    if (!a.client) return []
+    const svcIds = new Set(a.appointment_services.map((s) => s.service?.id).filter(Boolean))
+    return activePacks
+      .filter((p) => p.client_id === a.client!.id && p.service_id && svcIds.has(p.service_id))
+      .map((p) => ({ id: p.id, label: `${p.pack_name} · quedan ${p.sessions_total - p.sessions_used}` }))
+  }
 
   return (
     <>
@@ -211,7 +229,7 @@ export default async function AdminTurnosPage({
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
-                  <StatusActions appointmentId={a.id} currentStatus={a.status} />
+                  <StatusActions appointmentId={a.id} currentStatus={a.status} matchingPacks={packsForAppt(a)} />
                 </div>
               </div>
             )
