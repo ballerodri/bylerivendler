@@ -25,21 +25,29 @@ function adminClient() {
   )
 }
 
-// Envía el PDF por email si hay destinatario. No interrumpe si el email falla.
-async function enviarPdfPorEmail(invoiceId: string, to: string | null, firstName: string) {
-  if (!to) return
-  const data = await loadInvoicePdfData(invoiceId)
-  if (!data) return
-  const pdf = await renderInvoicePdf(data)
-  await sendInvoiceEmail({
-    to,
-    firstName,
-    cbteNro: data.nro,
-    ptoVta: data.ptoVta,
-    fecha: data.fecha,
-    totalCents: data.totalCents,
-    pdf,
-  })
+// Envía el PDF por email. Siempre retorna un resultado, nunca lanza.
+async function enviarPdfPorEmail(
+  invoiceId: string,
+  to: string | null,
+  firstName: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!to) return { ok: false, error: "Sin email de destinatario" }
+  try {
+    const data = await loadInvoicePdfData(invoiceId)
+    if (!data) return { ok: false, error: "No se pudo cargar la factura para el PDF" }
+    const pdf = await renderInvoicePdf(data)
+    return await sendInvoiceEmail({
+      to,
+      firstName,
+      cbteNro: data.nro,
+      ptoVta: data.ptoVta,
+      fecha: data.fecha,
+      totalCents: data.totalCents,
+      pdf,
+    })
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 const ManualSchema = z.object({
@@ -145,10 +153,6 @@ export async function reenviarFacturaEmail(
   }
   if (!to) return { ok: false, error: "La factura no tiene un email asociado" }
 
-  try {
-    await enviarPdfPorEmail(invoiceId, to, firstName)
-    return { ok: true }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
-  }
+  const r = await enviarPdfPorEmail(invoiceId, to, firstName)
+  return r.ok ? { ok: true } : { ok: false, error: r.error }
 }
