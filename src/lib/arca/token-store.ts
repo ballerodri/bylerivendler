@@ -20,12 +20,13 @@ export async function getStoredToken(
   service: string,
   env: ArcaEnv
 ): Promise<StoredToken | null> {
-  const { data } = await admin()
+  const { data, error } = await admin()
     .from("arca_tokens")
     .select("token, sign, expires_at")
     .eq("service", service)
     .eq("environment", env)
     .maybeSingle()
+  if (error) throw new Error(`No se pudo leer el token ARCA: ${error.message}`)
   if (!data) return null
   return { token: data.token, sign: data.sign, expiresAt: new Date(data.expires_at) }
 }

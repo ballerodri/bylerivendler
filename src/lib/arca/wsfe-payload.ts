@@ -23,8 +23,19 @@ export function pesos(cents: number): number {
   return Number((cents / 100).toFixed(2))
 }
 
+const AR_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Argentina/Buenos_Aires",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+})
+
+export function isoDateAr(d: Date): string {
+  return AR_FORMATTER.format(d) // yyyy-mm-dd
+}
+
 export function ymd(d: Date): string {
-  return d.toISOString().slice(0, 10).replace(/-/g, "")
+  return isoDateAr(d).replace(/-/g, "") // yyyymmdd
 }
 
 export function buildFeCAEReq(auth: Auth, input: InvoiceInput, cbteNro: number) {

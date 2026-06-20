@@ -36,5 +36,10 @@ describe("signTra", () => {
     const der = forge.util.decode64(cms)
     const asn1 = forge.asn1.fromDer(der)
     expect(asn1).toBeTruthy()
+    // El ContentType OID del top-level debe ser signedData (1.2.840.113549.1.7.2)
+    const topChildren = asn1.value as forge.asn1.Asn1[]
+    const oidBytes = topChildren[0].value as string
+    const contentTypeOid = forge.asn1.derToOid(oidBytes)
+    expect(contentTypeOid).toBe("1.2.840.113549.1.7.2")
   })
 })

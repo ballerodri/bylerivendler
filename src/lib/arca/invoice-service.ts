@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js"
 import { getArcaConfig } from "./config"
 import { solicitarCae } from "./wsfe"
 import { buildQrUrl } from "./qr"
-import { pesos, type InvoiceInput, type DocTipo } from "./wsfe-payload"
+import { pesos, isoDateAr, type InvoiceInput, type DocTipo } from "./wsfe-payload"
 
 export interface EmitInput {
   clientId?: string
@@ -50,7 +50,7 @@ export async function emitirFactura(input: EmitInput) {
   const cae = await solicitarCae(wsInput)
 
   const qrUrl = buildQrUrl({
-    fecha: fecha.toISOString().slice(0, 10),
+    fecha: isoDateAr(fecha),
     cuit: Number(cfg.cuit),
     ptoVta: cfg.ptoVta,
     tipoCmp: 11,
@@ -79,7 +79,7 @@ export async function emitirFactura(input: EmitInput) {
       total_cents: input.totalCents,
       cae: cae.cae,
       cae_vto: caeVtoToDate(cae.caeVto),
-      fecha_emision: fecha.toISOString().slice(0, 10),
+      fecha_emision: isoDateAr(fecha),
       estado: "emitida",
       qr_url: qrUrl,
     })

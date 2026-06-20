@@ -13,11 +13,12 @@ export interface CaeResult {
 export async function getUltimoComprobante(
   auth: Auth,
   ptoVta: number,
-  cbteTipo = 11
+  cbteTipo = 11,
+  client?: soap.Client
 ): Promise<number> {
   const cfg = getArcaConfig()
-  const client = await soap.createClientAsync(cfg.wsfeUrl)
-  const [res] = await client.FECompUltimoAutorizadoAsync({
+  const soapClient = client ?? await soap.createClientAsync(cfg.wsfeUrl)
+  const [res] = await soapClient.FECompUltimoAutorizadoAsync({
     Auth: auth,
     PtoVta: ptoVta,
     CbteTipo: cbteTipo,
@@ -28,27 +29,29 @@ export async function getUltimoComprobante(
 export async function solicitarCae(input: InvoiceInput): Promise<CaeResult> {
   const cfg = getArcaConfig()
   const auth = await getAuth("wsfe")
-  const ultimo = await getUltimoComprobante(auth, input.ptoVta)
+  const client = await soap.createClientAsync(cfg.wsfeUrl)
+  const ultimo = await getUltimoComprobante(auth, input.ptoVta, 11, client)
   const cbteNro = ultimo + 1
 
-  const client = await soap.createClientAsync(cfg.wsfeUrl)
   const [res] = await client.FECAESolicitarAsync(buildFeCAEReq(auth, input, cbteNro))
   const result = res.FECAESolicitarResult
 
+  type ArcaItem = { Code: string | number; Msg: string }
+
   if (result.Errors) {
-    const errs = ([] as any[])
-      .concat(result.Errors.Err)
-      .map((e) => `${e.Code}: ${e.Msg}`)
+    const raw = result.Errors.Err
+    const errs = (Array.isArray(raw) ? raw : [raw] as ArcaItem[])
+      .map((e: ArcaItem) => `${e.Code}: ${e.Msg}`)
       .join("; ")
     throw new Error(`ARCA rechazó la factura: ${errs}`)
   }
 
   const det = result.FeDetResp.FECAEDetResponse
   if (det.Resultado !== "A") {
-    const obs = det.Observaciones
-      ? ([] as any[])
-          .concat(det.Observaciones.Obs)
-          .map((o) => `${o.Code}: ${o.Msg}`)
+    const rawObs = det.Observaciones?.Obs
+    const obs = rawObs
+      ? (Array.isArray(rawObs) ? rawObs : [rawObs] as ArcaItem[])
+          .map((o: ArcaItem) => `${o.Code}: ${o.Msg}`)
           .join("; ")
       : "rechazada sin detalle"
     throw new Error(`ARCA no aprobó la factura: ${obs}`)

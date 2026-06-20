@@ -28,7 +28,8 @@ export function signTra(traXml: string, certPem: string, keyPem: string): string
     authenticatedAttributes: [
       { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
       { type: forge.pki.oids.messageDigest },
-      { type: forge.pki.oids.signingTime, value: new Date().toISOString() },
+      // node-forge accepts a Date at runtime; cast satisfies the @types definition
+      { type: forge.pki.oids.signingTime, value: new Date() as unknown as string },
     ],
   })
   p7.sign()
