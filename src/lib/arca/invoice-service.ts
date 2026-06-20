@@ -14,6 +14,7 @@ export interface EmitInput {
   receptorNombre?: string
   condIvaReceptor: number
   totalCents: number
+  descripcion: string
   servDesde?: Date
   servHasta?: Date
 }
@@ -82,6 +83,8 @@ export async function emitirFactura(input: EmitInput) {
       fecha_emision: isoDateAr(fecha),
       estado: "emitida",
       qr_url: qrUrl,
+      environment: cfg.env,
+      descripcion: input.descripcion,
     })
     .select("id, cbte_nro, cae, qr_url")
     .single()

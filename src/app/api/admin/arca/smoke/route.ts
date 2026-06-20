@@ -21,6 +21,7 @@ export async function GET() {
       docNro: "0",
       condIvaReceptor: 5,
       totalCents: 100, // $1 de prueba
+      descripcion: "Prueba ARCA",
     })
     return NextResponse.json({ ok: true, ...result })
   } catch (e) {
