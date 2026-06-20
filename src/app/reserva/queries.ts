@@ -232,3 +232,16 @@ export async function fetchCombos(): Promise<Combo[]> {
     }
   })
 }
+
+/**
+ * Cantidad de packs activos. Se usa para mostrar (o no) el banner de packs
+ * en la página de reserva.
+ */
+export async function countActivePacks(): Promise<number> {
+  const supabase = adminClient()
+  const { count } = await supabase
+    .from("packs")
+    .select("id", { count: "exact", head: true })
+    .eq("active", true)
+  return count ?? 0
+}
