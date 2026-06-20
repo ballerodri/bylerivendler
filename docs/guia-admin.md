@@ -43,9 +43,17 @@ Otras acciones en cada turno:
 
 > 💡 Al **Completar** un turno, la clienta suma puntos del **Programa Cerca** (fidelidad).
 
+> **Ejemplo.** Llega Ana, que tenía turno *Confirmado* para una limpieza facial. Cuando entra a
+> cabina tocás **Iniciar** (pasa a *En curso*). Al terminar, tocás **Completar**: el turno queda
+> ✅, Ana suma sus puntos, y si tiene un pack te va a preguntar si descontar una sesión.
+
 ### ➕ Nueva reserva
 Para **crear un turno a mano** en nombre de una clienta (por teléfono, WhatsApp o presencial),
 sin que ella tenga que reservar online.
+
+> **Ejemplo.** Ana te escribe por WhatsApp para un masaje el jueves 16 a las 15:00. Vas a
+> **Nueva reserva**, elegís la clienta (o la creás), el servicio "Masaje relajante", la fecha y la
+> hora, y confirmás. Ana recibe el email de confirmación.
 
 ---
 
@@ -87,6 +95,12 @@ precio del combo (te muestra el ahorro vs. comprarlos por separado).
   pack activo, te pregunta **"¿Descontar del pack?"**. Si decís que sí, baja una sesión del saldo.
   - Para **corregir un descuento equivocado**, **eliminá** ese turno: la sesión vuelve al pack.
 
+> **Ejemplo completo.** Creás el pack *"Depilación piernas — 6 sesiones"* a $90.000 (cada 14 días)
+> y lo **activás**. Ana lo quiere: vas a su ficha → **Vender pack**, marcás **"Facturar ahora"** →
+> queda registrado *"usó 0 / quedan 6"* y le llega la factura por email. Cada vez que Ana viene y
+> completás su turno de depilación de piernas, elegís *"Descontar del pack"* y el saldo baja: quedan
+> 5, 4, 3… Cuando llega a 0, el pack figura *Completado*.
+
 ---
 
 ## 5. Facturación (ARCA / AFIP)
@@ -104,6 +118,16 @@ Emite **Factura C** (Monotributo) de verdad, pidiendo el CAE a ARCA, y genera el
 
 > ⚠️ **Importante:** revisá monto y receptor antes de "Emitir" — una factura emitida es real ante ARCA.
 > Por eso está la pantalla de confirmación.
+
+> **Ejemplo 1 (manual).** Querés facturar una seña de $3.500: vas a **Factura manual**, escribís el
+> concepto "Seña de tratamiento", el monto, dejás "Consumidor Final" y **Emitís**.
+>
+> **Ejemplo 2 (con ítems).** Le vendés a Ana una limpieza facial + un masaje: en **Factura manual**
+> elegís los dos servicios del desplegable → el concepto y el monto se completan solos con la suma →
+> ponés su email → **Emitís** y le llega el PDF.
+>
+> **Ejemplo 3 (desde el turno).** Ana terminó su sesión: en **Turnos**, en su turno completado tocás
+> **Facturar**, confirmás los datos y emitís.
 
 ---
 

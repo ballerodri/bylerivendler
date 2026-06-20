@@ -45,3 +45,6 @@ next-env.d.ts
 arca-*.key
 arca-*.csr
 arca-*.crt
+
+# Guía: HTML intermedio (el PDF y el .md sí se versionan)
+docs/guia-admin.html
