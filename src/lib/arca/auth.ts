@@ -1,7 +1,7 @@
 import "server-only"
-import * as soap from "soap"
 import { parseStringPromise } from "xml2js"
 import { getArcaConfig } from "./config"
+import { createArcaSoapClient } from "./soap-client"
 import { buildTra, signTra } from "./wsaa-sign"
 import { getStoredToken, saveToken } from "./token-store"
 import type { Auth } from "./wsfe-payload"
@@ -24,7 +24,7 @@ export async function getAuth(service = "wsfe"): Promise<Auth> {
 
   let xml: string
   try {
-    const client = await soap.createClientAsync(cfg.wsaaUrl)
+    const client = await createArcaSoapClient(cfg.wsaaUrl)
     const [res] = await client.loginCmsAsync({ in0: cms })
     xml = res.loginCmsReturn as string
   } catch (e) {

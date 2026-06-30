@@ -1,6 +1,7 @@
 import "server-only"
 import * as soap from "soap"
 import { getArcaConfig } from "./config"
+import { createArcaSoapClient } from "./soap-client"
 import { getAuth } from "./auth"
 import { buildFeCAEReq, type Auth, type InvoiceInput } from "./wsfe-payload"
 
@@ -17,7 +18,7 @@ export async function getUltimoComprobante(
   client?: soap.Client
 ): Promise<number> {
   const cfg = getArcaConfig()
-  const soapClient = client ?? await soap.createClientAsync(cfg.wsfeUrl)
+  const soapClient = client ?? await createArcaSoapClient(cfg.wsfeUrl)
   const [res] = await soapClient.FECompUltimoAutorizadoAsync({
     Auth: auth,
     PtoVta: ptoVta,
@@ -29,7 +30,7 @@ export async function getUltimoComprobante(
 export async function solicitarCae(input: InvoiceInput): Promise<CaeResult> {
   const cfg = getArcaConfig()
   const auth = await getAuth("wsfe")
-  const client = await soap.createClientAsync(cfg.wsfeUrl)
+  const client = await createArcaSoapClient(cfg.wsfeUrl)
   const ultimo = await getUltimoComprobante(auth, input.ptoVta, 11, client)
   const cbteNro = ultimo + 1
 
