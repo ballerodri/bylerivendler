@@ -15,7 +15,7 @@ import {
   parseYmd,
   ymd,
 } from "./data"
-import type { BookingState, Category, Combo, Professional, Service } from "./data"
+import type { BookingState, Category, Combo, Professional, ReservaPack, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking, saveClientEarly, saveMedicalEarly, fetchSequentialAvailability, joinWaitlist, saveDepilationConsent } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
@@ -58,6 +58,7 @@ function effectiveService(
 
 // ---------- Screen 1: Services ----------
 const COMBOS_TAB = "__combos__"
+const PACKS_TAB = "__packs__"
 
 export function Screen1Services({
   state,
@@ -69,20 +70,23 @@ export function Screen1Services({
   totalSteps,
   categories,
   combos,
+  packs,
   knownFirstName,
-}: ScreenProps & { categories: Category[]; combos: Combo[]; knownFirstName: string | null }) {
+}: ScreenProps & { categories: Category[]; combos: Combo[]; packs: ReservaPack[]; knownFirstName: string | null }) {
   const hasCombos = combos.length > 0
+  const hasPacks = packs.length > 0
   const fallbackCat = hasCombos ? COMBOS_TAB : (categories[0]?.id ?? "facial")
   const [activeCat, setActiveCat] = useState(
-    state.combo ? COMBOS_TAB : (state.activeCat || fallbackCat)
+    state.pack ? PACKS_TAB : state.combo ? COMBOS_TAB : (state.activeCat || fallbackCat)
   )
   const selected = state.services || []
   const selectedCombo = state.combo ?? null
+  const selectedPack = state.pack ?? null
 
   const switchTab = (tab: string) => {
-    if (tab !== COMBOS_TAB && selectedCombo) {
-      // Al cambiar a servicios individuales, limpiamos el combo
-      setState({ ...state, combo: null, services: [], activeCat: tab })
+    if (tab !== COMBOS_TAB && tab !== PACKS_TAB && (selectedCombo || selectedPack)) {
+      // Al cambiar a servicios individuales, limpiamos el combo y el pack
+      setState({ ...state, combo: null, pack: null, services: [], activeCat: tab })
     } else {
       setActiveCat(tab)
     }
@@ -93,14 +97,31 @@ export function Screen1Services({
     if (selectedCombo?.id === c.id) {
       setState({ ...state, combo: null, services: [] })
     } else {
-      setState({ ...state, combo: c, services: c.services })
+      // Elegir un combo limpia el pack (excluyente)
+      setState({ ...state, combo: c, services: c.services, pack: null })
     }
+  }
+
+  const togglePack = (p: ReservaPack) => {
+    if (selectedPack?.pack.id === p.id) {
+      setState({ ...state, pack: null })
+    } else {
+      // Elegir un pack limpia servicios sueltos y combo (excluyente)
+      setState({ ...state, pack: { pack: p, zoneIds: [] }, services: [], combo: null })
+    }
+  }
+
+  const togglePackZone = (zoneId: string) => {
+    if (!selectedPack) return
+    const cur = selectedPack.zoneIds
+    const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
+    setState({ ...state, pack: { ...selectedPack, zoneIds: next } })
   }
 
   const toggle = (svc: Service) => {
     const exists = selected.find((s) => s.id === svc.id)
     const next = exists ? selected.filter((s) => s.id !== svc.id) : [...selected, svc]
-    setState({ ...state, combo: null, services: next, activeCat })
+    setState({ ...state, combo: null, pack: null, services: next, activeCat })
   }
 
   // serviceId → zoneId[] elegidas (solo para servicios pricingMode === "per_zone")
@@ -113,17 +134,33 @@ export function Screen1Services({
 
   const effective = (s: Service) => effectiveService(s, zoneSel)
 
-  const displayPrice = selectedCombo ? selectedCombo.price : selected.reduce((a, s) => a + effective(s).price, 0)
-  const displayMin   = selectedCombo ? selectedCombo.duration : selected.reduce((a, s) => a + effective(s).duration, 0)
-  const hasSelection = selectedCombo !== null || selected.length > 0
-  const zonesOk = selected.every((s) => s.pricingMode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
-  const canContinue = hasSelection && zonesOk
+  const packDurationMin = selectedPack
+    ? (selectedPack.pack.pricingMode === "per_zone"
+        ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
+        : 0) // servicio fijo: la duración la resuelve el servidor
+    : 0
+  const packZonesOk = !selectedPack || selectedPack.pack.pricingMode !== "per_zone" ||
+    selectedPack.zoneIds.length === (selectedPack.pack.zonesCount ?? 0)
 
-  const activeCategory = activeCat === COMBOS_TAB
+  const displayPrice = selectedPack
+    ? selectedPack.pack.priceCents / 100
+    : selectedCombo
+      ? selectedCombo.price
+      : selected.reduce((a, s) => a + effective(s).price, 0)
+  const displayMin = selectedPack
+    ? packDurationMin
+    : selectedCombo
+      ? selectedCombo.duration
+      : selected.reduce((a, s) => a + effective(s).duration, 0)
+  const hasSelection = selectedPack !== null || selectedCombo !== null || selected.length > 0
+  const zonesOk = selected.every((s) => s.pricingMode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
+  const canContinue = hasSelection && zonesOk && packZonesOk
+
+  const activeCategory = activeCat === COMBOS_TAB || activeCat === PACKS_TAB
     ? null
     : (categories.find((c) => c.id === activeCat) ?? categories[0])
 
-  if (!hasCombos && !activeCategory) {
+  if (!hasCombos && !hasPacks && !activeCategory) {
     return (
       <div className="screen">
         <div className="screen__body">
@@ -167,6 +204,15 @@ export function Screen1Services({
           onClick={() => switchTab(COMBOS_TAB)}
         >
           Combos
+        </button>
+      )}
+      {hasPacks && (
+        <button
+          role="tab"
+          className={`cattab ${activeCat === PACKS_TAB ? "is-active" : ""}`}
+          onClick={() => switchTab(PACKS_TAB)}
+        >
+          Packs
         </button>
       )}
       {categories.map((c) => (
@@ -226,6 +272,58 @@ export function Screen1Services({
               <Icon.CheckSmall />
             </span>
           </button>
+        )
+      })}
+    </div>
+  )
+
+  const PackList = () => (
+    <div>
+      {packs.map((p) => {
+        const isSel = selectedPack?.pack.id === p.id
+        return (
+          <div key={p.id} style={{ marginBottom: 10 }}>
+            <button
+              type="button"
+              onClick={() => togglePack(p)}
+              style={{
+                display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+                padding: "12px 14px", borderRadius: 10,
+                border: `1px solid ${isSel ? "var(--gold)" : "var(--line)"}`,
+                background: isSel ? "var(--linen)" : "transparent",
+              }}
+            >
+              <strong>{p.name}</strong> · {p.sessions} sesiones
+              <span style={{ float: "right" }}>{fmtPrice(p.priceCents / 100)}</span>
+              {p.description && <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 2 }}>{p.description}</div>}
+            </button>
+            {isSel && p.pricingMode === "per_zone" && (
+              <div style={{ paddingLeft: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                  Elegí {p.zonesCount} zona(s) para tu pack:
+                </span>
+                {p.zones.map((z) => {
+                  const checked = selectedPack!.zoneIds.includes(z.id)
+                  const atLimit = selectedPack!.zoneIds.length >= (p.zonesCount ?? 0)
+                  return (
+                    <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer", opacity: !checked && atLimit ? 0.5 : 1 }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={!checked && atLimit}
+                        onChange={() => togglePackZone(z.id)}
+                        style={{ width: 15, height: 15 }}
+                      />
+                      <span>{z.name} · {z.durationMin} min</span>
+                    </label>
+                  )
+                })}
+                <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                  Seña hoy (30%): {fmtPrice(Math.round(p.priceCents * 0.3) / 100)}
+                </span>
+              </div>
+            )}
+          </div>
         )
       })}
     </div>
@@ -305,6 +403,8 @@ export function Screen1Services({
           <div className="footer__summary">
             {!hasSelection ? (
               "Sin tratamientos seleccionados"
+            ) : selectedPack ? (
+              <span><strong>{selectedPack.pack.name}</strong> · {selectedPack.pack.sessions} sesiones</span>
             ) : selectedCombo ? (
               <span><strong>{selectedCombo.name}</strong> · {fmtDuration(displayMin)}</span>
             ) : (
@@ -356,7 +456,7 @@ export function Screen1Services({
             Elegí un combo o uno a varios tratamientos sueltos.
           </p>
           {CatTabs()}
-          {activeCat === COMBOS_TAB ? ComboList() : ServiceList()}
+          {activeCat === COMBOS_TAB ? ComboList() : activeCat === PACKS_TAB ? PackList() : ServiceList()}
         </div>
         {FooterCTA()}
       </div>
@@ -376,7 +476,7 @@ export function Screen1Services({
       <div className="screen__body">
         {Hero()}
         {CatTabs()}
-        {activeCat === COMBOS_TAB ? ComboList() : ServiceList()}
+        {activeCat === COMBOS_TAB ? ComboList() : activeCat === PACKS_TAB ? PackList() : ServiceList()}
       </div>
       {FooterCTA()}
     </div>
@@ -421,19 +521,32 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const zoneSel = state.zoneSelections ?? {}
 
+  // Pack seleccionado (excluyente con servicios/combo): la disponibilidad se
+  // consulta con el servicio del pack y la duración calculada por zonas.
+  const selectedPack = state.pack ?? null
+  const packDurationMin = selectedPack
+    ? (selectedPack.pack.pricingMode === "per_zone"
+        ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
+        : 0)
+    : 0
+
   // Stable key for service+staff+zone combo to drive effect
-  const assignmentKey = state.services
-    .map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`)
-    .join("|")
+  const assignmentKey = selectedPack
+    ? `pack:${selectedPack.pack.id}:${selectedPack.zoneIds.join(",")}`
+    : state.services
+        .map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`)
+        .join("|")
 
   useEffect(() => {
     if (!selectedDate) { setSeqResult(null); return }
-    const serviceInputs = state.services.map((s) => ({
-      id: s.id,
-      name: s.name,
-      duration: effectiveService(s, zoneSel).duration,
-      staffId: serviceStaff[s.id] ?? "auto",
-    }))
+    const serviceInputs = selectedPack
+      ? [{ id: selectedPack.pack.serviceId, name: selectedPack.pack.serviceName, duration: packDurationMin, staffId: "auto" }]
+      : state.services.map((s) => ({
+          id: s.id,
+          name: s.name,
+          duration: effectiveService(s, zoneSel).duration,
+          staffId: serviceStaff[s.id] ?? "auto",
+        }))
     let cancelled = false
     setSlotsLoading(true)
     fetchSequentialAvailability(serviceInputs, selectedDate).then((result) => {
@@ -1543,15 +1656,20 @@ export function Screen5Confirm({
   totalSteps,
   loyaltyPoints,
   professionals,
-}: ScreenProps & { loyaltyPoints: number; professionals: Professional[] }) {
+}: ScreenProps & { loyaltyPoints: number; professionals: Professional[]; packs?: ReservaPack[] }) {
   const services = state.services || []
   const combo = state.combo ?? null
+  const pack = state.pack ?? null
   const zoneSel = state.zoneSelections ?? {}
   const effective = (s: Service) => effectiveService(s, zoneSel)
-  const total = combo ? combo.price : services.reduce((a, s) => a + effective(s).price, 0)
-  const totalMin = combo ? combo.duration : services.reduce((a, s) => a + effective(s).duration, 0)
-  const totalPointsCost = combo ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
-  const canRedeem = !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
+  const packZones = pack ? pack.pack.zones.filter((z) => pack.zoneIds.includes(z.id)) : []
+  const packDurationMin = pack
+    ? (pack.pack.pricingMode === "per_zone" ? packZones.reduce((a, z) => a + z.durationMin, 0) : 0)
+    : 0
+  const total = pack ? pack.pack.priceCents / 100 : combo ? combo.price : services.reduce((a, s) => a + effective(s).price, 0)
+  const totalMin = pack ? packDurationMin : combo ? combo.duration : services.reduce((a, s) => a + effective(s).duration, 0)
+  const totalPointsCost = (pack || combo) ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
+  const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const deposit = redeeming ? 0 : Math.round(total * 0.3)
   const remaining = redeeming ? 0 : total - deposit
@@ -1604,6 +1722,8 @@ export function Screen5Confirm({
       savedClientId: state.savedClientId,
       medicalNote: state.medicalNote,
       comboId: state.combo?.id,
+      packId: state.pack?.pack.id,
+      packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
       zoneSelections: Object.fromEntries(
         services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
       ),
@@ -1659,10 +1779,17 @@ export function Screen5Confirm({
       <div className="summary">
         <div className="summary__row">
           <span className="summary__label">
-            Tratamiento{services.length > 1 ? "s" : ""}
+            {pack ? "Pack" : `Tratamiento${services.length > 1 ? "s" : ""}`}
           </span>
           <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
-            {isMultiResolved ? (
+            {pack ? (
+              <div>
+                {pack.pack.name} · {pack.pack.sessions} sesiones
+                {pack.pack.pricingMode === "per_zone" && packZones.length > 0 && (
+                  <small>{packZones.map((z) => z.name).join(", ")}</small>
+                )}
+              </div>
+            ) : isMultiResolved ? (
               orderedItems.map(({ svc, assignedPro, startTime }) => (
                 <div key={svc.id} style={{ marginBottom: 8 }}>
                   {svc.name}
