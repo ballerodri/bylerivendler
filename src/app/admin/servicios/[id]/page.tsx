@@ -16,6 +16,7 @@ export type ServiceRow = {
   points_cost: number
   active: boolean
   visible_public: boolean
+  pricing_mode: "fixed" | "per_zone"
 }
 
 type CategoryRow = { id: string; name: string }
@@ -48,7 +49,7 @@ export default async function AdminServiceDetailPage({
     await Promise.all([
       admin
         .from("services")
-        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public")
+        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public, pricing_mode")
         .eq("id", id)
         .maybeSingle<ServiceRow>(),
       admin
@@ -77,6 +78,16 @@ export default async function AdminServiceDetailPage({
     ])
 
   if (!service) notFound()
+
+  const { data: zoneRows } = await admin
+    .from("service_zones")
+    .select("name, duration_min, order_index")
+    .eq("service_id", id)
+    .order("order_index", { ascending: true })
+  const initialZones = (zoneRows ?? []).map((z: { name: string; duration_min: number }) => ({
+    name: z.name,
+    duration_min: z.duration_min,
+  }))
 
   const assignedIds = new Set((assigned ?? []).map((r: { staff_id: string }) => r.staff_id))
   const professionals: ProfessionalRow[] = (allStaff ?? []).map(
@@ -115,7 +126,7 @@ export default async function AdminServiceDetailPage({
         {cat?.name ?? "Servicio"} · Cambios se reflejan inmediatamente en el catálogo público.
       </p>
 
-      <ServiceEditor service={service} professionals={professionals} otherServices={otherServices} />
+      <ServiceEditor service={service} professionals={professionals} otherServices={otherServices} initialZones={initialZones} />
     </>
   )
 }
