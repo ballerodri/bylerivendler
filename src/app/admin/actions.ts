@@ -389,6 +389,8 @@ export async function updateService(
   const v = parsed.data
   if (v.pricing_mode === "per_zone" && v.zones.length === 0)
     return { ok: false, error: "Un servicio por zona necesita al menos una zona." }
+  if (v.pricing_mode === "fixed" && v.duration_min < 1)
+    return { ok: false, error: "La duración debe ser mayor a 0" }
 
   const admin = adminClient()
   const { zones, ...serviceFields } = v
