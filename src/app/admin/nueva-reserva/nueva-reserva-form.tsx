@@ -43,6 +43,19 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
 
   // Step 1 — Services
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [zoneSel, setZoneSel] = useState<Record<string, string[]>>({})
+  const toggleZone = (serviceId: string, zoneId: string) =>
+    setZoneSel((prev) => {
+      const cur = prev[serviceId] ?? []
+      const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
+      return { ...prev, [serviceId]: next }
+    })
+  const effective = (s: ServiceOption): { priceCents: number; duration: number; count: number } => {
+    if (s.pricing_mode !== "per_zone") return { priceCents: s.price_cents, duration: s.duration_min, count: 1 }
+    const ids = zoneSel[s.id] ?? []
+    const chosen = s.zones.filter((z) => ids.includes(z.id))
+    return { priceCents: chosen.length * s.price_cents, duration: chosen.reduce((a, z) => a + z.durationMin, 0), count: chosen.length }
+  }
 
   // Step 2 — Date/time
   const [date, setDate] = useState(todayAR())
@@ -76,7 +89,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
     setSlots([])
     const svcs = services
       .filter((s) => selectedIds.has(s.id))
-      .map((s) => ({ id: s.id, name: s.name, duration: s.duration_min, staffId: "auto" }))
+      .map((s) => ({ id: s.id, name: s.name, duration: effective(s).duration, staffId: "auto" }))
     if (!svcs.length) return
     startSlotsTransition(async () => {
       const res = await fetchSequentialAvailability(svcs, d, 1)
@@ -96,10 +109,14 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
   }
   const goBack = () => setStep((s) => s - 1)
 
+  // ── Selected service data ────────────────────────────────────────────────────
+  const selectedServices = services.filter((s) => selectedIds.has(s.id))
+
   // ── Validation ───────────────────────────────────────────────────────────────
   const clientValid = selectedClient !== null ||
     (clientMode === "new" && newClient.firstName.trim() && newClient.lastName.trim() && newClient.phone.trim())
-  const servicesValid = selectedIds.size > 0
+  const servicesValid = selectedIds.size > 0 &&
+    selectedServices.every((s) => s.pricing_mode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
   const slotValid = selectedSlot !== null
 
   // ── Submit ───────────────────────────────────────────────────────────────────
@@ -132,6 +149,9 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
         resolvedStaff,
         startsAt,
         notes: notes.trim() || undefined,
+        zoneSelections: Object.fromEntries(
+          selectedServices.filter((s) => s.pricing_mode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
+        ),
       })
 
       if (result.ok) {
@@ -142,10 +162,8 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
     })
   }
 
-  // ── Selected service data ────────────────────────────────────────────────────
-  const selectedServices = services.filter((s) => selectedIds.has(s.id))
-  const totalMin = selectedServices.reduce((a, s) => a + s.duration_min, 0)
-  const totalCents = selectedServices.reduce((a, s) => a + s.price_cents, 0)
+  const totalMin = selectedServices.reduce((a, s) => a + effective(s).duration, 0)
+  const totalCents = selectedServices.reduce((a, s) => a + effective(s).priceCents, 0)
 
   // ── Grouped services ─────────────────────────────────────────────────────────
   const byCategory = services.reduce<Record<string, ServiceOption[]>>((acc, s) => {
@@ -327,33 +345,52 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                 </p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {svcs.map((s) => (
-                    <label
-                      key={s.id}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
-                        padding: "10px 12px", borderRadius: 8, fontSize: 13,
-                        background: selectedIds.has(s.id) ? "var(--linen)" : "transparent",
-                        border: `1px solid ${selectedIds.has(s.id) ? "var(--gold)" : "var(--line)"}`,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(s.id)}
-                        onChange={(e) => {
-                          setSelectedIds((prev) => {
-                            const next = new Set(prev)
-                            if (e.target.checked) next.add(s.id)
-                            else next.delete(s.id)
-                            return next
-                          })
-                          setSelectedSlot(null)
+                    <div key={s.id}>
+                      <label
+                        style={{
+                          display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+                          padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                          background: selectedIds.has(s.id) ? "var(--linen)" : "transparent",
+                          border: `1px solid ${selectedIds.has(s.id) ? "var(--gold)" : "var(--line)"}`,
                         }}
-                        style={{ width: 15, height: 15 }}
-                      />
-                      <span style={{ flex: 1 }}><strong>{s.name}</strong></span>
-                      <span style={{ color: "var(--ink-mute)" }}>{s.duration_min} min</span>
-                      <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(s.price_cents / 100)}</span>
-                    </label>
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(s.id)}
+                          onChange={(e) => {
+                            setSelectedIds((prev) => {
+                              const next = new Set(prev)
+                              if (e.target.checked) next.add(s.id)
+                              else next.delete(s.id)
+                              return next
+                            })
+                            setSelectedSlot(null)
+                          }}
+                          style={{ width: 15, height: 15 }}
+                        />
+                        <span style={{ flex: 1 }}><strong>{s.name}</strong></span>
+                        <span style={{ color: "var(--ink-mute)" }}>{s.duration_min} min</span>
+                        <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(s.price_cents / 100)}</span>
+                      </label>
+                      {s.pricing_mode === "per_zone" && selectedIds.has(s.id) && (
+                        <div style={{ paddingLeft: 34, display: "flex", flexDirection: "column", gap: 6, marginTop: 4, marginBottom: 4 }}>
+                          {s.zones.map((z) => (
+                            <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={(zoneSel[s.id] ?? []).includes(z.id)}
+                                onChange={() => { toggleZone(s.id, z.id); setSelectedSlot(null) }}
+                                style={{ width: 15, height: 15 }}
+                              />
+                              <span>{z.name} · {z.durationMin} min</span>
+                            </label>
+                          ))}
+                          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                            {(() => { const e = effective(s); return e.count ? `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.priceCents / 100)}` : "Elegí al menos una zona" })()}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>
