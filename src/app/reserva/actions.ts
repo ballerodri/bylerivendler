@@ -10,7 +10,7 @@ import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 
 const BookingInput = z.object({
-  serviceIds: z.array(z.string().uuid()).min(1),
+  serviceIds: z.array(z.string().uuid()),
   startsAt: z.string().datetime(),
   proHint: z.string(),
   // Multi-professional sequential support
@@ -21,6 +21,8 @@ const BookingInput = z.object({
   medicalNote: z.string().optional(),
   comboId: z.string().uuid().optional(),
   zoneSelections: z.record(z.string().uuid(), z.array(z.string().uuid())).optional(),
+  packId: z.string().uuid().optional(),
+  packZoneIds: z.array(z.string().uuid()).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -41,6 +43,8 @@ const BookingInput = z.object({
       consent: z.boolean(),
     })
     .nullable(),
+}).refine((v) => v.serviceIds.length > 0 || !!v.packId, {
+  message: "Elegí al menos un servicio o un pack.",
 })
 
 export type CreateBookingInput = z.infer<typeof BookingInput>
@@ -204,6 +208,110 @@ export async function createBooking(
     // Non-fatal: a duplicate record (already had one) shouldn't block the booking.
     if (medErr && !medErr.message.includes("duplicate"))
       return { ok: false, error: `Ficha clínica: ${medErr.message}` }
+  }
+
+  // ── Reserva de un PACK (excluyente): crea la compra + primer turno portador ──
+  if (input.packId) {
+    const { data: pack } = await supabase
+      .from("packs")
+      .select("id, name, sessions, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
+      .eq("id", input.packId)
+      .eq("active", true)
+      .eq("visible_reserva", true)
+      .maybeSingle()
+    if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
+    const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
+    if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
+
+    // Duración de la 1ª sesión + snapshot de zonas
+    let firstDuration = svc.duration_min
+    let zonesSnapshot: ZoneSnapshot[] | null = null
+    if (svc.pricing_mode === "per_zone") {
+      const { data: zoneRows } = await supabase
+        .from("service_zones")
+        .select("id, name, duration_min")
+        .eq("service_id", svc.id)
+        .eq("active", true)
+      const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min }))
+      const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
+      if (!selected || selected.length !== (pack.zones_count ?? 0))
+        return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
+      const p = computeZonePricing(selected, svc.price_cents)
+      firstDuration = p.durationMin
+      zonesSnapshot = p.zones
+    }
+
+    const packStartsAt = new Date(input.startsAt)
+    const packEndsAt = new Date(packStartsAt.getTime() + firstDuration * 60_000)
+    const packDeposit = Math.round(pack.total_price_cents * 0.3)
+
+    // Crear la compra del pack
+    const { data: purchase, error: purErr } = await supabase
+      .from("pack_purchases")
+      .insert({
+        client_id: clientId,
+        pack_id: pack.id,
+        pack_name: pack.name,
+        service_id: svc.id,
+        service_name: svc.name,
+        sessions_total: pack.sessions,
+        sessions_used: 0,
+      })
+      .select("id")
+      .single()
+    if (purErr || !purchase) return { ok: false, error: `No pudimos registrar el pack: ${purErr?.message}` }
+
+    // Sala + staff (mismo criterio que el turno normal)
+    const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+    const packStaffId = input.resolvedStaff
+      ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
+      : (input.proHint !== "auto" ? input.proHint : null)
+
+    const { data: packAppt, error: packApptErr } = await supabase
+      .from("appointments")
+      .insert({
+        client_id: clientId,
+        staff_id: packStaffId,
+        room_id: packRoom?.id ?? null,
+        starts_at: packStartsAt.toISOString(),
+        ends_at: packEndsAt.toISOString(),
+        duration_min: firstDuration,
+        total_cents: pack.total_price_cents,
+        deposit_cents: packDeposit,
+        deposit_paid: false,
+        status: "pending",
+        source: "web",
+        pack_purchase_id: purchase.id,
+        notes_internal: `Pack: ${pack.name} (sesión 1 de ${pack.sessions})`,
+      })
+      .select("id")
+      .single()
+    if (packApptErr || !packAppt) return { ok: false, error: `Turno del pack: ${packApptErr?.message}` }
+
+    await supabase.from("appointment_services").insert({
+      appointment_id: packAppt.id,
+      service_id: svc.id,
+      duration_min: firstDuration,
+      price_cents: pack.total_price_cents,
+      zones: zonesSnapshot,
+      staff_id: packStaffId,
+      starts_at: packStartsAt.toISOString(),
+    })
+
+    // Email de confirmación (best-effort, no bloqueante)
+    try {
+      await sendBookingConfirmation({
+        to: email,
+        firstName: input.client.firstName.trim(),
+        servicesNames: [`${pack.name} (sesión 1 de ${pack.sessions})`],
+        startsAt: packStartsAt,
+        durationMin: firstDuration,
+        totalCents: pack.total_price_cents,
+        appointmentId: packAppt.id,
+      })
+    } catch {}
+
+    return { ok: true, appointmentId: packAppt.id }
   }
 
   // 4) Default room (first active room)
