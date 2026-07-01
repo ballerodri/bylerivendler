@@ -1,10 +1,18 @@
+export type ServiceZone = {
+  id: string
+  name: string
+  durationMin: number
+}
+
 export type Service = {
   id: string
   name: string
-  duration: number
-  price: number
+  duration: number       // per_zone: 0 (la duración sale de las zonas)
+  price: number          // per_zone: precio POR ZONA (pesos)
   desc: string
   pointsCost: number
+  pricingMode: "fixed" | "per_zone"
+  zones: ServiceZone[]   // vacío para 'fixed'
 }
 
 export type Category = {

@@ -37,6 +37,8 @@ type DbServiceRow = {
   points_cost: number
   active: boolean
   visible_public: boolean
+  pricing_mode: "fixed" | "per_zone"
+  service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number }[]
 }
 
 function adminClient() {
@@ -59,7 +61,7 @@ export async function fetchCatalog(): Promise<Category[]> {
     .select(
       `
       id, slug, name, tagline, sort_order,
-      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public)
+      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode, service_zones(id, name, duration_min, active, order_index))
     `
     )
     .eq("active", true)
@@ -82,6 +84,11 @@ export async function fetchCatalog(): Promise<Category[]> {
           price: Math.round(s.price_cents / 100),
           desc: s.description ?? "",
           pointsCost: s.points_cost,
+          pricingMode: s.pricing_mode,
+          zones: (s.service_zones ?? [])
+            .filter((z) => z.active)
+            .sort((a, b) => a.order_index - b.order_index)
+            .map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min })),
         })
       ),
   }))
@@ -220,6 +227,8 @@ export async function fetchCombos(): Promise<Combo[]> {
         price: Math.round(cs.service!.price_cents / 100),
         desc: cs.service!.description ?? "",
         pointsCost: cs.service!.points_cost,
+        pricingMode: "fixed",
+        zones: [],
       }))
     const duration = services.reduce((a, s) => a + s.duration, 0)
     return {
