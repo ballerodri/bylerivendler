@@ -1,7 +1,7 @@
 # Servicio "por zona" (Vela Slim) + packs seleccionables en reserva — Diseño
 
 **Fecha:** 2026-07-01
-**Estado:** En revisión
+**Estado:** Aprobado
 **Autor:** Claude Code + ballerodri
 
 ---
