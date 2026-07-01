@@ -7,6 +7,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
+import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 
 const StatusSchema = z.enum([
   "pending",
@@ -907,6 +908,7 @@ export type AdminBookingInput = {
   resolvedStaff: Record<string, string>
   startsAt: string
   notes?: string
+  zoneSelections?: Record<string, string[]>
 }
 
 export async function createAdminBooking(
@@ -918,12 +920,37 @@ export async function createAdminBooking(
   // 1) Resolve services
   const { data: services, error: svcErr } = await admin
     .from("services")
-    .select("id, name, duration_min, price_cents")
+    .select("id, name, duration_min, price_cents, pricing_mode")
     .in("id", input.serviceIds)
   if (svcErr || !services?.length) return { ok: false, error: "Servicios no encontrados." }
 
-  const totalDuration = services.reduce((a, s) => a + s.duration_min, 0)
-  const totalCents = services.reduce((a, s) => a + s.price_cents, 0)
+  const perZoneIds = services.filter((s) => s.pricing_mode === "per_zone").map((s) => s.id)
+  const zonesByService: Record<string, Zone[]> = {}
+  if (perZoneIds.length) {
+    const { data: zoneRows } = await admin
+      .from("service_zones")
+      .select("id, service_id, name, duration_min")
+      .in("service_id", perZoneIds)
+      .eq("active", true)
+    for (const z of zoneRows ?? []) {
+      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min })
+    }
+  }
+
+  const computed: Record<string, { durationMin: number; priceCents: number; zones: ZoneSnapshot[] | null }> = {}
+  for (const s of services) {
+    if (s.pricing_mode === "per_zone") {
+      const selected = resolveSelectedZones(input.zoneSelections?.[s.id] ?? [], zonesByService[s.id] ?? [])
+      if (!selected) return { ok: false, error: "Elegí al menos una zona válida para el servicio por zona." }
+      const p = computeZonePricing(selected, s.price_cents)
+      computed[s.id] = { durationMin: p.durationMin, priceCents: p.priceCents, zones: p.zones }
+    } else {
+      computed[s.id] = { durationMin: s.duration_min, priceCents: s.price_cents, zones: null }
+    }
+  }
+
+  const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
+  const totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
   const startsAt = new Date(input.startsAt)
   const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
 
@@ -1004,13 +1031,15 @@ export async function createAdminBooking(
 
   let ms = startsAt.getTime()
   const apptServices = orderedServices.map((s) => {
+    const c = computed[s.id]
     const sStartsAt = new Date(ms)
-    ms += s.duration_min * 60_000
+    ms += c.durationMin * 60_000
     return {
       appointment_id: appt.id,
       service_id: s.id,
-      duration_min: s.duration_min,
-      price_cents: s.price_cents,
+      duration_min: c.durationMin,
+      price_cents: c.priceCents,
+      zones: c.zones,
       staff_id: input.resolvedStaff[s.id] ?? mainStaffId,
       starts_at: sStartsAt.toISOString(),
     }
