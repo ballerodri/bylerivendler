@@ -7,6 +7,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendBookingConfirmation } from "@/lib/email/booking-emails"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
+import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()).min(1),
@@ -19,6 +20,7 @@ const BookingInput = z.object({
   savedClientId: z.string().uuid().optional(),
   medicalNote: z.string().optional(),
   comboId: z.string().uuid().optional(),
+  zoneSelections: z.record(z.string().uuid(), z.array(z.string().uuid())).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -68,7 +70,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents, points_cost")
+    .select("id, name, duration_min, price_cents, points_cost, pricing_mode")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -76,8 +78,36 @@ export async function createBooking(
     return { ok: false, error: "Algún servicio ya no está disponible." }
   }
 
-  const totalDuration = services.reduce((a, s) => a + s.duration_min, 0)
-  let totalCents = services.reduce((a, s) => a + s.price_cents, 0)
+  // Para servicios por zona, traer sus zonas activas y resolver la selección.
+  const perZoneIds = services.filter((s) => s.pricing_mode === "per_zone").map((s) => s.id)
+  const zonesByService: Record<string, Zone[]> = {}
+  if (perZoneIds.length) {
+    const { data: zoneRows, error: zErr } = await supabase
+      .from("service_zones")
+      .select("id, service_id, name, duration_min")
+      .in("service_id", perZoneIds)
+      .eq("active", true)
+    if (zErr) return { ok: false, error: `Zonas: ${zErr.message}` }
+    for (const z of zoneRows ?? []) {
+      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min })
+    }
+  }
+
+  // Precio/duración efectivos por servicio (+ snapshot de zonas para per_zone).
+  const computed: Record<string, { durationMin: number; priceCents: number; zones: ZoneSnapshot[] | null }> = {}
+  for (const s of services) {
+    if (s.pricing_mode === "per_zone") {
+      const selected = resolveSelectedZones(input.zoneSelections?.[s.id] ?? [], zonesByService[s.id] ?? [])
+      if (!selected) return { ok: false, error: "Elegí al menos una zona válida para el servicio por zona." }
+      const p = computeZonePricing(selected, s.price_cents)
+      computed[s.id] = { durationMin: p.durationMin, priceCents: p.priceCents, zones: p.zones }
+    } else {
+      computed[s.id] = { durationMin: s.duration_min, priceCents: s.price_cents, zones: null }
+    }
+  }
+
+  const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
+  let totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
 
   // Si es un combo, reemplazamos el precio por el del combo
   if (input.comboId) {
@@ -248,13 +278,15 @@ export async function createBooking(
 
   let serviceMs = startsAt.getTime()
   const apptServices = orderedServices.map((s) => {
+    const c = computed[s.id]
     const sStartsAt = new Date(serviceMs)
-    serviceMs += s.duration_min * 60_000
+    serviceMs += c.durationMin * 60_000
     return {
       appointment_id: appt.id,
       service_id: s.id,
-      duration_min: s.duration_min,
-      price_cents: s.price_cents,
+      duration_min: c.durationMin,
+      price_cents: c.priceCents,
+      zones: c.zones,
       staff_id: input.resolvedStaff?.[s.id] ?? mainStaffId,
       starts_at: sStartsAt.toISOString(),
     }
