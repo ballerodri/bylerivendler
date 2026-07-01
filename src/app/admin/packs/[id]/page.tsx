@@ -9,6 +9,7 @@ type DbService = {
   id: string
   name: string
   price_cents: number
+  pricing_mode: "fixed" | "per_zone"
   category: { name: string } | null
 }
 
@@ -29,12 +30,12 @@ export default async function EditarPackPage({ params }: { params: Promise<{ id:
   const [{ data: pack }, { data: svcData }] = await Promise.all([
     admin
       .from("packs")
-      .select("id, service_id, name, description, sessions, interval_days, total_price_cents")
+      .select("id, service_id, name, description, sessions, interval_days, total_price_cents, zones_count, visible_reserva")
       .eq("id", id)
       .maybeSingle(),
     admin
       .from("services")
-      .select("id, name, price_cents, category:service_categories(name)")
+      .select("id, name, price_cents, pricing_mode, category:service_categories(name)")
       .eq("active", true)
       .order("name", { ascending: true }),
   ])
@@ -45,6 +46,7 @@ export default async function EditarPackPage({ params }: { params: Promise<{ id:
     id: s.id,
     name: s.name,
     price_cents: s.price_cents,
+    pricing_mode: s.pricing_mode,
     category: (s.category as unknown as { name: string } | null)?.name ?? "Sin categoría",
   }))
 
@@ -62,6 +64,8 @@ export default async function EditarPackPage({ params }: { params: Promise<{ id:
           sessions: pack.sessions,
           intervalDays: pack.interval_days,
           totalPriceCents: pack.total_price_cents,
+          zonesCount: pack.zones_count,
+          visibleReserva: pack.visible_reserva,
         }}
       />
     </>

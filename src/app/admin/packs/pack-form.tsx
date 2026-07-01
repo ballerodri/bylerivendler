@@ -4,12 +4,14 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { createPack, updatePack } from "./actions"
 import { fmtPrice } from "../../reserva/data"
+import { packReferenceCents } from "@/lib/servicios/pack-pricing"
 
 export type ServiceOption = {
   id: string
   name: string
   price_cents: number
   category: string
+  pricing_mode: "fixed" | "per_zone"
 }
 
 type Props = {
@@ -22,6 +24,8 @@ type Props = {
     sessions: number
     intervalDays: number | null
     totalPriceCents: number
+    zonesCount: number | null
+    visibleReserva: boolean
   }
 }
 
@@ -40,11 +44,19 @@ export default function PackForm({ services, initial }: Props) {
   const [priceInput, setPriceInput] = useState(
     initial ? String(Math.round(initial.totalPriceCents / 100)) : ""
   )
+  const [zonesCount, setZonesCount] = useState(
+    initial?.zonesCount != null ? String(initial.zonesCount) : ""
+  )
+  const [visibleReserva, setVisibleReserva] = useState(initial?.visibleReserva ?? false)
 
   const sessionsNum = parseInt(sessions, 10) || 0
   const totalPriceCents = Math.round((parseFloat(priceInput) || 0) * 100)
   const service = services.find((s) => s.id === serviceId)
-  const fullPriceCents = service ? service.price_cents * sessionsNum : 0
+  const isPerZone = service?.pricing_mode === "per_zone"
+  const zonesCountNum = zonesCount.trim() ? parseInt(zonesCount, 10) || 0 : 0
+  const fullPriceCents = service
+    ? packReferenceCents(service.price_cents, sessionsNum, isPerZone ? zonesCountNum : null)
+    : 0
   const saving = fullPriceCents - totalPriceCents
 
   const handleSubmit = () => {
@@ -52,6 +64,7 @@ export default function PackForm({ services, initial }: Props) {
     if (!name.trim()) { setError("El nombre es obligatorio."); return }
     if (sessionsNum < 1) { setError("La cantidad de sesiones debe ser al menos 1."); return }
     if (totalPriceCents <= 0) { setError("Ingresá el precio del pack."); return }
+    if (isPerZone && zonesCountNum < 1) { setError("Indicá cuántas zonas cubre cada sesión."); return }
 
     const intervalNum = intervalDays.trim() ? parseInt(intervalDays, 10) : null
     if (intervalNum != null && (isNaN(intervalNum) || intervalNum <= 0)) {
@@ -67,6 +80,8 @@ export default function PackForm({ services, initial }: Props) {
         sessions: sessionsNum,
         intervalDays: intervalNum,
         totalPriceCents,
+        zonesCount: isPerZone ? zonesCountNum : null,
+        visibleReserva,
       }
       const r = initial ? await updatePack(initial.id, input) : await createPack(input)
       if (r.ok) router.push("/admin/packs")
@@ -105,6 +120,34 @@ export default function PackForm({ services, initial }: Props) {
           <input className="adm-input" type="number" min="1" value={intervalDays} onChange={(e) => setIntervalDays(e.target.value)} style={{ width: 180 }} placeholder="14" />
         </div>
       </div>
+
+      {isPerZone && (
+        <div>
+          <label className="adm-label">Zonas por sesión *</label>
+          <input
+            className="adm-input"
+            type="number"
+            min="1"
+            value={zonesCount}
+            onChange={(e) => setZonesCount(e.target.value)}
+            style={{ width: 140 }}
+            placeholder="2"
+          />
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 6 }}>
+            Cuántas zonas cubre cada una de las {sessionsNum || "N"} sesiones (servicio por zona).
+          </p>
+        </div>
+      )}
+
+      <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}>
+        <input
+          type="checkbox"
+          checked={visibleReserva}
+          onChange={(e) => setVisibleReserva(e.target.checked)}
+          style={{ width: 16, height: 16 }}
+        />
+        <span>Visible en la reserva online (la clienta puede elegir este pack)</span>
+      </label>
 
       <div>
         <label className="adm-label">Precio del pack *</label>

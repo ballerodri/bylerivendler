@@ -9,6 +9,7 @@ type DbService = {
   id: string
   name: string
   price_cents: number
+  pricing_mode: "fixed" | "per_zone"
   category: { name: string } | null
 }
 
@@ -20,13 +21,14 @@ async function fetchServices(): Promise<ServiceOption[]> {
   )
   const { data } = await admin
     .from("services")
-    .select("id, name, price_cents, category:service_categories(name)")
+    .select("id, name, price_cents, pricing_mode, category:service_categories(name)")
     .eq("active", true)
     .order("name", { ascending: true })
   return ((data ?? []) as unknown as DbService[]).map((s): ServiceOption => ({
     id: s.id,
     name: s.name,
     price_cents: s.price_cents,
+    pricing_mode: s.pricing_mode,
     category: (s.category as unknown as { name: string } | null)?.name ?? "Sin categoría",
   }))
 }
