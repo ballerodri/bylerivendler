@@ -12,6 +12,8 @@ export type PackInput = {
   sessions: number
   intervalDays?: number | null
   totalPriceCents: number
+  zonesCount: number | null
+  visibleReserva: boolean
 }
 
 function adminClient() {
@@ -39,6 +41,8 @@ function row(input: PackInput) {
     sessions: input.sessions,
     interval_days: input.intervalDays ?? null,
     total_price_cents: input.totalPriceCents,
+    zones_count: input.zonesCount,
+    visible_reserva: input.visibleReserva,
   }
 }
 
