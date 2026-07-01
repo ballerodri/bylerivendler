@@ -39,6 +39,23 @@ type ScreenProps = {
 const stepLabel = (n: number, label: string) =>
   `Paso ${String(n).padStart(2, "0")} — ${label}`
 
+// Precio (pesos) y duración (min) efectivos de un servicio según el modo.
+// Para "per_zone", se calculan a partir de las zonas elegidas (zoneSel[s.id]);
+// para "fixed", se usan directamente s.price / s.duration.
+function effectiveService(
+  s: Service,
+  zoneSel: Record<string, string[]>
+): { price: number; duration: number; count: number } {
+  if (s.pricingMode !== "per_zone") return { price: s.price, duration: s.duration, count: 1 }
+  const ids = zoneSel[s.id] ?? []
+  const chosen = s.zones.filter((z) => ids.includes(z.id))
+  return {
+    price: chosen.length * s.price, // s.price = precio por zona
+    duration: chosen.reduce((a, z) => a + z.durationMin, 0),
+    count: chosen.length,
+  }
+}
+
 // ---------- Screen 1: Services ----------
 const COMBOS_TAB = "__combos__"
 
@@ -86,9 +103,21 @@ export function Screen1Services({
     setState({ ...state, combo: null, services: next, activeCat })
   }
 
-  const displayPrice = selectedCombo ? selectedCombo.price : selected.reduce((a, s) => a + s.price, 0)
-  const displayMin   = selectedCombo ? selectedCombo.duration : selected.reduce((a, s) => a + s.duration, 0)
+  // serviceId → zoneId[] elegidas (solo para servicios pricingMode === "per_zone")
+  const zoneSel = state.zoneSelections ?? {}
+  const toggleZone = (serviceId: string, zoneId: string) => {
+    const cur = zoneSel[serviceId] ?? []
+    const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
+    setState({ ...state, zoneSelections: { ...zoneSel, [serviceId]: next } })
+  }
+
+  const effective = (s: Service) => effectiveService(s, zoneSel)
+
+  const displayPrice = selectedCombo ? selectedCombo.price : selected.reduce((a, s) => a + effective(s).price, 0)
+  const displayMin   = selectedCombo ? selectedCombo.duration : selected.reduce((a, s) => a + effective(s).duration, 0)
   const hasSelection = selectedCombo !== null || selected.length > 0
+  const zonesOk = selected.every((s) => s.pricingMode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
+  const canContinue = hasSelection && zonesOk
 
   const activeCategory = activeCat === COMBOS_TAB
     ? null
@@ -217,33 +246,52 @@ export function Screen1Services({
         {activeCategory.services.map((s) => {
           const isSel = !selectedCombo && !!selected.find((x) => x.id === s.id)
           return (
-            <button
-              key={s.id}
-              className={`svc ${isSel ? "is-selected" : ""}`}
-              onClick={() => toggle(s)}
-            >
-              <div className="svc__top">
-                <div style={{ paddingRight: 28, flex: 1 }}>
-                  <h3 className="svc__name">{s.name}</h3>
-                  <div className="svc__meta">
-                    <Icon.Clock />
-                    <span>{fmtDuration(s.duration)}</span>
+            <div key={s.id}>
+              <button
+                className={`svc ${isSel ? "is-selected" : ""}`}
+                onClick={() => toggle(s)}
+              >
+                <div className="svc__top">
+                  <div style={{ paddingRight: 28, flex: 1 }}>
+                    <h3 className="svc__name">{s.name}</h3>
+                    <div className="svc__meta">
+                      <Icon.Clock />
+                      <span>{fmtDuration(s.duration)}</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div className="svc__price">{fmtPrice(s.price)}</div>
+                    {s.pointsCost > 0 && (
+                      <div style={{ fontSize: 11, color: "var(--gold)", letterSpacing: "0.04em", marginTop: 2 }}>
+                        o {s.pointsCost} pts
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div className="svc__price">{fmtPrice(s.price)}</div>
-                  {s.pointsCost > 0 && (
-                    <div style={{ fontSize: 11, color: "var(--gold)", letterSpacing: "0.04em", marginTop: 2 }}>
-                      o {s.pointsCost} pts
-                    </div>
-                  )}
+                <p className="svc__desc">{s.desc}</p>
+                <span className="svc__check">
+                  <Icon.CheckSmall />
+                </span>
+              </button>
+              {s.pricingMode === "per_zone" && isSel && (
+                <div style={{ marginTop: 8, paddingLeft: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {s.zones.map((z) => (
+                    <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={(zoneSel[s.id] ?? []).includes(z.id)}
+                        onChange={() => toggleZone(s.id, z.id)}
+                        style={{ width: 15, height: 15 }}
+                      />
+                      <span>{z.name} · {z.durationMin} min</span>
+                    </label>
+                  ))}
+                  <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                    {(() => { const e = effective(s); return e.count ? `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.price)}` : "Elegí al menos una zona" })()}
+                  </span>
                 </div>
-              </div>
-              <p className="svc__desc">{s.desc}</p>
-              <span className="svc__check">
-                <Icon.CheckSmall />
-              </span>
-            </button>
+              )}
+            </div>
           )
         })}
       </div>
@@ -272,7 +320,7 @@ export function Screen1Services({
         </div>
         <button
           className="btn btn--primary"
-          disabled={!hasSelection}
+          disabled={!canContinue}
           onClick={onNext}
         >
           Continuar
@@ -371,15 +419,19 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const [showWaitlist, setShowWaitlist] = useState(false)
   const [waitlistDone, setWaitlistDone] = useState(false)
 
-  // Stable key for service+staff combo to drive effect
-  const assignmentKey = state.services.map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}`).join("|")
+  const zoneSel = state.zoneSelections ?? {}
+
+  // Stable key for service+staff+zone combo to drive effect
+  const assignmentKey = state.services
+    .map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`)
+    .join("|")
 
   useEffect(() => {
     if (!selectedDate) { setSeqResult(null); return }
     const serviceInputs = state.services.map((s) => ({
       id: s.id,
       name: s.name,
-      duration: s.duration,
+      duration: effectiveService(s, zoneSel).duration,
       staffId: serviceStaff[s.id] ?? "auto",
     }))
     let cancelled = false
@@ -1494,8 +1546,10 @@ export function Screen5Confirm({
 }: ScreenProps & { loyaltyPoints: number; professionals: Professional[] }) {
   const services = state.services || []
   const combo = state.combo ?? null
-  const total = combo ? combo.price : services.reduce((a, s) => a + s.price, 0)
-  const totalMin = combo ? combo.duration : services.reduce((a, s) => a + s.duration, 0)
+  const zoneSel = state.zoneSelections ?? {}
+  const effective = (s: Service) => effectiveService(s, zoneSel)
+  const total = combo ? combo.price : services.reduce((a, s) => a + effective(s).price, 0)
+  const totalMin = combo ? combo.duration : services.reduce((a, s) => a + effective(s).duration, 0)
   const totalPointsCost = combo ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
   const canRedeem = !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
@@ -1522,7 +1576,7 @@ export function Screen5Confirm({
       const assignedPro = professionals.find((p) => p.id === staffId)
       const h = Math.floor(mins / 60), m = mins % 60
       const startTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
-      if (svc) mins += svc.duration
+      if (svc) mins += effective(svc).duration
       return { svc, assignedPro, startTime }
     }).filter((x): x is { svc: Service; assignedPro: Professional | undefined; startTime: string } => !!x.svc)
   })()
@@ -1550,6 +1604,9 @@ export function Screen5Confirm({
       savedClientId: state.savedClientId,
       medicalNote: state.medicalNote,
       comboId: state.combo?.id,
+      zoneSelections: Object.fromEntries(
+        services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
+      ),
       client: {
         firstName: state.form.firstName,
         lastName: state.form.lastName,
@@ -1610,7 +1667,7 @@ export function Screen5Confirm({
                 <div key={svc.id} style={{ marginBottom: 8 }}>
                   {svc.name}
                   <small>
-                    {startTime}hs · {fmtDuration(svc.duration)} · {fmtPrice(svc.price)}
+                    {startTime}hs · {fmtDuration(effective(svc).duration)} · {fmtPrice(effective(svc).price)}
                     {assignedPro ? ` · ${assignedPro.name}` : ""}
                   </small>
                 </div>
@@ -1619,7 +1676,7 @@ export function Screen5Confirm({
               services.map((s, i) => (
                 <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
                   {s.name}
-                  <small>{fmtDuration(s.duration)} · {fmtPrice(s.price)}</small>
+                  <small>{fmtDuration(effective(s).duration)} · {fmtPrice(effective(s).price)}</small>
                 </div>
               ))
             )}
@@ -1878,7 +1935,8 @@ export function Screen6Success({
   const services = state.services || []
   const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
-  const totalMin = services.reduce((a, s) => a + s.duration, 0)
+  const zoneSel = state.zoneSelections ?? {}
+  const totalMin = services.reduce((a, s) => a + effectiveService(s, zoneSel).duration, 0)
 
   const Body = () => (
     <div className="success">

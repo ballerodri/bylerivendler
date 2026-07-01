@@ -177,6 +177,7 @@ export type BookingState = {
   serviceStaff?: Record<string, string>   // serviceId → "auto" | staffId (user preference)
   serviceOrder?: string[]                 // service IDs in execution order (resolved)
   resolvedStaff?: Record<string, string>  // serviceId → actual staffId (resolved after slot pick)
+  zoneSelections?: Record<string, string[]>  // serviceId → zoneId[] elegidas (solo pricingMode === "per_zone")
   clientMode?: "new" | "existing"
   form?: ClientForm
   medical?: MedicalForm
