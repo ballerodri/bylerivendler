@@ -137,7 +137,7 @@ export function Screen1Services({
   const packDurationMin = selectedPack
     ? (selectedPack.pack.pricingMode === "per_zone"
         ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
-        : 0) // servicio fijo: la duración la resuelve el servidor
+        : selectedPack.pack.serviceDurationMin)
     : 0
   const packZonesOk = !selectedPack || selectedPack.pack.pricingMode !== "per_zone" ||
     selectedPack.zoneIds.length === (selectedPack.pack.zonesCount ?? 0)
@@ -527,7 +527,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const packDurationMin = selectedPack
     ? (selectedPack.pack.pricingMode === "per_zone"
         ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
-        : 0)
+        : selectedPack.pack.serviceDurationMin)
     : 0
 
   // Stable key for service+staff+zone combo to drive effect

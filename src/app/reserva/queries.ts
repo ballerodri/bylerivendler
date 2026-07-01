@@ -266,6 +266,7 @@ type DbReservaPackRow = {
     id: string
     name: string
     pricing_mode: "fixed" | "per_zone"
+    duration_min: number
     service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number }[]
   } | null
 }
@@ -276,7 +277,7 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
     .from("packs")
     .select(`
       id, name, description, total_price_cents, sessions, zones_count,
-      service:services(id, name, pricing_mode, service_zones(id, name, duration_min, active, order_index))
+      service:services(id, name, pricing_mode, duration_min, service_zones(id, name, duration_min, active, order_index))
     `)
     .eq("active", true)
     .eq("visible_reserva", true)
@@ -295,6 +296,7 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
       serviceName: p.service!.name,
       pricingMode: p.service!.pricing_mode,
       zonesCount: p.zones_count,
+      serviceDurationMin: p.service!.duration_min ?? 0,
       zones: (p.service!.service_zones ?? [])
         .filter((z) => z.active)
         .sort((a, b) => a.order_index - b.order_index)

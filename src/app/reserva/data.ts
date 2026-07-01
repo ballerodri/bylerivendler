@@ -177,6 +177,7 @@ export type ReservaPack = {
   pricingMode: "fixed" | "per_zone"
   zonesCount: number | null
   zones: ServiceZone[]   // zonas activas del servicio (para packs per_zone)
+  serviceDurationMin: number   // duración del servicio (para packs de servicio fijo)
 }
 
 export type BookingState = {

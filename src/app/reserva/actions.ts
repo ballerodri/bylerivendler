@@ -288,7 +288,7 @@ export async function createBooking(
       .single()
     if (packApptErr || !packAppt) return { ok: false, error: `Turno del pack: ${packApptErr?.message}` }
 
-    await supabase.from("appointment_services").insert({
+    const { error: packLinkErr } = await supabase.from("appointment_services").insert({
       appointment_id: packAppt.id,
       service_id: svc.id,
       duration_min: firstDuration,
@@ -297,6 +297,7 @@ export async function createBooking(
       staff_id: packStaffId,
       starts_at: packStartsAt.toISOString(),
     })
+    if (packLinkErr) return { ok: false, error: `Servicio del turno: ${packLinkErr.message}` }
 
     // Email de confirmación (best-effort, no bloqueante)
     try {
