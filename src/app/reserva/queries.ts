@@ -254,3 +254,50 @@ export async function countActivePacks(): Promise<number> {
     .eq("active", true)
   return count ?? 0
 }
+
+type DbReservaPackRow = {
+  id: string
+  name: string
+  description: string | null
+  total_price_cents: number
+  sessions: number
+  zones_count: number | null
+  service: {
+    id: string
+    name: string
+    pricing_mode: "fixed" | "per_zone"
+    service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number }[]
+  } | null
+}
+
+export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[]> {
+  const supabase = adminClient()
+  const { data } = await supabase
+    .from("packs")
+    .select(`
+      id, name, description, total_price_cents, sessions, zones_count,
+      service:services(id, name, pricing_mode, service_zones(id, name, duration_min, active, order_index))
+    `)
+    .eq("active", true)
+    .eq("visible_reserva", true)
+    .order("name", { ascending: true })
+
+  if (!data) return []
+  return (data as unknown as DbReservaPackRow[])
+    .filter((p) => p.service)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description ?? "",
+      priceCents: p.total_price_cents,
+      sessions: p.sessions,
+      serviceId: p.service!.id,
+      serviceName: p.service!.name,
+      pricingMode: p.service!.pricing_mode,
+      zonesCount: p.zones_count,
+      zones: (p.service!.service_zones ?? [])
+        .filter((z) => z.active)
+        .sort((a, b) => a.order_index - b.order_index)
+        .map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min })),
+    }))
+}

@@ -166,9 +166,23 @@ export type Combo = {
   services: Service[]  // en order_index
 }
 
+export type ReservaPack = {
+  id: string
+  name: string
+  description: string
+  priceCents: number
+  sessions: number
+  serviceId: string
+  serviceName: string
+  pricingMode: "fixed" | "per_zone"
+  zonesCount: number | null
+  zones: ServiceZone[]   // zonas activas del servicio (para packs per_zone)
+}
+
 export type BookingState = {
   services: Service[]
   combo?: Combo | null  // si se eligió un combo, services viene de aquí
+  pack?: { pack: ReservaPack; zoneIds: string[] } | null
   activeCat?: string
   selectedDate?: string
   selectedTime?: string | null

@@ -8,6 +8,7 @@ import {
   type Category,
   type Combo,
   type Professional,
+  type ReservaPack,
   type ScreenId,
 } from "./data"
 import { DesktopSteps } from "./primitives"
@@ -101,6 +102,7 @@ export default function ReservaFlow({
   businessHours,
   currentClient,
   authProfile,
+  packs,
 }: {
   categories: Category[]
   combos: Combo[]
@@ -108,6 +110,7 @@ export default function ReservaFlow({
   businessHours: BusinessHour[]
   currentClient: CurrentClient | null
   authProfile: AuthProfile | null
+  packs: ReservaPack[]
 }) {
   const router = useRouter()
   const variant = useVariant()
@@ -228,6 +231,7 @@ export default function ReservaFlow({
             {...screenProps}
             categories={categories}
             combos={combos}
+            packs={packs}
             knownFirstName={currentClient?.firstName ?? null}
           />
         )
@@ -249,6 +253,7 @@ export default function ReservaFlow({
             {...screenProps}
             loyaltyPoints={currentClient?.loyaltyPoints ?? 0}
             professionals={professionals}
+            packs={packs}
           />
         )
       default:
