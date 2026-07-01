@@ -360,15 +360,22 @@ export async function setStaffActive(
   return { ok: true }
 }
 
+const ZoneInput = z.object({
+  name: z.string().trim().min(1),
+  duration_min: z.number().int().positive(),
+})
+
 const ServicePatch = z.object({
   name: z.string().min(1),
   description: z.string().nullable(),
-  duration_min: z.number().int().positive(),
+  pricing_mode: z.enum(["fixed", "per_zone"]),
+  duration_min: z.number().int().nonnegative(),
   price_cents: z.number().int().nonnegative(),
   points_earned: z.number().int().nonnegative(),
   points_cost: z.number().int().nonnegative(),
   active: z.boolean(),
   visible_public: z.boolean(),
+  zones: z.array(ZoneInput).default([]),
 })
 
 export async function updateService(
@@ -378,17 +385,45 @@ export async function updateService(
   await requireStaff()
   const parsed = ServicePatch.safeParse(patch)
   if (!parsed.success) return { ok: false, error: "Datos inválidos" }
+  const v = parsed.data
+  if (v.pricing_mode === "per_zone" && v.zones.length === 0)
+    return { ok: false, error: "Un servicio por zona necesita al menos una zona." }
 
   const admin = adminClient()
+  const { zones, ...serviceFields } = v
   const { error } = await admin
     .from("services")
-    .update(parsed.data)
+    .update({ ...serviceFields, duration_min: v.pricing_mode === "per_zone" ? 0 : v.duration_min })
     .eq("id", serviceId)
   if (error) return { ok: false, error: error.message }
+
+  const syncErr = await syncServiceZones(admin, serviceId, v.pricing_mode, zones)
+  if (syncErr) return { ok: false, error: syncErr }
 
   revalidatePath("/admin/servicios")
   revalidatePath(`/admin/servicios/${serviceId}`)
   return { ok: true }
+}
+
+// Reemplaza todas las zonas del servicio por la lista dada (delete-all + insert).
+// Para servicios 'fixed' deja la tabla sin zonas.
+async function syncServiceZones(
+  admin: ReturnType<typeof adminClient>,
+  serviceId: string,
+  pricingMode: "fixed" | "per_zone",
+  zones: { name: string; duration_min: number }[]
+): Promise<string | null> {
+  const { error: delErr } = await admin.from("service_zones").delete().eq("service_id", serviceId)
+  if (delErr) return delErr.message
+  if (pricingMode !== "per_zone" || zones.length === 0) return null
+  const rows = zones.map((z, i) => ({
+    service_id: serviceId,
+    name: z.name.trim(),
+    duration_min: z.duration_min,
+    order_index: i,
+  }))
+  const { error: insErr } = await admin.from("service_zones").insert(rows)
+  return insErr ? insErr.message : null
 }
 
 export async function uploadClientPhoto(
@@ -604,15 +639,20 @@ export async function createService(
   data: {
     name: string
     description: string
+    pricing_mode: "fixed" | "per_zone"
     duration_min: number
     price_cents: number
     points_earned: number
     points_cost: number
+    zones: { name: string; duration_min: number }[]
   }
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   await requireStaff()
   if (!data.name.trim()) return { ok: false, error: "El nombre es obligatorio" }
-  if (data.duration_min < 1) return { ok: false, error: "La duración debe ser mayor a 0" }
+  if (data.pricing_mode === "fixed" && data.duration_min < 1)
+    return { ok: false, error: "La duración debe ser mayor a 0" }
+  if (data.pricing_mode === "per_zone" && data.zones.length === 0)
+    return { ok: false, error: "Un servicio por zona necesita al menos una zona." }
 
   const admin = adminClient()
   const slug = toSlug(data.name) + "-" + Date.now()
@@ -623,7 +663,8 @@ export async function createService(
       slug,
       name: data.name.trim(),
       description: data.description.trim() || null,
-      duration_min: data.duration_min,
+      pricing_mode: data.pricing_mode,
+      duration_min: data.pricing_mode === "per_zone" ? 0 : data.duration_min,
       price_cents: data.price_cents,
       points_earned: data.points_earned,
       points_cost: data.points_cost,
@@ -634,6 +675,10 @@ export async function createService(
     .single()
 
   if (error) return { ok: false, error: error.message }
+
+  const syncErr = await syncServiceZones(admin, created.id, data.pricing_mode, data.zones)
+  if (syncErr) return { ok: false, error: syncErr }
+
   revalidatePath("/admin/servicios")
   return { ok: true, id: created.id }
 }
