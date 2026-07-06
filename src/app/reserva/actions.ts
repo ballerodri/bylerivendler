@@ -18,7 +18,6 @@ const BookingInput = z.object({
   resolvedStaff: z.record(z.string(), z.string()).optional(),
   redeemWithPoints: z.boolean().optional(),
   savedClientId: z.string().uuid().optional(),
-  medicalNote: z.string().optional(),
   comboId: z.string().uuid().optional(),
   zoneSelections: z.record(z.string().uuid(), z.array(z.string().uuid())).optional(),
   packId: z.string().uuid().optional(),
@@ -32,17 +31,6 @@ const BookingInput = z.object({
     marketingConsent: z.boolean(),
     isExisting: z.boolean(),
   }),
-  medical: z
-    .object({
-      allergies: z.array(z.string()),
-      allergiesOther: z.string(),
-      meds: z.enum(["no", "si"]),
-      medsNote: z.string(),
-      pregnancy: z.enum(["no", "embarazo", "lactancia"]),
-      skin: z.array(z.string()),
-      consent: z.boolean(),
-    })
-    .nullable(),
 }).refine((v) => v.serviceIds.length > 0 || !!v.packId, {
   message: "Elegí al menos un servicio o un pack.",
 })
@@ -190,24 +178,6 @@ export async function createBooking(
       clientId = created.id
       alreadyLinked = false
     }
-  }
-
-  // 3) Insert medical record — saltear si ya fue guardada por saveMedicalEarly.
-  if (!input.savedClientId && input.medical && !input.client.isExisting) {
-    const { error: medErr } = await supabase.from("client_records").insert({
-      client_id: clientId,
-      version: 1,
-      is_current: true,
-      allergies: input.medical.allergies,
-      allergies_other: input.medical.allergiesOther || null,
-      medications_status: input.medical.meds,
-      medications_note: input.medical.medsNote || null,
-      pregnancy: input.medical.pregnancy,
-      skin_conditions: input.medical.skin,
-    })
-    // Non-fatal: a duplicate record (already had one) shouldn't block the booking.
-    if (medErr && !medErr.message.includes("duplicate"))
-      return { ok: false, error: `Ficha clínica: ${medErr.message}` }
   }
 
   // ── Reserva de un PACK (excluyente): crea la compra + primer turno portador ──
@@ -368,10 +338,7 @@ export async function createBooking(
       deposit_paid: redeem,
       status: redeem ? "confirmed" : "pending",
       source: "web",
-      notes_internal: [
-        redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
-        input.medicalNote ? `Cambio en ficha: ${input.medicalNote}` : null,
-      ].filter(Boolean).join(" | ") || null,
+      notes_internal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
     })
     .select("id")
     .single()
@@ -535,73 +502,6 @@ export async function saveClientEarly(data: {
 
   if (error || !created) return { ok: false, error: error?.message ?? "Error al guardar datos" }
   return { ok: true, clientId: created.id }
-}
-
-export async function saveMedicalEarly(
-  clientId: string,
-  medical: {
-    allergies: string[]
-    allergiesOther: string
-    meds: "no" | "si"
-    medsNote: string
-    pregnancy: "no" | "embarazo" | "lactancia"
-    skin: string[]
-  }
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const supabase = adminClient()
-
-  const { data: existing } = await supabase
-    .from("client_records")
-    .select("id")
-    .eq("client_id", clientId)
-    .eq("is_current", true)
-    .maybeSingle()
-
-  if (existing) return { ok: true }
-
-  const { error } = await supabase.from("client_records").insert({
-    client_id: clientId,
-    version: 1,
-    is_current: true,
-    allergies: medical.allergies,
-    allergies_other: medical.allergiesOther || null,
-    medications_status: medical.meds,
-    medications_note: medical.medsNote || null,
-    pregnancy: medical.pregnancy,
-    skin_conditions: medical.skin,
-  })
-
-  if (error) return { ok: false, error: error.message }
-  return { ok: true }
-}
-
-export async function saveDepilationConsent(
-  clientId: string,
-  data: {
-    nombreApellido: string
-    zonasTratamiento: string[]
-    contraindicaciones: string
-    checkboxConsentimiento: boolean
-    checkboxIndicaciones: boolean
-    checkboxSalud: boolean
-    checkboxRegistro: boolean
-  }
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const supabase = adminClient()
-
-  const { error } = await supabase.from("medical_intake_depilation").insert({
-    client_id: clientId,
-    nombre_apellido: data.nombreApellido,
-    zonas_tratamiento: data.zonasTratamiento,
-    contraindicaciones: data.contraindicaciones || null,
-    checkbox_consentimiento: data.checkboxConsentimiento,
-    checkbox_indicaciones: data.checkboxIndicaciones,
-    checkbox_salud: data.checkboxSalud,
-    checkbox_registro: data.checkboxRegistro,
-  })
-
-  if (error) return { ok: false, error: error.message }
-  return { ok: true }
 }
 
 /**

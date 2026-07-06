@@ -16,7 +16,6 @@ import {
   Screen1Services,
   Screen2DateTime,
   Screen3Details,
-  Screen4Medical,
   Screen5Confirm,
 } from "./screens"
 import type { CurrentClient, AuthProfile, BusinessHour } from "./queries"
@@ -50,7 +49,9 @@ const STEP_KEY = "blv_step"
 const VERSION_KEY = "blv_flow_version"
 // Aumentar este número cuando cambian las pantallas o el orden, para que
 // los clientes con estado viejo en localStorage no rompan el render.
-const FLOW_VERSION = 2
+// v3: se quitó la ficha médica digital y el consentimiento de depilación del
+// flujo (pasan a un formulario en papel); cambia el orden de pantallas.
+const FLOW_VERSION = 3
 
 function useVariant(): "mobile" | "desktop" {
   const [variant, setVariant] = useState<"mobile" | "desktop">("mobile")
@@ -75,7 +76,7 @@ function dbDateToUi(d: string | null): string {
 
 /**
  * Decide qué pantallas se muestran y en qué orden, según lo que ya sabemos
- * de la persona. La idea: primero la identidad (datos + ficha) si falta algo,
+ * de la persona. La idea: primero la identidad (datos) si falta algo,
  * después las cuestiones del turno.
  */
 function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
@@ -84,15 +85,9 @@ function buildScreenOrder(currentClient: CurrentClient | null): ScreenId[] {
     !!currentClient.firstName &&
     !!currentClient.phone &&
     !!currentClient.dateOfBirth
-  const hasRecord = currentClient?.hasMedicalRecord ?? false
 
-  // Nota: "success" ya no es parte del flujo; tras confirmar redirigimos a
-  // /reserva/exito que es una página propia.
-  if (hasFullData) {
-    // hasRecord → Screen4Medical shows "¿Algo cambió?"; no record → shows full form
-    return ["medical", "services", "date", "confirm"]
-  }
-  return ["details", "medical", "services", "date", "confirm"]
+  if (hasFullData) return ["services", "date", "confirm"]
+  return ["details", "services", "date", "confirm"]
 }
 
 export default function ReservaFlow({
@@ -245,8 +240,6 @@ export default function ReservaFlow({
             authEmail={currentClient?.email ?? authProfile?.email ?? null}
           />
         )
-      case "medical":
-        return <Screen4Medical {...screenProps} hasExistingRecord={!!(currentClient?.hasMedicalRecord)} />
       case "confirm":
         return (
           <Screen5Confirm

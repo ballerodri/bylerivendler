@@ -147,16 +147,6 @@ export type ClientForm = {
   consent: boolean
 }
 
-export type MedicalForm = {
-  allergies: string[]
-  allergiesOther: string
-  meds: "no" | "si"
-  medsNote: string
-  pregnancy: "no" | "embarazo" | "lactancia"
-  skin: string[]
-  consent: boolean
-}
-
 export type Combo = {
   id: string
   name: string
@@ -195,24 +185,12 @@ export type BookingState = {
   zoneSelections?: Record<string, string[]>  // serviceId → zoneId[] elegidas (solo pricingMode === "per_zone")
   clientMode?: "new" | "existing"
   form?: ClientForm
-  medical?: MedicalForm
   redeemWithPoints?: boolean
   savedClientId?: string
-  medicalNote?: string   // nota de "algo cambió" para clientas existentes con ficha
-  depilationConsent?: {
-    nombreApellido: string
-    zonasTratamiento: string[]
-    contraindicaciones: string
-    checkboxConsentimiento: boolean
-    checkboxIndicaciones: boolean
-    checkboxSalud: boolean
-    checkboxRegistro: boolean
-  }
 }
 
 export type ScreenId =
   | "details"
-  | "medical"
   | "services"
   | "date"
   | "confirm"
@@ -220,7 +198,6 @@ export type ScreenId =
 
 export const SCREEN_LABEL: Record<ScreenId, string> = {
   details: "Tus datos",
-  medical: "Ficha inicial",
   services: "Tratamiento",
   date: "Fecha y horario",
   confirm: "Confirmación",

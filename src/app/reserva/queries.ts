@@ -9,7 +9,6 @@ export type CurrentClient = {
   email: string
   phone: string
   dateOfBirth: string | null
-  hasMedicalRecord: boolean
   loyaltyPoints: number
 }
 
@@ -95,9 +94,8 @@ export async function fetchCatalog(): Promise<Category[]> {
 }
 
 /**
- * Returns the client row linked to a Supabase auth user, plus a flag indicating
- * whether they have a current medical record. Used to skip data entry steps
- * in the booking flow when the user is already known.
+ * Returns the client row linked to a Supabase auth user. Used to skip data
+ * entry steps in the booking flow when the user is already known.
  */
 export async function fetchCurrentClient(
   userId: string
@@ -112,13 +110,6 @@ export async function fetchCurrentClient(
 
   if (error || !client) return null
 
-  const { data: record } = await supabase
-    .from("client_records")
-    .select("id")
-    .eq("client_id", client.id)
-    .eq("is_current", true)
-    .maybeSingle()
-
   return {
     id: client.id,
     firstName: client.first_name ?? "",
@@ -126,7 +117,6 @@ export async function fetchCurrentClient(
     email: client.email,
     phone: client.phone ?? "",
     dateOfBirth: client.date_of_birth ?? null,
-    hasMedicalRecord: !!record,
     loyaltyPoints: (client.loyalty_points as number | null) ?? 0,
   }
 }
