@@ -1,9 +1,10 @@
 // Genera docs/ficha-tecnica-consentimiento.html (ficha técnica dermocosmética +
 // consentimiento informado, para imprimir y completar a mano en el gabinete).
-// Para regenerar el PDF:
+// El PDF final vive en public/docs/ para poder descargarlo desde el admin
+// (Configuración → Documentos imprimibles). Para regenerarlo:
 //   1) node scripts/ficha-tecnica-pdf.mjs
 //   2) chrome --headless --disable-gpu --no-pdf-header-footer \
-//        --print-to-pdf=docs/ficha-tecnica-consentimiento.pdf file:///<ruta>/docs/ficha-tecnica-consentimiento.html
+//        --print-to-pdf=public/docs/ficha-tecnica-consentimiento.pdf file:///<ruta>/docs/ficha-tecnica-consentimiento.html
 import { readFileSync, writeFileSync } from "node:fs"
 
 const logo = readFileSync("public/assets/logo-crop.png").toString("base64")

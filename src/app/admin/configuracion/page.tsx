@@ -36,6 +36,26 @@ export default async function ConfiguracionPage() {
         connectedAt={gcal?.connected_at ?? null}
       />
 
+      <div className="adm-card" style={{ padding: 28, marginTop: 24 }}>
+        <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 8 }}>
+          Documentos imprimibles
+        </h3>
+        <p style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 16, lineHeight: 1.6 }}>
+          <strong>Ficha técnica + consentimiento informado</strong> (A4, 3 páginas): datos y salud de la clienta,
+          evaluación profesional de piel y zonas, y consentimiento con firmas. Para imprimir y completar a mano
+          en el gabinete.
+        </p>
+        <a
+          className="adm-btn adm-btn--primary"
+          href="/docs/ficha-tecnica-consentimiento.pdf"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ textDecoration: "none" }}
+        >
+          Descargar / imprimir PDF
+        </a>
+      </div>
+
       <div className="adm-card" style={{ padding: 28, border: "1px solid #d9534f", marginTop: 24 }}>
         <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, color: "#8c463c", marginBottom: 8 }}>
           Zona de peligro
