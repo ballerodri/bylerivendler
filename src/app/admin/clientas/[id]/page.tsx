@@ -2,7 +2,6 @@ import Link from "next/link"
 import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../../reserva/data"
-import RecordEditor from "./record-editor"
 import PhotosManager from "./photos-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
 
@@ -17,20 +16,6 @@ type ClientRow = {
   date_of_birth: string | null
   notes: string | null
   loyalty_points: number
-  created_at: string
-}
-
-export type RecordRow = {
-  id: string
-  version: number
-  is_current: boolean
-  allergies: string[]
-  allergies_other: string | null
-  medications_status: "no" | "si"
-  medications_note: string | null
-  pregnancy: "no" | "embarazo" | "lactancia"
-  skin_conditions: string[]
-  alert_flags: string[]
   created_at: string
 }
 
@@ -70,15 +55,6 @@ export default async function AdminClientDetailPage({
     .eq("id", id)
     .maybeSingle<ClientRow>()
   if (!client) notFound()
-
-  const { data: record } = await admin
-    .from("client_records")
-    .select(
-      "id, version, is_current, allergies, allergies_other, medications_status, medications_note, pregnancy, skin_conditions, alert_flags, created_at"
-    )
-    .eq("client_id", id)
-    .eq("is_current", true)
-    .maybeSingle<RecordRow>()
 
   const { data: apptsData } = await admin
     .from("appointments")
@@ -129,14 +105,6 @@ export default async function AdminClientDetailPage({
     })
   )
 
-  const hasAlerts =
-    !!record &&
-    (record.pregnancy !== "no" ||
-      record.medications_status === "si" ||
-      record.allergies.length > 0 ||
-      record.skin_conditions.length > 0 ||
-      record.alert_flags.length > 0)
-
   return (
     <>
       <p className="adm-eyebrow">
@@ -149,56 +117,27 @@ export default async function AdminClientDetailPage({
         Alta {new Date(client.created_at).toLocaleDateString("es-AR")} · {client.loyalty_points} pts del Programa Cerca
       </p>
 
-      {hasAlerts && record && (
-        <div className="adm-alert">
-          <strong>Alertas en ficha · </strong>
-          {record.pregnancy === "embarazo" && "🤰 Embarazo. "}
-          {record.pregnancy === "lactancia" && "🤱 Lactancia. "}
-          {record.medications_status === "si" && (
-            <>💊 Medicación: {record.medications_note ?? "sí"}. </>
-          )}
-          {record.allergies.length > 0 && (
-            <>🌿 Alergias: {record.allergies.join(", ")}
-            {record.allergies_other ? `, ${record.allergies_other}` : ""}. </>
-          )}
-          {record.skin_conditions.length > 0 && (
-            <>🔍 Piel: {record.skin_conditions.join(", ")}.</>
-          )}
+      <h2 className="adm-section-title">Datos personales</h2>
+      <div className="adm-card" style={{ padding: "8px 16px" }}>
+        <div className="adm-row">
+          <div className="adm-row__label">Email</div>
+          <div>{client.email}</div>
         </div>
-      )}
-
-      <div className="adm-grid">
-        <div>
-          <h2 className="adm-section-title">Datos personales</h2>
-          <div className="adm-card" style={{ padding: "8px 16px" }}>
-            <div className="adm-row">
-              <div className="adm-row__label">Email</div>
-              <div>{client.email}</div>
-            </div>
-            <div className="adm-row">
-              <div className="adm-row__label">Teléfono</div>
-              <div>{client.phone ?? "—"}</div>
-            </div>
-            <div className="adm-row">
-              <div className="adm-row__label">Cumpleaños</div>
-              <div>
-                {client.date_of_birth
-                  ? new Date(client.date_of_birth).toLocaleDateString("es-AR")
-                  : "—"}
-              </div>
-            </div>
-            <div className="adm-row">
-              <div className="adm-row__label">Notas internas</div>
-              <div>{client.notes ?? "—"}</div>
-            </div>
+        <div className="adm-row">
+          <div className="adm-row__label">Teléfono</div>
+          <div>{client.phone ?? "—"}</div>
+        </div>
+        <div className="adm-row">
+          <div className="adm-row__label">Cumpleaños</div>
+          <div>
+            {client.date_of_birth
+              ? new Date(client.date_of_birth).toLocaleDateString("es-AR")
+              : "—"}
           </div>
         </div>
-
-        <div>
-          <h2 className="adm-section-title">
-            Ficha clínica {record && `(v${record.version})`}
-          </h2>
-          <RecordEditor clientId={client.id} record={record} />
+        <div className="adm-row">
+          <div className="adm-row__label">Notas internas</div>
+          <div>{client.notes ?? "—"}</div>
         </div>
       </div>
 

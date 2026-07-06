@@ -511,62 +511,6 @@ export async function togglePhotoVisibility(
   return { ok: true }
 }
 
-const RecordPatch = z.object({
-  allergies: z.array(z.string()),
-  allergies_other: z.string().nullable(),
-  medications_status: z.enum(["no", "si"]),
-  medications_note: z.string().nullable(),
-  pregnancy: z.enum(["no", "embarazo", "lactancia"]),
-  skin_conditions: z.array(z.string()),
-  alert_flags: z.array(z.string()),
-})
-
-export async function updateClientRecord(
-  clientId: string,
-  patch: z.infer<typeof RecordPatch>
-): Promise<{ ok: boolean; error?: string }> {
-  await requireStaff()
-  const parsed = RecordPatch.safeParse(patch)
-  if (!parsed.success) return { ok: false, error: "Datos inválidos" }
-
-  const admin = adminClient()
-
-  // Ficha vigente (si existe)
-  const { data: current } = await admin
-    .from("client_records")
-    .select("id, version")
-    .eq("client_id", clientId)
-    .eq("is_current", true)
-    .maybeSingle()
-
-  if (current) {
-    // Marcamos la actual como no vigente y creamos una versión nueva — versionado.
-    await admin
-      .from("client_records")
-      .update({ is_current: false })
-      .eq("id", current.id)
-
-    const { error } = await admin.from("client_records").insert({
-      client_id: clientId,
-      version: (current.version ?? 1) + 1,
-      is_current: true,
-      ...parsed.data,
-    })
-    if (error) return { ok: false, error: error.message }
-  } else {
-    const { error } = await admin.from("client_records").insert({
-      client_id: clientId,
-      version: 1,
-      is_current: true,
-      ...parsed.data,
-    })
-    if (error) return { ok: false, error: error.message }
-  }
-
-  revalidatePath(`/admin/clientas/${clientId}`)
-  return { ok: true }
-}
-
 
 // ─── Categorías ───────────────────────────────────────────────────────────────
 
