@@ -366,6 +366,17 @@
   color: var(--paper);
 }
 
+/* Links con clase de botón: el color del botón debe ganarle a `.admin a { color: inherit }` */
+.admin a.adm-btn--primary {
+  color: var(--paper);
+}
+.admin a.adm-btn--danger {
+  color: #8c463c;
+}
+.admin a.adm-btn--ghost {
+  color: var(--ink-mute);
+}
+
 .adm-btn--danger {
   color: #8c463c;
   border-color: #d0a59f;
