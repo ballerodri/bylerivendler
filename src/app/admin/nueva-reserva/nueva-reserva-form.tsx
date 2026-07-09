@@ -54,7 +54,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
     if (s.pricing_mode !== "per_zone") return { priceCents: s.price_cents, duration: s.duration_min, count: 1 }
     const ids = zoneSel[s.id] ?? []
     const chosen = s.zones.filter((z) => ids.includes(z.id))
-    return { priceCents: chosen.length * s.price_cents, duration: chosen.reduce((a, z) => a + z.durationMin, 0), count: chosen.length }
+    return { priceCents: chosen.reduce((a, z) => a + (z.priceCents ?? s.price_cents), 0), duration: chosen.reduce((a, z) => a + z.durationMin, 0), count: chosen.length }
   }
 
   // Step 2 — Date/time
@@ -382,7 +382,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                                 onChange={() => { toggleZone(s.id, z.id); setSelectedSlot(null) }}
                                 style={{ width: 15, height: 15 }}
                               />
-                              <span>{z.name} · {z.durationMin} min</span>
+                              <span>{z.name} · {z.durationMin} min · {fmtPrice((z.priceCents ?? s.price_cents) / 100)}</span>
                             </label>
                           ))}
                           <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>

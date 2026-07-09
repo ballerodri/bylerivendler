@@ -877,11 +877,11 @@ export async function createAdminBooking(
   if (perZoneIds.length) {
     const { data: zoneRows } = await admin
       .from("service_zones")
-      .select("id, service_id, name, duration_min")
+      .select("id, service_id, name, duration_min, price_cents")
       .in("service_id", perZoneIds)
       .eq("active", true)
     for (const z of zoneRows ?? []) {
-      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min })
+      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null })
     }
   }
 
