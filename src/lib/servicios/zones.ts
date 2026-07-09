@@ -1,16 +1,25 @@
-export type Zone = { id: string; name: string; durationMin: number }
-export type ZoneSnapshot = { name: string; duration_min: number }
+export type Zone = { id: string; name: string; durationMin: number; priceCents: number | null }
+export type ZoneSnapshot = { name: string; duration_min: number; price_cents: number }
 export type ZonePricing = { priceCents: number; durationMin: number; zones: ZoneSnapshot[] }
 
-/** Precio (cantidad × precio-por-zona) y duración (suma) de las zonas elegidas. */
+/**
+ * Precio y duración de las zonas elegidas. Cada zona cobra su precio propio
+ * (priceCents) o, si no tiene, el precio general del servicio (fallback).
+ * El snapshot registra lo efectivamente cobrado por zona.
+ */
 export function computeZonePricing(
   selectedZones: Zone[],
-  pricePerZoneCents: number
+  fallbackPriceCents: number
 ): ZonePricing {
+  const zones = selectedZones.map((z) => ({
+    name: z.name,
+    duration_min: z.durationMin,
+    price_cents: z.priceCents ?? fallbackPriceCents,
+  }))
   return {
-    priceCents: selectedZones.length * pricePerZoneCents,
+    priceCents: zones.reduce((a, z) => a + z.price_cents, 0),
     durationMin: selectedZones.reduce((a, z) => a + z.durationMin, 0),
-    zones: selectedZones.map((z) => ({ name: z.name, duration_min: z.durationMin })),
+    zones,
   }
 }
 
