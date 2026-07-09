@@ -76,12 +76,12 @@ export async function createBooking(
   if (perZoneIds.length) {
     const { data: zoneRows, error: zErr } = await supabase
       .from("service_zones")
-      .select("id, service_id, name, duration_min")
+      .select("id, service_id, name, duration_min, price_cents")
       .in("service_id", perZoneIds)
       .eq("active", true)
     if (zErr) return { ok: false, error: `Zonas: ${zErr.message}` }
     for (const z of zoneRows ?? []) {
-      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min })
+      ;(zonesByService[z.service_id] ??= []).push({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null })
     }
   }
 
@@ -199,10 +199,10 @@ export async function createBooking(
     if (svc.pricing_mode === "per_zone") {
       const { data: zoneRows } = await supabase
         .from("service_zones")
-        .select("id, name, duration_min")
+        .select("id, name, duration_min, price_cents")
         .eq("service_id", svc.id)
         .eq("active", true)
-      const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min }))
+      const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null }))
       const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
       if (!selected || selected.length !== (pack.zones_count ?? 0))
         return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
