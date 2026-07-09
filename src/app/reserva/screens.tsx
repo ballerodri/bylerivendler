@@ -49,7 +49,7 @@ function effectiveService(
   const ids = zoneSel[s.id] ?? []
   const chosen = s.zones.filter((z) => ids.includes(z.id))
   return {
-    price: chosen.length * s.price, // s.price = precio por zona
+    price: chosen.reduce((a, z) => a + (z.price ?? s.price), 0),
     duration: chosen.reduce((a, z) => a + z.durationMin, 0),
     count: chosen.length,
   }
@@ -380,7 +380,7 @@ export function Screen1Services({
                         onChange={() => toggleZone(s.id, z.id)}
                         style={{ width: 15, height: 15 }}
                       />
-                      <span>{z.name} · {z.durationMin} min</span>
+                      <span>{z.name} · {z.durationMin} min · {fmtPrice(z.price ?? s.price)}</span>
                     </label>
                   ))}
                   <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>

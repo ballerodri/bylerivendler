@@ -2,6 +2,7 @@ export type ServiceZone = {
   id: string
   name: string
   durationMin: number
+  price: number | null   // precio propio en pesos; null = usa el general del servicio
 }
 
 export type Service = {

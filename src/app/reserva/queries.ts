@@ -37,7 +37,7 @@ type DbServiceRow = {
   active: boolean
   visible_public: boolean
   pricing_mode: "fixed" | "per_zone"
-  service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number }[]
+  service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number; price_cents: number | null }[]
 }
 
 function adminClient() {
@@ -60,7 +60,7 @@ export async function fetchCatalog(): Promise<Category[]> {
     .select(
       `
       id, slug, name, tagline, sort_order,
-      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode, service_zones(id, name, duration_min, active, order_index))
+      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode, service_zones(id, name, duration_min, active, order_index, price_cents))
     `
     )
     .eq("active", true)
@@ -87,7 +87,12 @@ export async function fetchCatalog(): Promise<Category[]> {
           zones: (s.service_zones ?? [])
             .filter((z) => z.active)
             .sort((a, b) => a.order_index - b.order_index)
-            .map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min })),
+            .map((z) => ({
+              id: z.id,
+              name: z.name,
+              durationMin: z.duration_min,
+              price: z.price_cents != null ? Math.round(z.price_cents / 100) : null,
+            })),
         })
       ),
   }))
@@ -257,7 +262,7 @@ type DbReservaPackRow = {
     name: string
     pricing_mode: "fixed" | "per_zone"
     duration_min: number
-    service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number }[]
+    service_zones: { id: string; name: string; duration_min: number; active: boolean; order_index: number; price_cents: number | null }[]
   } | null
 }
 
@@ -267,7 +272,7 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
     .from("packs")
     .select(`
       id, name, description, total_price_cents, sessions, zones_count,
-      service:services(id, name, pricing_mode, duration_min, service_zones(id, name, duration_min, active, order_index))
+      service:services(id, name, pricing_mode, duration_min, service_zones(id, name, duration_min, active, order_index, price_cents))
     `)
     .eq("active", true)
     .eq("visible_reserva", true)
@@ -290,6 +295,11 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
       zones: (p.service!.service_zones ?? [])
         .filter((z) => z.active)
         .sort((a, b) => a.order_index - b.order_index)
-        .map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min })),
+        .map((z) => ({
+          id: z.id,
+          name: z.name,
+          durationMin: z.duration_min,
+          price: z.price_cents != null ? Math.round(z.price_cents / 100) : null,
+        })),
     }))
 }
