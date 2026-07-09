@@ -14,7 +14,7 @@ export default function ServiceEditor({
   service: ServiceRow
   professionals: ProfessionalRow[]
   otherServices: OtherService[]
-  initialZones: { name: string; duration_min: number }[]
+  initialZones: { name: string; duration_min: number; price_cents: number | null }[]
 }) {
   const router = useRouter()
   const [assignedIds, setAssignedIds] = useState<Set<string>>(
@@ -83,7 +83,7 @@ export default function ServiceEditor({
     active: service.active,
     visible_public: service.visible_public,
   })
-  const [zones, setZones] = useState<{ name: string; duration_min: number }[]>(initialZones)
+  const [zones, setZones] = useState<{ name: string; duration_min: number; price_cents: number | null }[]>(initialZones)
   const [pending, startTransition] = useTransition()
   const [status, setStatus] = useState<"idle" | "saved" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
@@ -161,7 +161,7 @@ export default function ServiceEditor({
             />
           </Field>
         )}
-        <Field label={data.pricing_mode === "per_zone" ? "Precio por zona (en pesos)" : "Precio (en pesos)"}>
+        <Field label={data.pricing_mode === "per_zone" ? "Precio por zona (general, en pesos)" : "Precio (en pesos)"}>
           <input
             className="adm-input"
             type="number"
@@ -386,17 +386,17 @@ function ZonesEditor({
   zones,
   setZones,
 }: {
-  zones: { name: string; duration_min: number }[]
-  setZones: (z: { name: string; duration_min: number }[]) => void
+  zones: { name: string; duration_min: number; price_cents: number | null }[]
+  setZones: (z: { name: string; duration_min: number; price_cents: number | null }[]) => void
 }) {
-  const update = (i: number, patch: Partial<{ name: string; duration_min: number }>) =>
+  const update = (i: number, patch: Partial<{ name: string; duration_min: number; price_cents: number | null }>) =>
     setZones(zones.map((z, idx) => (idx === i ? { ...z, ...patch } : z)))
   const remove = (i: number) => setZones(zones.filter((_, idx) => idx !== i))
-  const add = () => setZones([...zones, { name: "", duration_min: 30 }])
+  const add = () => setZones([...zones, { name: "", duration_min: 30, price_cents: null }])
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <div className="adm-row__label" style={{ marginBottom: 6 }}>Zonas (nombre + minutos)</div>
+      <div className="adm-row__label" style={{ marginBottom: 6 }}>Zonas (nombre + minutos + precio opcional)</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {zones.map((z, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -416,6 +416,24 @@ function ZonesEditor({
               onChange={(e) => update(i, { duration_min: parseInt(e.target.value) || 0 })}
             />
             <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>min</span>
+            <input
+              className="adm-input"
+              type="number"
+              min={0}
+              step={500}
+              style={{ width: 110 }}
+              placeholder="= general"
+              value={z.price_cents != null ? Math.round(z.price_cents / 100) : ""}
+              onChange={(e) =>
+                update(i, {
+                  price_cents:
+                    e.target.value.trim() === ""
+                      ? null
+                      : Math.round((parseFloat(e.target.value) || 0) * 100),
+                })
+              }
+            />
+            <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>$</span>
             <button type="button" className="adm-btn adm-btn--ghost" onClick={() => remove(i)}>✕</button>
           </div>
         ))}

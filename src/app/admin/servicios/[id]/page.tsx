@@ -81,13 +81,16 @@ export default async function AdminServiceDetailPage({
 
   const { data: zoneRows } = await admin
     .from("service_zones")
-    .select("name, duration_min, order_index")
+    .select("name, duration_min, price_cents, order_index")
     .eq("service_id", id)
     .order("order_index", { ascending: true })
-  const initialZones = (zoneRows ?? []).map((z: { name: string; duration_min: number }) => ({
-    name: z.name,
-    duration_min: z.duration_min,
-  }))
+  const initialZones = (zoneRows ?? []).map(
+    (z: { name: string; duration_min: number; price_cents: number | null }) => ({
+      name: z.name,
+      duration_min: z.duration_min,
+      price_cents: z.price_cents ?? null,
+    })
+  )
 
   const assignedIds = new Set((assigned ?? []).map((r: { staff_id: string }) => r.staff_id))
   const professionals: ProfessionalRow[] = (allStaff ?? []).map(

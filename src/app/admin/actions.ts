@@ -364,6 +364,7 @@ export async function setStaffActive(
 const ZoneInput = z.object({
   name: z.string().trim().min(1),
   duration_min: z.number().int().positive(),
+  price_cents: z.number().int().nonnegative().nullable(),
 })
 
 const ServicePatch = z.object({
@@ -414,7 +415,7 @@ async function syncServiceZones(
   admin: ReturnType<typeof adminClient>,
   serviceId: string,
   pricingMode: "fixed" | "per_zone",
-  zones: { name: string; duration_min: number }[]
+  zones: { name: string; duration_min: number; price_cents: number | null }[]
 ): Promise<string | null> {
   const { error: delErr } = await admin.from("service_zones").delete().eq("service_id", serviceId)
   if (delErr) return delErr.message
@@ -423,6 +424,7 @@ async function syncServiceZones(
     service_id: serviceId,
     name: z.name.trim(),
     duration_min: z.duration_min,
+    price_cents: z.price_cents,
     order_index: i,
   }))
   const { error: insErr } = await admin.from("service_zones").insert(rows)
@@ -591,7 +593,7 @@ export async function createService(
     price_cents: number
     points_earned: number
     points_cost: number
-    zones: { name: string; duration_min: number }[]
+    zones: { name: string; duration_min: number; price_cents: number | null }[]
   }
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   await requireStaff()
