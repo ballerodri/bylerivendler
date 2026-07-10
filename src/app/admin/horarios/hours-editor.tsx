@@ -15,7 +15,11 @@ type DayConfig = {
   break_until: string
 }
 
-// Every 30 min from 07:00 to 21:00
+// Paso entre franjas de turnos (en minutos). Los turnos se ofrecen cada 1 hora.
+const SLOT_MIN = 60
+
+// Apertura/cierre/pausa se pueden elegir cada 30 min (07:00 a 21:00), aunque las
+// franjas de turnos que se generan van cada SLOT_MIN.
 const TIME_OPTIONS: string[] = []
 for (let h = 7; h <= 21; h++) {
   TIME_OPTIONS.push(`${String(h).padStart(2, "0")}:00`)
@@ -36,7 +40,7 @@ function slotsFromConfig(cfg: DayConfig): string[] {
     breakUntil = buH * 60 + buM
   }
   const result: string[] = []
-  for (let m = fromMins; m < untilMins; m += 30) {
+  for (let m = fromMins; m < untilMins; m += SLOT_MIN) {
     if (cfg.has_break && m >= breakFrom && m < breakUntil) continue
     result.push(`${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`)
   }
@@ -49,7 +53,7 @@ function configFromHour(h: BusinessHour): DayConfig {
   let open_until = "20:00"
   if (slots.length > 0) {
     const [lH, lM] = slots[slots.length - 1].split(":").map(Number)
-    const mins = lH * 60 + lM + 30
+    const mins = lH * 60 + lM + SLOT_MIN
     const candidate = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`
     if (TIME_OPTIONS.includes(candidate)) open_until = candidate
   }
@@ -57,9 +61,9 @@ function configFromHour(h: BusinessHour): DayConfig {
   for (let i = 1; i < slots.length; i++) {
     const [h1, m1] = slots[i - 1].split(":").map(Number)
     const [h2, m2] = slots[i].split(":").map(Number)
-    if ((h2 * 60 + m2) - (h1 * 60 + m1) > 30) {
+    if ((h2 * 60 + m2) - (h1 * 60 + m1) > SLOT_MIN) {
       has_break = true
-      const bfMins = h1 * 60 + m1 + 30
+      const bfMins = h1 * 60 + m1 + SLOT_MIN
       break_from = `${String(Math.floor(bfMins / 60)).padStart(2, "0")}:${String(bfMins % 60).padStart(2, "0")}`
       break_until = slots[i]
       break
@@ -195,7 +199,7 @@ export default function HoursEditor({
               )}
 
               <p style={{ margin: 0, fontSize: 11, color: "var(--ink-mute)" }}>
-                {slotsFromConfig(cfg).length} franjas de 30 min · {slotsFromConfig(cfg).join(", ") || "—"}
+                {slotsFromConfig(cfg).length} franjas de 1 hora · {slotsFromConfig(cfg).join(", ") || "—"}
               </p>
             </div>
           )}
