@@ -29,7 +29,9 @@
   text-decoration: none;
 }
 
-.admin button {
+/* :where() = especificidad 0, así normaliza los <button> "pelados" pero deja
+   ganar a cualquier clase de botón (.adm-btn, .adm-btn--primary, etc.). */
+:where(.admin button) {
   font-family: inherit;
   cursor: pointer;
   border: none;
