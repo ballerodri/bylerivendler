@@ -336,25 +336,74 @@
   justify-content: flex-end;
 }
 
-/* Acciones de turnos: cuadrícula prolija de 2 columnas para que los botones
-   queden alineados y del mismo ancho, en vez de amontonarse desparejos.
-   Cada botón llena su celda; los textos de estado (¿enviaste?, ¿eliminar?,
-   errores) ocupan el ancho completo. */
+/* Acciones de turnos: acción principal + WhatsApp + menú ⋯, a la derecha. */
 .adm-list-row--turnos .adm-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 6px;
-  align-items: stretch;
 }
-.adm-list-row--turnos .adm-actions .adm-btn {
+
+/* Botón del menú de acciones secundarias ("⋯"). */
+.adm-kebab {
+  padding: 6px 11px;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0.05em;
+  color: var(--ink-mute);
+}
+
+/* Menú flotante (portal en <body>). Es autosuficiente en colores porque se
+   dibuja fuera del scope .admin, donde no llegan las variables de la paleta. */
+.adm-menu {
+  --ink: #2b2623;
+  --ink-mute: #7a6e64;
+  --paper-deep: #eae2d7;
+  --line: rgba(43, 38, 35, 0.1);
+  position: fixed;
+  z-index: 200;
+  min-width: 178px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px -14px rgba(43, 38, 35, 0.32);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.adm-menu button,
+.adm-menu a {
+  display: flex;
+  align-items: center;
   width: 100%;
-  justify-content: center;
-  padding-left: 8px;
-  padding-right: 8px;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
 }
-.adm-list-row--turnos .adm-actions > div,
-.adm-list-row--turnos .adm-actions > span {
-  grid-column: 1 / -1;
+.adm-menu button:hover,
+.adm-menu a:hover {
+  background: var(--paper-deep);
+}
+.adm-menu .adm-menu__danger {
+  color: #8c463c;
+}
+.adm-menu .adm-menu__danger:hover {
+  background: #f0d8d4;
+}
+.adm-menu button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.adm-menu__sep {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 6px;
 }
 
 .adm-btn {

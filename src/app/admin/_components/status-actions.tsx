@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useRef, useEffect, useTransition, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { updateAppointmentStatus, deleteAppointment } from "../actions"
 
 const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: string }[]> = {
@@ -24,6 +25,79 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
 
 const RESCHEDULABLE = new Set(["pending", "confirmed"])
 
+/** Menú "⋯" flotante para las acciones secundarias. Se dibuja con portal en
+ *  <body> (posición fija) para que no lo recorte el overflow:hidden de la
+ *  tarjeta; se cierra al hacer clic afuera, con Escape o al hacer scroll. */
+function OverflowMenu({ itemCount, children }: { itemCount: number; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (menuRef.current?.contains(t) || btnRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("resize", close)
+    return () => {
+      document.removeEventListener("mousedown", onDown)
+      document.removeEventListener("keydown", onKey)
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("resize", close)
+    }
+  }, [open])
+
+  const toggle = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      const right = window.innerWidth - r.right
+      const estHeight = 14 + itemCount * 40
+      const openUp = r.bottom + estHeight > window.innerHeight - 8
+      setPos(openUp ? { bottom: window.innerHeight - r.top + 6, right } : { top: r.bottom + 6, right })
+    }
+    setOpen((o) => !o)
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className="adm-btn adm-kebab"
+        aria-label="Más acciones"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        ⋯
+      </button>
+      {open && pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="adm-menu"
+            role="menu"
+            style={{ top: pos.top, bottom: pos.bottom, right: pos.right }}
+            onClick={() => setOpen(false)}
+          >
+            {children}
+          </div>,
+          document.body
+        )}
+    </>
+  )
+}
+
 export default function StatusActions({
   appointmentId,
   currentStatus,
@@ -37,7 +111,6 @@ export default function StatusActions({
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [choosingPack, setChoosingPack] = useState(false)
-  const actions = NEXT_ACTIONS[currentStatus] ?? []
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
@@ -56,11 +129,11 @@ export default function StatusActions({
     })
   }
 
+  const actions = NEXT_ACTIONS[currentStatus] ?? []
+  const isCompleted = currentStatus === "completed"
   const canReschedule = RESCHEDULABLE.has(currentStatus)
-
-  if (actions.length === 0 && !canReschedule && currentStatus !== "completed") {
-    return <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>—</span>
-  }
+  const primaryAction = actions[0]
+  const secondaryActions = actions.slice(1)
 
   // Al completar con packs que matchean: ofrecer descontar de un pack.
   if (choosingPack) {
@@ -79,46 +152,64 @@ export default function StatusActions({
     )
   }
 
+  if (confirmDelete) {
+    return (
+      <>
+        <span style={{ fontSize: 12, color: "#8c463c", whiteSpace: "nowrap" }}>¿Eliminar turno?</span>
+        <button className="adm-btn adm-btn--danger" disabled={pending} onClick={handleDelete}>Sí, eliminar</button>
+        <button className="adm-btn" onClick={() => setConfirmDelete(false)}>No</button>
+        {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+      </>
+    )
+  }
+
+  // Cantidad de ítems del menú (para decidir si abre hacia arriba).
+  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + 1 // +Eliminar
+
   return (
     <>
-      {actions.map((a) => {
-        const isComplete = a.status === "completed"
-        const onClick =
-          isComplete && matchingPacks.length > 0
-            ? () => setChoosingPack(true)
-            : () => change(a.status)
-        return (
-          <button
-            key={a.status}
-            className={`adm-btn ${a.variant === "primary" ? "adm-btn--primary" : a.variant === "danger" ? "adm-btn--danger" : ""}`}
-            disabled={pending}
-            onClick={onClick}
-          >
-            {a.label}
-          </button>
-        )
-      })}
-      {currentStatus === "completed" && (
+      {isCompleted ? (
         <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
           Facturar
         </a>
-      )}
-      {canReschedule && (
-        <a href={`/admin/turnos/${appointmentId}/reagendar`} className="adm-btn adm-btn--ghost">
-          Reagendar
-        </a>
-      )}
-      {confirmDelete ? (
-        <>
-          <span style={{ fontSize: 12, color: "#8c463c" }}>¿Eliminar?</span>
-          <button className="adm-btn adm-btn--danger" disabled={pending} onClick={handleDelete}>Sí, eliminar</button>
-          <button className="adm-btn" onClick={() => setConfirmDelete(false)}>No</button>
-        </>
-      ) : (
-        <button className="adm-btn" disabled={pending} onClick={() => setConfirmDelete(true)} style={{ color: "var(--ink-mute)", fontSize: 12 }}>
+      ) : primaryAction ? (
+        <button
+          className={`adm-btn ${primaryAction.variant === "primary" ? "adm-btn--primary" : ""}`}
+          disabled={pending}
+          onClick={
+            primaryAction.status === "completed" && matchingPacks.length > 0
+              ? () => setChoosingPack(true)
+              : () => change(primaryAction.status)
+          }
+        >
+          {primaryAction.label}
+        </button>
+      ) : null}
+
+      <OverflowMenu itemCount={menuCount}>
+        {secondaryActions.map((a) => (
+          <button
+            key={a.status}
+            type="button"
+            role="menuitem"
+            className={a.variant === "danger" ? "adm-menu__danger" : ""}
+            disabled={pending}
+            onClick={() => change(a.status)}
+          >
+            {a.label}
+          </button>
+        ))}
+        {canReschedule && (
+          <a role="menuitem" href={`/admin/turnos/${appointmentId}/reagendar`}>
+            Reagendar
+          </a>
+        )}
+        {(secondaryActions.length > 0 || canReschedule) && <div className="adm-menu__sep" />}
+        <button type="button" role="menuitem" className="adm-menu__danger" disabled={pending} onClick={() => setConfirmDelete(true)}>
           Eliminar
         </button>
-      )}
+      </OverflowMenu>
+
       {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
     </>
   )
