@@ -35,9 +35,21 @@ export default function CommissionsEditor({
   const [pending, startTransition] = useTransition()
   const [status, setStatus] = useState<"idle" | "saved" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
+  const [globalPct, setGlobalPct] = useState("")
 
   const set = (serviceId: string, patch: Partial<CommissionState>) =>
     setState((prev) => ({ ...prev, [serviceId]: { ...prev[serviceId], ...patch } }))
+
+  // Rellena TODOS los servicios con el mismo porcentaje (después hay que Guardar).
+  const applyGlobal = () => {
+    const value = globalPct.trim()
+    setState((prev) => {
+      const next = { ...prev }
+      for (const s of services) next[s.id] = { type: "percentage", value }
+      return next
+    })
+    setStatus("idle")
+  }
 
   const save = () => {
     setStatus("idle")
@@ -73,9 +85,36 @@ export default function CommissionsEditor({
       <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 4 }}>
         Comisiones por servicio
       </h3>
-      <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 20 }}>
+      <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>
         Definí el porcentaje o monto fijo que recibe esta profesional por cada servicio. Dejá en blanco si no aplica.
       </p>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap", background: "var(--paper-deep)", borderRadius: 10, padding: "12px 14px", marginBottom: 24 }}>
+        <div>
+          <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 4 }}>
+            Mismo porcentaje para todos
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={globalPct}
+              onChange={(e) => setGlobalPct(e.target.value)}
+              className="adm-select"
+              placeholder="50"
+              style={{ fontSize: 13, width: 90, textAlign: "right" }}
+            />
+            <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>%</span>
+          </div>
+        </div>
+        <button type="button" className="adm-btn" onClick={applyGlobal} disabled={globalPct.trim() === ""}>
+          Aplicar a todos
+        </button>
+        <span style={{ fontSize: 11, color: "var(--ink-mute)" }}>
+          Rellena todos los servicios con ese %. Podés ajustar alguno y después <strong>Guardar</strong>.
+        </span>
+      </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
         {categories.map((cat) => (
