@@ -107,7 +107,7 @@ export default async function AdminServiciosPage() {
                     </div>
                   </div>
                   <div style={{ fontSize: 14, color: "var(--ink-soft)" }}>{s.duration_min} min</div>
-                  <div style={{ fontSize: 16, fontFamily: "var(--serif)", fontWeight: 500 }}>
+                  <div style={{ fontSize: 18, fontFamily: "var(--serif)", fontWeight: 500 }}>
                     {fmtPrice(s.price_cents / 100)}
                   </div>
                   <div style={{ fontSize: 13, color: "var(--gold)" }}>+{s.points_earned} pts</div>
