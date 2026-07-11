@@ -170,9 +170,9 @@ export default async function AdminTurnosPage({
 
             return (
               <div key={a.id} className="adm-list-row adm-list-row--turnos">
-                <div className="adm-time" style={{ fontSize: 14 }}>
+                <div className="adm-time" style={{ fontSize: 15 }}>
                   {dateLabel}
-                  <div style={{ fontFamily: "var(--sans)", fontSize: 12, color: "var(--ink-mute)" }}>
+                  <div style={{ fontFamily: "var(--sans)", fontSize: 13, color: "var(--ink-mute)" }}>
                     {time}
                   </div>
                 </div>
@@ -199,17 +199,17 @@ export default async function AdminTurnosPage({
                           )}
                         </div>
                       ))}
-                      <div style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 2 }}>
-                        {a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                      <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
+                        {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
                       </div>
                     </div>
                   ) : (
-                    <div className="adm-sub">
+                    <div className="adm-sub" style={{ fontSize: 13 }}>
                       {svcItems.map((s) => s.service?.name).filter(Boolean).join(", ")}
                       {svcItems[0]?.staff?.full_name && (
                         <> · {svcItems[0].staff.full_name}</>
                       )}
-                      {" · "}{a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                      {" · "}{a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
                     </div>
                   )}
                 </div>

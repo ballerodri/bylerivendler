@@ -106,12 +106,12 @@ export default async function AdminServiciosPage() {
                           : "Oculto del público"}
                     </div>
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--ink-mute)" }}>{s.duration_min} min</div>
-                  <div style={{ fontSize: 13, fontFamily: "var(--serif)", fontWeight: 500 }}>
+                  <div style={{ fontSize: 14, color: "var(--ink-soft)" }}>{s.duration_min} min</div>
+                  <div style={{ fontSize: 16, fontFamily: "var(--serif)", fontWeight: 500 }}>
                     {fmtPrice(s.price_cents / 100)}
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--gold)" }}>+{s.points_earned} pts</div>
-                  <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>{s.points_cost} pts</div>
+                  <div style={{ fontSize: 13, color: "var(--gold)" }}>+{s.points_earned} pts</div>
+                  <div style={{ fontSize: 13, color: "var(--ink-mute)" }}>{s.points_cost} pts</div>
                   <div className="adm-actions">
                     <span className="adm-btn adm-btn--ghost">Editar →</span>
                   </div>

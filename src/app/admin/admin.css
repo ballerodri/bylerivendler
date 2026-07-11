@@ -250,7 +250,7 @@
 }
 
 .adm-list-row--turnos {
-  grid-template-columns: 90px 1fr 180px 140px;
+  grid-template-columns: 100px 1fr 110px 240px;
 }
 
 .adm-list-row--clientas {

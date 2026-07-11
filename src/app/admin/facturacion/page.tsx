@@ -59,7 +59,7 @@ export default async function FacturacionPage() {
             const nro = `${String(f.pto_vta).padStart(4, "0")}-${String(f.cbte_nro).padStart(8, "0")}`
             return (
               <div key={f.id} className="adm-list-row" style={{ gridTemplateColumns: "auto 1fr auto auto auto" }}>
-                <div className="adm-time" style={{ fontSize: 13 }}>{ddmmyyyy(f.fecha_emision)}</div>
+                <div className="adm-time" style={{ fontSize: 15 }}>{ddmmyyyy(f.fecha_emision)}</div>
                 <div>
                   <div className="adm-name">
                     Factura C {nro}
@@ -71,7 +71,7 @@ export default async function FacturacionPage() {
                     {f.receptor_nombre ?? receptorDocLabel(f.receptor_doc_tipo, f.receptor_doc_nro)}
                   </div>
                 </div>
-                <div style={{ fontFamily: "var(--serif)", fontWeight: 500 }}>{fmtPrice(f.total_cents / 100)}</div>
+                <div style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16 }}>{fmtPrice(f.total_cents / 100)}</div>
                 <div>
                   <a className="adm-btn adm-btn--ghost" href={`/api/admin/facturacion/${f.id}/pdf`} target="_blank" rel="noopener noreferrer">PDF</a>
                 </div>
