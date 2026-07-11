@@ -513,6 +513,26 @@ export async function togglePhotoVisibility(
   return { ok: true }
 }
 
+// Elimina una clienta y todo su historial (turnos, fichas, fotos, packs).
+// Los turnos tienen FK "restrict", así que se borran primero (cascadea
+// appointment_services). El resto cae por cascada; las facturas se conservan
+// (invoices.client_id → null).
+export async function deleteClient(
+  clientId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { error: apptErr } = await admin.from("appointments").delete().eq("client_id", clientId)
+  if (apptErr) return { ok: false, error: `No se pudieron borrar los turnos: ${apptErr.message}` }
+
+  const { error } = await admin.from("clients").delete().eq("id", clientId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/admin/clientas")
+  return { ok: true }
+}
+
 
 // ─── Categorías ───────────────────────────────────────────────────────────────
 

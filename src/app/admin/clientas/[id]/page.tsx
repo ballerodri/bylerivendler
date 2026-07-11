@@ -4,6 +4,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
+import ClientDeleteButton from "./delete-button"
 
 export const dynamic = "force-dynamic"
 
@@ -215,6 +216,10 @@ export default async function AdminClientDetailPage({
           })}
         </div>
       )}
+
+      <div style={{ marginTop: 32, paddingTop: 20, borderTop: "1px solid var(--line)", display: "flex", justifyContent: "flex-end" }}>
+        <ClientDeleteButton clientId={client.id} name={`${client.first_name} ${client.last_name}`} />
+      </div>
     </>
   )
 }
