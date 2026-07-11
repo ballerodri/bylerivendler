@@ -125,9 +125,11 @@ export function Screen1Services({
 
   // serviceId → zoneId[] elegidas (solo para servicios pricingMode === "per_zone")
   const zoneSel = state.zoneSelections ?? {}
-  const toggleZone = (serviceId: string, zoneId: string) => {
+  const toggleZone = (serviceId: string, zoneId: string, single: boolean) => {
     const cur = zoneSel[serviceId] ?? []
-    const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
+    const next = single
+      ? [zoneId] // producto: una sola opción, reemplaza la anterior
+      : cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
     setState({ ...state, zoneSelections: { ...zoneSel, [serviceId]: next } })
   }
 
@@ -370,24 +372,37 @@ export function Screen1Services({
                   <Icon.CheckSmall />
                 </span>
               </button>
-              {s.pricingMode === "per_zone" && isSel && (
-                <div style={{ marginTop: 8, paddingLeft: 12, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {s.zones.map((z) => (
-                    <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                      <input
-                        type="checkbox"
-                        checked={(zoneSel[s.id] ?? []).includes(z.id)}
-                        onChange={() => toggleZone(s.id, z.id)}
-                        style={{ width: 15, height: 15 }}
-                      />
-                      <span>{z.name} · {z.durationMin} min · {fmtPrice(z.price ?? s.price)}</span>
-                    </label>
-                  ))}
-                  <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                    {(() => { const e = effective(s); return e.count ? `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.price)}` : "Elegí al menos una zona" })()}
-                  </span>
-                </div>
-              )}
+              {s.pricingMode === "per_zone" && isSel && (() => {
+                const single = s.zoneSelection === "single"
+                return (
+                  <div style={{ marginTop: 8, paddingLeft: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                      {single ? "Elegí un producto:" : "Elegí las zonas:"}
+                    </span>
+                    {s.zones.map((z) => (
+                      <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                        <input
+                          type={single ? "radio" : "checkbox"}
+                          name={single ? `zone-${s.id}` : undefined}
+                          checked={(zoneSel[s.id] ?? []).includes(z.id)}
+                          onChange={() => toggleZone(s.id, z.id, single)}
+                          style={{ width: 15, height: 15 }}
+                        />
+                        <span>{z.name} · {z.durationMin} min · {fmtPrice(z.price ?? s.price)}</span>
+                      </label>
+                    ))}
+                    <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                      {(() => {
+                        const e = effective(s)
+                        if (!e.count) return single ? "Elegí un producto" : "Elegí al menos una zona"
+                        return single
+                          ? `${e.duration} min · ${fmtPrice(e.price)}`
+                          : `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.price)}`
+                      })()}
+                    </span>
+                  </div>
+                )
+              })()}
             </div>
           )
         })}

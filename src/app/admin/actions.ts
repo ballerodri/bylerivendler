@@ -372,6 +372,7 @@ const ServicePatch = z.object({
   name: z.string().min(1),
   description: z.string().nullable(),
   pricing_mode: z.enum(["fixed", "per_zone"]),
+  zone_selection: z.enum(["multiple", "single"]).default("multiple"),
   duration_min: z.number().int().nonnegative(),
   price_cents: z.number().int().nonnegative(),
   points_earned: z.number().int().nonnegative(),
@@ -610,6 +611,7 @@ export async function createService(
     name: string
     description: string
     pricing_mode: "fixed" | "per_zone"
+    zone_selection?: "multiple" | "single"
     duration_min: number
     price_cents: number
     points_earned: number
@@ -634,6 +636,7 @@ export async function createService(
       name: data.name.trim(),
       description: data.description.trim() || null,
       pricing_mode: data.pricing_mode,
+      zone_selection: data.zone_selection ?? "multiple",
       duration_min: data.pricing_mode === "per_zone" ? 0 : data.duration_min,
       price_cents: data.price_cents,
       points_earned: data.points_earned,
@@ -889,7 +892,7 @@ export async function createAdminBooking(
   // 1) Resolve services
   const { data: services, error: svcErr } = await admin
     .from("services")
-    .select("id, name, duration_min, price_cents, pricing_mode")
+    .select("id, name, duration_min, price_cents, pricing_mode, zone_selection")
     .in("id", input.serviceIds)
   if (svcErr || !services?.length) return { ok: false, error: "Servicios no encontrados." }
 
@@ -910,7 +913,9 @@ export async function createAdminBooking(
   for (const s of services) {
     if (s.pricing_mode === "per_zone") {
       const selected = resolveSelectedZones(input.zoneSelections?.[s.id] ?? [], zonesByService[s.id] ?? [])
-      if (!selected) return { ok: false, error: "Elegí al menos una zona válida para el servicio por zona." }
+      if (!selected) return { ok: false, error: "Elegí al menos una opción válida para el servicio." }
+      if (s.zone_selection === "single" && selected.length !== 1)
+        return { ok: false, error: `El servicio "${s.name}" admite un solo producto.` }
       const p = computeZonePricing(selected, s.price_cents)
       computed[s.id] = { durationMin: p.durationMin, priceCents: p.priceCents, zones: p.zones }
     } else {

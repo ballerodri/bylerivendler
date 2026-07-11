@@ -17,6 +17,7 @@ export type ServiceRow = {
   active: boolean
   visible_public: boolean
   pricing_mode: "fixed" | "per_zone"
+  zone_selection: "multiple" | "single"
 }
 
 type CategoryRow = { id: string; name: string }
@@ -49,7 +50,7 @@ export default async function AdminServiceDetailPage({
     await Promise.all([
       admin
         .from("services")
-        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public, pricing_mode")
+        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public, pricing_mode, zone_selection")
         .eq("id", id)
         .maybeSingle<ServiceRow>(),
       admin

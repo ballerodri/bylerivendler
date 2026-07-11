@@ -44,10 +44,12 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
   // Step 1 — Services
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [zoneSel, setZoneSel] = useState<Record<string, string[]>>({})
-  const toggleZone = (serviceId: string, zoneId: string) =>
+  const toggleZone = (serviceId: string, zoneId: string, single: boolean) =>
     setZoneSel((prev) => {
       const cur = prev[serviceId] ?? []
-      const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
+      const next = single
+        ? [zoneId] // producto: una sola opción, reemplaza la anterior
+        : cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
       return { ...prev, [serviceId]: next }
     })
   const effective = (s: ServiceOption): { priceCents: number; duration: number; count: number } => {
@@ -372,24 +374,37 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                         <span style={{ color: "var(--ink-mute)" }}>{s.duration_min} min</span>
                         <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(s.price_cents / 100)}</span>
                       </label>
-                      {s.pricing_mode === "per_zone" && selectedIds.has(s.id) && (
-                        <div style={{ paddingLeft: 34, display: "flex", flexDirection: "column", gap: 6, marginTop: 4, marginBottom: 4 }}>
-                          {s.zones.map((z) => (
-                            <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                              <input
-                                type="checkbox"
-                                checked={(zoneSel[s.id] ?? []).includes(z.id)}
-                                onChange={() => { toggleZone(s.id, z.id); setSelectedSlot(null) }}
-                                style={{ width: 15, height: 15 }}
-                              />
-                              <span>{z.name} · {z.durationMin} min · {fmtPrice((z.priceCents ?? s.price_cents) / 100)}</span>
-                            </label>
-                          ))}
-                          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                            {(() => { const e = effective(s); return e.count ? `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.priceCents / 100)}` : "Elegí al menos una zona" })()}
-                          </span>
-                        </div>
-                      )}
+                      {s.pricing_mode === "per_zone" && selectedIds.has(s.id) && (() => {
+                        const single = s.zone_selection === "single"
+                        return (
+                          <div style={{ paddingLeft: 34, display: "flex", flexDirection: "column", gap: 6, marginTop: 4, marginBottom: 4 }}>
+                            <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                              {single ? "Elegí un producto:" : "Elegí las zonas:"}
+                            </span>
+                            {s.zones.map((z) => (
+                              <label key={z.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                                <input
+                                  type={single ? "radio" : "checkbox"}
+                                  name={single ? `nz-zone-${s.id}` : undefined}
+                                  checked={(zoneSel[s.id] ?? []).includes(z.id)}
+                                  onChange={() => { toggleZone(s.id, z.id, single); setSelectedSlot(null) }}
+                                  style={{ width: 15, height: 15 }}
+                                />
+                                <span>{z.name} · {z.durationMin} min · {fmtPrice((z.priceCents ?? s.price_cents) / 100)}</span>
+                              </label>
+                            ))}
+                            <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                              {(() => {
+                                const e = effective(s)
+                                if (!e.count) return single ? "Elegí un producto" : "Elegí al menos una zona"
+                                return single
+                                  ? `${e.duration} min · ${fmtPrice(e.priceCents / 100)}`
+                                  : `${e.count} zona(s) · ${e.duration} min · ${fmtPrice(e.priceCents / 100)}`
+                              })()}
+                            </span>
+                          </div>
+                        )
+                      })()}
                     </div>
                   ))}
                 </div>

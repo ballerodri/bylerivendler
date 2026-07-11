@@ -12,6 +12,7 @@ export type ServiceOption = {
   price_cents: number
   category: string
   pricing_mode: "fixed" | "per_zone"
+  zone_selection: "multiple" | "single"
   zones: { id: string; name: string; durationMin: number; priceCents: number | null }[]
 }
 
@@ -28,7 +29,7 @@ export default async function NuevaReservaPage() {
 
   const { data } = await admin
     .from("services")
-    .select("id, name, duration_min, price_cents, pricing_mode, category:service_categories(name), service_zones(id, name, duration_min, price_cents, active, order_index)")
+    .select("id, name, duration_min, price_cents, pricing_mode, zone_selection, category:service_categories(name), service_zones(id, name, duration_min, price_cents, active, order_index)")
     .eq("active", true)
     .order("name")
 
@@ -39,6 +40,7 @@ export default async function NuevaReservaPage() {
     price_cents: number
     category: { name: string } | null
     pricing_mode: "fixed" | "per_zone"
+    zone_selection: "multiple" | "single"
   }[]).map((s) => ({
     id: s.id,
     name: s.name,
@@ -46,6 +48,7 @@ export default async function NuevaReservaPage() {
     price_cents: s.price_cents,
     category: s.category?.name ?? "Sin categoría",
     pricing_mode: s.pricing_mode,
+    zone_selection: s.zone_selection ?? "multiple",
     zones: ((s as unknown as { service_zones?: { id: string; name: string; duration_min: number; price_cents: number | null; active: boolean; order_index: number }[] }).service_zones ?? [])
       .filter((z) => z.active)
       .sort((a, b) => a.order_index - b.order_index)

@@ -64,7 +64,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents, points_cost, pricing_mode")
+    .select("id, name, duration_min, price_cents, points_cost, pricing_mode, zone_selection")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -92,7 +92,9 @@ export async function createBooking(
   for (const s of services) {
     if (s.pricing_mode === "per_zone") {
       const selected = resolveSelectedZones(input.zoneSelections?.[s.id] ?? [], zonesByService[s.id] ?? [])
-      if (!selected) return { ok: false, error: "Elegí al menos una zona válida para el servicio por zona." }
+      if (!selected) return { ok: false, error: "Elegí al menos una opción válida para el servicio." }
+      if (s.zone_selection === "single" && selected.length !== 1)
+        return { ok: false, error: `El servicio "${s.name}" admite un solo producto.` }
       const p = computeZonePricing(selected, s.price_cents)
       computed[s.id] = { durationMin: p.durationMin, priceCents: p.priceCents, zones: p.zones }
     } else {

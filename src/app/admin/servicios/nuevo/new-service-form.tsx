@@ -19,6 +19,7 @@ export default function NewServiceForm({
     name: "",
     description: "",
     pricing_mode: "fixed" as "fixed" | "per_zone",
+    zone_selection: "multiple" as "multiple" | "single",
     duration_min: 60,
     price_cents: 0,
     points_earned: 0,
@@ -33,6 +34,7 @@ export default function NewServiceForm({
         name: data.name,
         description: data.description,
         pricing_mode: data.pricing_mode,
+        zone_selection: data.zone_selection,
         duration_min: data.duration_min,
         price_cents: data.price_cents,
         points_earned: data.points_earned,
@@ -82,15 +84,21 @@ export default function NewServiceForm({
       </Field>
 
       <Field label="Modo de cobro">
-        <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={data.pricing_mode === "per_zone"}
-            onChange={(e) => setData({ ...data, pricing_mode: e.target.checked ? "per_zone" : "fixed" })}
-            style={{ width: 16, height: 16 }}
-          />
-          <span>Cobrar por zona (la duración depende de las zonas elegidas)</span>
-        </label>
+        <select
+          className="adm-input"
+          style={{ width: "100%" }}
+          value={data.pricing_mode === "fixed" ? "fixed" : data.zone_selection === "single" ? "product" : "zone"}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v === "fixed") setData({ ...data, pricing_mode: "fixed" })
+            else if (v === "zone") setData({ ...data, pricing_mode: "per_zone", zone_selection: "multiple" })
+            else setData({ ...data, pricing_mode: "per_zone", zone_selection: "single" })
+          }}
+        >
+          <option value="fixed">Precio fijo (una duración y un precio)</option>
+          <option value="zone">Por zona — se eligen varias y se suman</option>
+          <option value="product">Por producto — se elige uno solo</option>
+        </select>
       </Field>
 
       <div className="adm-grid">
@@ -105,7 +113,7 @@ export default function NewServiceForm({
             />
           </Field>
         )}
-        <Field label={data.pricing_mode === "per_zone" ? "Precio por zona (general, en pesos)" : "Precio (en pesos)"}>
+        <Field label={data.pricing_mode === "fixed" ? "Precio (en pesos)" : data.zone_selection === "single" ? "Precio general por producto (en pesos)" : "Precio por zona (general, en pesos)"}>
           <input
             className="adm-input"
             type="number"
@@ -118,7 +126,7 @@ export default function NewServiceForm({
       </div>
 
       {data.pricing_mode === "per_zone" && (
-        <ZonesEditor zones={zones} setZones={setZones} />
+        <ZonesEditor zones={zones} setZones={setZones} single={data.zone_selection === "single"} />
       )}
 
       <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginTop: 24, marginBottom: 8 }}>
@@ -178,10 +186,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function ZonesEditor({
   zones,
   setZones,
+  single,
 }: {
   zones: { name: string; duration_min: number; price_cents: number | null }[]
   setZones: (z: { name: string; duration_min: number; price_cents: number | null }[]) => void
+  single: boolean
 }) {
+  const noun = single ? "producto" : "zona"
+  const nounPl = single ? "Productos" : "Zonas"
   const update = (i: number, patch: Partial<{ name: string; duration_min: number; price_cents: number | null }>) =>
     setZones(zones.map((z, idx) => (idx === i ? { ...z, ...patch } : z)))
   const remove = (i: number) => setZones(zones.filter((_, idx) => idx !== i))
@@ -189,14 +201,14 @@ function ZonesEditor({
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <div className="adm-row__label" style={{ marginBottom: 6 }}>Zonas (nombre + minutos + precio opcional)</div>
+      <div className="adm-row__label" style={{ marginBottom: 6 }}>{nounPl} (nombre + minutos + precio opcional)</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {zones.map((z, i) => (
           <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
               className="adm-input"
               style={{ flex: 1 }}
-              placeholder="Ej: Abdomen"
+              placeholder={single ? "Ej: Ácido hialurónico" : "Ej: Abdomen"}
               value={z.name}
               onChange={(e) => update(i, { name: e.target.value })}
             />
@@ -232,7 +244,7 @@ function ZonesEditor({
         ))}
       </div>
       <button type="button" className="adm-btn adm-btn--ghost" style={{ marginTop: 8 }} onClick={add}>
-        + Agregar zona
+        + Agregar {noun}
       </button>
     </div>
   )

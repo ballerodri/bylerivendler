@@ -13,6 +13,8 @@ export type Service = {
   desc: string
   pointsCost: number
   pricingMode: "fixed" | "per_zone"
+  // per_zone: 'multiple' = se eligen varias zonas y se suman; 'single' = se elige un solo producto.
+  zoneSelection: "multiple" | "single"
   zones: ServiceZone[]   // vacío para 'fixed'
 }
 
