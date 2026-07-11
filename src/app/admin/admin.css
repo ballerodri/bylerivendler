@@ -250,7 +250,7 @@
 }
 
 .adm-list-row--turnos {
-  grid-template-columns: 100px 1fr 110px 240px;
+  grid-template-columns: 100px 1fr 110px 260px;
 }
 
 .adm-list-row--clientas {
@@ -334,6 +334,27 @@
   gap: 4px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* Acciones de turnos: cuadrícula prolija de 2 columnas para que los botones
+   queden alineados y del mismo ancho, en vez de amontonarse desparejos.
+   Cada botón llena su celda; los textos de estado (¿enviaste?, ¿eliminar?,
+   errores) ocupan el ancho completo. */
+.adm-list-row--turnos .adm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  align-items: stretch;
+}
+.adm-list-row--turnos .adm-actions .adm-btn {
+  width: 100%;
+  justify-content: center;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.adm-list-row--turnos .adm-actions > div,
+.adm-list-row--turnos .adm-actions > span {
+  grid-column: 1 / -1;
 }
 
 .adm-btn {
