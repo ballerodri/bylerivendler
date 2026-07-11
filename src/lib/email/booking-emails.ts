@@ -121,6 +121,45 @@ export async function sendBookingConfirmation(
   }
 }
 
+/** Aviso al equipo (admins) cuando una clienta reserva por la web. */
+export async function sendNewBookingAlert(data: {
+  to: string[]
+  clientName: string
+  clientPhone?: string | null
+  servicesNames: string[]
+  startsAt: Date
+  durationMin: number
+  totalCents: number
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) return { ok: false, error: "Resend no configurado" }
+  const to = data.to.filter(Boolean)
+  if (!to.length) return { ok: false, error: "Sin destinatarios" }
+
+  const formattedDate = fmtDateAR(data.startsAt)
+  const subject = `Nueva reserva · ${data.clientName} · ${formattedDate}`
+  const body = `
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Nueva reserva</p>
+    <h1 style="font-family:Georgia,serif;font-size:30px;font-weight:400;line-height:1.15;margin:0 0 16px;">
+      Reservó <em style="color:#b68a5f;">${escape(data.clientName)}</em>
+    </h1>
+    <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
+      <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Cuándo</p>
+      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 16px;">${formattedDate}</p>
+      <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
+      <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">${data.servicesNames.map((n) => escape(n)).join("<br>")}</p>
+      <p style="font-size:13px;color:#7a6e64;margin:0 0 ${data.clientPhone ? "16px" : "0"};">${data.durationMin} min · ${fmtPrice(data.totalCents)}</p>
+      ${data.clientPhone ? `<p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Contacto</p><p style="font-family:Georgia,serif;font-size:15px;margin:0;">${escape(data.clientPhone)}</p>` : ""}
+    </div>
+    ${ctaButtons(SITE + "/admin/turnos", "Ver en la agenda")}
+  `
+  try {
+    await resend.emails.send({ from: FROM, to, subject, html: shell(subject, body) })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export async function sendBookingCancellation(
   data: BookingEmailData
 ): Promise<{ ok: boolean; error?: string }> {
