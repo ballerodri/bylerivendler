@@ -565,8 +565,8 @@ export async function fetchDayAvailability(
   }
 
   let availQuery = supabase
-    .from("staff_availability")
-    .select("staff_id, day_of_week, from_time, to_time")
+    .from("staff_blocked_slots")
+    .select("staff_id, day_of_week, slot")
   if (proHint !== "auto") availQuery = availQuery.eq("staff_id", proHint)
 
   const [{ data: appointments }, { data: prosData }, { data: availData }] = await Promise.all([
@@ -578,11 +578,7 @@ export async function fetchDayAvailability(
   ])
 
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
-  const availRows = (availData ?? []) as { staff_id: string; day_of_week: number; from_time: string; to_time: string }[]
-  const staffHasAvail = new Set(availRows.map((r) => r.staff_id))
-  const availMap: AvailMap = new Map(
-    availRows.map((r) => [`${r.staff_id}|${r.day_of_week}`, { from_time: r.from_time, to_time: r.to_time }])
-  )
+  const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
 
   return candidateSlots.filter((slot) => {
     const slotStart = slotToUtcMs(dateStr, slot)
@@ -591,7 +587,7 @@ export async function fetchDayAvailability(
     if (proHint === "auto") {
       // Count pros actually available at this slot (day + hours)
       const availableAtSlot = activePros.filter(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, staffHasAvail, availMap)
+        (pid) => proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap)
       )
       if (!availableAtSlot.length) return false
 
@@ -607,7 +603,7 @@ export async function fetchDayAvailability(
       }
       return busyIds.size + anonymousBusy < availableAtSlot.length
     } else {
-      if (!proWorksAtSlot(proHint, dayOfWeek, slotStart, slotEnd, staffHasAvail, availMap)) return false
+      if (!proWorksAtSlot(proHint, dayOfWeek, slotStart, slotEnd, blockedMap)) return false
       return !(appointments ?? []).some((appt) => {
         const aStart = new Date(appt.starts_at).getTime()
         const aEnd   = aStart + (appt.duration_min as number) * 60_000
@@ -647,7 +643,27 @@ function permutations(arr: number[]): number[][] {
 
 type Appt = { starts_at: string; duration_min: number; staff_id: string | null }
 
-type AvailMap = Map<string, { from_time: string; to_time: string }>
+// `${staffId}|${dayOfWeek}` -> conjunto de horas "HH:MM" bloqueadas (no disponible).
+type BlockedMap = Map<string, Set<string>>
+const SLOT_BLOCK_MIN = 60 // cada hora bloqueada cubre 60 min
+
+function hhmmToMin(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map(Number)
+  return h * 60 + m
+}
+
+function buildBlockedMap(
+  rows: { staff_id: string; day_of_week: number; slot: string }[]
+): BlockedMap {
+  const m: BlockedMap = new Map()
+  for (const r of rows) {
+    const k = `${r.staff_id}|${r.day_of_week}`
+    let set = m.get(k)
+    if (!set) { set = new Set(); m.set(k, set) }
+    set.add(r.slot)
+  }
+  return m
+}
 
 function utcMsToArTime(ms: number): string {
   const arMs = ms - AR_UTC_OFFSET * 3_600_000
@@ -655,20 +671,26 @@ function utcMsToArTime(ms: number): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`
 }
 
+// Un profesional puede tomar un servicio [slotStart, slotEnd) si NINGUNA hora
+// bloqueada de ese día se superpone con la duración del servicio. Sin filas
+// bloqueadas ese día = disponible en todo.
 function proWorksAtSlot(
   staffId: string,
   dayOfWeek: number,
   slotStartMs: number,
   slotEndMs: number,
-  staffHasAvail: Set<string>,
-  availMap: AvailMap
+  blockedMap: BlockedMap
 ): boolean {
-  if (!staffHasAvail.has(staffId)) return true // no availability config = always available
-  const avail = availMap.get(`${staffId}|${dayOfWeek}`)
-  if (!avail) return false // configured for other days but not this one
-  const startStr = utcMsToArTime(slotStartMs)
-  const endStr = utcMsToArTime(slotEndMs)
-  return avail.from_time <= startStr && endStr <= avail.to_time
+  const blocked = blockedMap.get(`${staffId}|${dayOfWeek}`)
+  if (!blocked || blocked.size === 0) return true
+  const s0 = hhmmToMin(utcMsToArTime(slotStartMs))
+  const s1 = hhmmToMin(utcMsToArTime(slotEndMs))
+  for (const bt of blocked) {
+    const b0 = hhmmToMin(bt)
+    const b1 = b0 + SLOT_BLOCK_MIN
+    if (s0 < b1 && s1 > b0) return false // el servicio pisa una hora bloqueada
+  }
+  return true
 }
 
 function checkPerm(
@@ -678,8 +700,7 @@ function checkPerm(
   appts: Appt[],
   allPros: string[],
   dayOfWeek: number,
-  staffHasAvail: Set<string>,
-  availMap: AvailMap
+  blockedMap: BlockedMap
 ): Record<string, string> | null {
   const assignment: Record<string, string> = {}
   // Tracks which professionals are concurrently busy within THIS permutation's
@@ -701,7 +722,7 @@ function checkPerm(
       })
 
     if (svc.staffId !== "auto") {
-      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, staffHasAvail, availMap)) return null
+      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, blockedMap)) return null
       if (overlaps(svc.staffId)) return null
       assignment[svc.id] = svc.staffId
     } else {
@@ -709,10 +730,10 @@ function checkPerm(
       // Among those free and available, pick one.
       const assignedValues = Object.values(assignment)
       const preferred = assignedValues.find(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, staffHasAvail, availMap) && !overlaps(pid)
+        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlaps(pid)
       )
       const free = preferred ?? allPros.find(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, staffHasAvail, availMap) && !overlaps(pid)
+        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlaps(pid)
       )
       if (!free) return null
       assignment[svc.id] = free
@@ -729,15 +750,14 @@ function trySlot(
   appts: Appt[],
   allPros: string[],
   dayOfWeek: number,
-  staffHasAvail: Set<string>,
-  availMap: AvailMap,
+  blockedMap: BlockedMap,
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const assignment = checkPerm(startMs, perm, services, appts, allPros, dayOfWeek, staffHasAvail, availMap)
+    const assignment = checkPerm(startMs, perm, services, appts, allPros, dayOfWeek, blockedMap)
     if (assignment) {
       return {
         date: dateStr,
@@ -775,7 +795,7 @@ export async function fetchSequentialAvailability(
       .select("service_first_id, service_second_id")
       .in("service_first_id", serviceIds)
       .in("service_second_id", serviceIds),
-    supabase.from("staff_availability").select("staff_id, day_of_week, from_time, to_time"),
+    supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
   ])
 
   const byDow = new Map(
@@ -785,11 +805,7 @@ export async function fetchSequentialAvailability(
   )
   const allPros = ((prosRes.data ?? []) as { id: string }[]).map((p) => p.id)
 
-  const seqAvailRows = (availRes.data ?? []) as { staff_id: string; day_of_week: number; from_time: string; to_time: string }[]
-  const seqStaffHasAvail = new Set(seqAvailRows.map((r) => r.staff_id))
-  const seqAvailMap: AvailMap = new Map(
-    seqAvailRows.map((r) => [`${r.staff_id}|${r.day_of_week}`, { from_time: r.from_time, to_time: r.to_time }])
-  )
+  const blockedMap = buildBlockedMap((availRes.data ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
 
   // Set of "first_id|second_id" — first must go before second
   const orderRules = new Set<string>(
@@ -844,7 +860,7 @@ export async function fetchSequentialAvailability(
     const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === dateStr)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayAppts, allPros, dayOfWeek, seqStaffHasAvail, seqAvailMap, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayAppts, allPros, dayOfWeek, blockedMap, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
@@ -873,7 +889,7 @@ export async function fetchSequentialAvailability(
             // Available if at least one pro is free AND available today
             return allPros.some(
               (pid) =>
-                proWorksAtSlot(pid, todayDow, sStart, sEnd, seqStaffHasAvail, seqAvailMap) &&
+                proWorksAtSlot(pid, todayDow, sStart, sEnd, blockedMap) &&
                 !dayAppts.some((a) => {
                   if (a.staff_id !== pid) return false
                   const aS = new Date(a.starts_at).getTime()
@@ -881,7 +897,7 @@ export async function fetchSequentialAvailability(
                 })
             )
           }
-          if (!proWorksAtSlot(svc.staffId, todayDow, sStart, sEnd, seqStaffHasAvail, seqAvailMap)) return false
+          if (!proWorksAtSlot(svc.staffId, todayDow, sStart, sEnd, blockedMap)) return false
           return !dayAppts.some((a) => {
             if (a.staff_id !== svc.staffId) return false
             const aS = new Date(a.starts_at).getTime()

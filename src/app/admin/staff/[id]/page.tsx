@@ -17,10 +17,9 @@ export type StaffRow = {
   calendar_color_id: string | null
 }
 
-export type AvailabilityRow = {
+export type BlockedSlotRow = {
   day_of_week: number
-  from_time: string
-  to_time: string
+  slot: string
 }
 
 export type BusinessHourRow = {
@@ -66,10 +65,9 @@ export default async function AdminStaffDetailPage({
       .eq("id", id)
       .maybeSingle<StaffRow>(),
     admin
-      .from("staff_availability")
-      .select("day_of_week, from_time, to_time")
-      .eq("staff_id", id)
-      .order("day_of_week"),
+      .from("staff_blocked_slots")
+      .select("day_of_week, slot")
+      .eq("staff_id", id),
     admin
       .from("business_hours")
       .select("day_of_week, is_open, slots")
@@ -91,7 +89,7 @@ export default async function AdminStaffDetailPage({
 
   if (!staffMember) notFound()
 
-  const availability = (availData ?? []) as AvailabilityRow[]
+  const blockedSlots = (availData ?? []) as BlockedSlotRow[]
   const businessHours = (bhData ?? []) as BusinessHourRow[]
   // Comisiones sólo de los servicios que esta profesional tiene asignados
   // ("Profesionales habilitadas" en cada servicio).
@@ -115,7 +113,7 @@ export default async function AdminStaffDetailPage({
 
       <StaffEditor
         staff={staffMember}
-        availability={availability}
+        blockedSlots={blockedSlots}
         businessHours={businessHours}
         canEditRole={viewerIsAdmin}
         services={services}

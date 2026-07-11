@@ -766,29 +766,30 @@ export async function updateServiceOrderRules(
 
 // ─── Disponibilidad por profesional ───────────────────────────────────────────
 
-export type StaffAvailabilityInput = {
+export type StaffBlockedSlotInput = {
   day_of_week: number
-  from_time: string
-  to_time: string
+  slot: string
 }
 
-export async function updateStaffAvailability(
+// Reemplaza las horas bloqueadas del profesional (delete-all + insert).
+// Sin filas = disponible en todos los horarios del negocio.
+export async function updateStaffBlockedSlots(
   staffId: string,
-  availRows: StaffAvailabilityInput[]
+  blockedRows: StaffBlockedSlotInput[]
 ): Promise<{ ok: boolean; error?: string }> {
   await requireStaff()
   const admin = adminClient()
 
   const { error: delErr } = await admin
-    .from("staff_availability")
+    .from("staff_blocked_slots")
     .delete()
     .eq("staff_id", staffId)
   if (delErr) return { ok: false, error: delErr.message }
 
-  if (availRows.length > 0) {
+  if (blockedRows.length > 0) {
     const { error: insErr } = await admin
-      .from("staff_availability")
-      .insert(availRows.map((r) => ({ staff_id: staffId, ...r })))
+      .from("staff_blocked_slots")
+      .insert(blockedRows.map((r) => ({ staff_id: staffId, ...r })))
     if (insErr) return { ok: false, error: insErr.message }
   }
 
