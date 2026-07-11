@@ -77,7 +77,7 @@ export default async function AdminStaffPage() {
                 <span className={`adm-pill ${s.role === "admin" ? "adm-pill--admin" : "adm-pill--inactive"}`}>
                   {ROLE_LABEL[s.role] ?? s.role}
                 </span>
-                {s.is_professional && (
+                {s.is_professional && s.role !== "professional" && (
                   <span className="adm-pill adm-pill--active" style={{ background: "#e8f0e5", color: "#4d6b3e" }}>
                     Profesional
                   </span>
