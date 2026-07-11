@@ -76,9 +76,8 @@ export default async function AdminStaffDetailPage({
       .order("day_of_week"),
     admin
       .from("services")
-      .select("id, name, category")
+      .select("id, name, category:service_categories(name)")
       .eq("active", true)
-      .order("category")
       .order("name"),
     admin
       .from("staff_service_commissions")
@@ -90,7 +89,8 @@ export default async function AdminStaffDetailPage({
 
   const availability = (availData ?? []) as AvailabilityRow[]
   const businessHours = (bhData ?? []) as BusinessHourRow[]
-  const services = (servicesData ?? []) as ServiceRow[]
+  const services = ((servicesData ?? []) as unknown as { id: string; name: string; category: { name: string } | null }[])
+    .map((s): ServiceRow => ({ id: s.id, name: s.name, category: s.category?.name ?? null }))
   const commissions = (commissionsData ?? []) as CommissionRow[]
 
   return (
