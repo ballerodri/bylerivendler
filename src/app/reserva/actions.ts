@@ -4,7 +4,8 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingConfirmation, sendNewBookingAlert } from "@/lib/email/booking-emails"
+import { sendBookingConfirmation } from "@/lib/email/booking-emails"
+import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -49,34 +50,6 @@ function adminClient() {
   )
 }
 
-// Aviso por email a los admins (Leri y equipo) cuando una clienta reserva por
-// la web. Best-effort: nunca bloquea la reserva.
-async function notifyAdmins(
-  supabase: ReturnType<typeof adminClient>,
-  data: {
-    clientName: string
-    clientPhone?: string | null
-    servicesNames: string[]
-    startsAt: Date
-    durationMin: number
-    totalCents: number
-  }
-): Promise<void> {
-  try {
-    const { data: admins } = await supabase
-      .from("staff")
-      .select("email")
-      .in("role", ["admin", "reception"])
-      .eq("active", true)
-      .not("email", "is", null)
-    const to = ((admins ?? []) as { email: string | null }[])
-      .map((a) => a.email)
-      .filter((e): e is string => !!e)
-    if (to.length) await sendNewBookingAlert({ to, ...data })
-  } catch {
-    // no bloquea la reserva
-  }
-}
 
 export async function createBooking(
   raw: CreateBookingInput
@@ -311,13 +284,14 @@ export async function createBooking(
       })
     } catch {}
 
-    await notifyAdmins(supabase, {
+    await notifyNewBooking(supabase, {
       clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
       clientPhone: input.client.phone,
       servicesNames: [`${pack.name} (pack · ${pack.sessions} sesiones)`],
       startsAt: packStartsAt,
       durationMin: firstDuration,
       totalCents: pack.total_price_cents,
+      assignedStaffIds: [packStaffId],
     })
 
     return { ok: true, appointmentId: packAppt.id }
@@ -463,14 +437,15 @@ export async function createBooking(
     // ignore — la reserva ya está; el equipo puede reenviar manualmente.
   }
 
-  // Aviso a los admins de la nueva reserva (no bloqueante).
-  await notifyAdmins(supabase, {
+  // Aviso a Leri + profesional(es) asignado(s) de la nueva reserva (no bloqueante).
+  await notifyNewBooking(supabase, {
     clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
     clientPhone: input.client.phone,
     servicesNames: services.map((s) => s.name),
     startsAt,
     durationMin: totalDuration,
     totalCents,
+    assignedStaffIds: [mainStaffId, ...Object.values(input.resolvedStaff ?? {})],
   })
 
   // 8) Magic link para portal — solo si:

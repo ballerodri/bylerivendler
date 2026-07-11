@@ -8,6 +8,7 @@ import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
+import { notifyNewBooking } from "@/lib/email/notify-booking"
 
 const StatusSchema = z.enum([
   "pending",
@@ -882,7 +883,7 @@ export type AdminBookingInput = {
 export async function createAdminBooking(
   input: AdminBookingInput
 ): Promise<{ ok: boolean; error?: string; appointmentId?: string }> {
-  await requireStaff()
+  const creator = await requireStaff()
   const admin = adminClient()
 
   // 1) Resolve services
@@ -1046,6 +1047,23 @@ export async function createAdminBooking(
   } catch {
     // Non-fatal
   }
+
+  // Aviso a Leri + profesional(es) asignado(s) — no a quien la cargó (best-effort).
+  const { data: notifClient } = await admin
+    .from("clients")
+    .select("first_name, last_name, phone")
+    .eq("id", clientId)
+    .maybeSingle()
+  await notifyNewBooking(admin, {
+    clientName: `${notifClient?.first_name ?? ""} ${notifClient?.last_name ?? ""}`.trim() || "Clienta",
+    clientPhone: notifClient?.phone ?? null,
+    servicesNames: services.map((s) => s.name),
+    startsAt,
+    durationMin: totalDuration,
+    totalCents,
+    assignedStaffIds: [mainStaffId, ...Object.values(input.resolvedStaff ?? {})],
+    excludeEmail: creator.email,
+  })
 
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
