@@ -217,9 +217,8 @@
   padding: 14px 22px;
   min-height: 48px;
   border-radius: 999px;
-  font-size: 13px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-size: 14px;
+  letter-spacing: 0.02em;
   font-weight: 500;
   transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
   white-space: nowrap;
@@ -801,9 +800,8 @@
   flex: 1;
   padding: 10px 12px;
   border-radius: 999px;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 13px;
+  letter-spacing: 0.02em;
   color: var(--ink-mute);
   transition: all 0.2s;
 }
