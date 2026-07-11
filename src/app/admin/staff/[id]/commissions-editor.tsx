@@ -74,8 +74,12 @@ export default function CommissionsEditor({
   if (services.length === 0) {
     return (
       <div className="adm-card" style={{ padding: 24, marginTop: 24 }}>
-        <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 8 }}>Comisiones</h3>
-        <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>No hay servicios activos.</p>
+        <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 8 }}>Comisiones por servicio</h3>
+        <p style={{ fontSize: 13, color: "var(--ink-mute)", lineHeight: 1.5 }}>
+          Esta profesional no tiene servicios asignados todavía. Asignala a los servicios que realiza
+          (en <strong>Servicios → cada servicio → &ldquo;Profesionales habilitadas&rdquo;</strong>) y después
+          volvé acá para definir sus comisiones.
+        </p>
       </div>
     )
   }

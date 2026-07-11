@@ -59,7 +59,7 @@ export default async function AdminStaffDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }] = await Promise.all([
+  const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }, { data: assignedData }] = await Promise.all([
     admin
       .from("staff")
       .select("id, full_name, role, email, active, is_professional, calendar_color_id")
@@ -83,13 +83,21 @@ export default async function AdminStaffDetailPage({
       .from("staff_service_commissions")
       .select("service_id, commission_type, commission_value")
       .eq("staff_id", id),
+    admin
+      .from("staff_services")
+      .select("service_id")
+      .eq("staff_id", id),
   ])
 
   if (!staffMember) notFound()
 
   const availability = (availData ?? []) as AvailabilityRow[]
   const businessHours = (bhData ?? []) as BusinessHourRow[]
+  // Comisiones sólo de los servicios que esta profesional tiene asignados
+  // ("Profesionales habilitadas" en cada servicio).
+  const assignedIds = new Set(((assignedData ?? []) as { service_id: string }[]).map((r) => r.service_id))
   const services = ((servicesData ?? []) as unknown as { id: string; name: string; category: { name: string } | null }[])
+    .filter((s) => assignedIds.has(s.id))
     .map((s): ServiceRow => ({ id: s.id, name: s.name, category: s.category?.name ?? null }))
   const commissions = (commissionsData ?? []) as CommissionRow[]
 
