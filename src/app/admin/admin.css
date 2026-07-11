@@ -356,12 +356,6 @@
 .adm-list-row--turnos .adm-actions > span {
   grid-column: 1 / -1;
 }
-/* El botón primario de la fila (Confirmar/Facturar) va en minúscula como sus
-   vecinos (sigue negro/prominente, pero sin gritar en mayúsculas). */
-.adm-list-row--turnos .adm-actions .adm-btn--primary {
-  text-transform: none;
-  letter-spacing: 0.04em;
-}
 
 .adm-btn {
   display: inline-flex;
@@ -386,8 +380,7 @@
   background: var(--ink);
   color: var(--paper);
   border-color: var(--ink);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
 }
 
 .adm-btn.adm-btn--primary:hover {
