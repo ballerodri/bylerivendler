@@ -34,6 +34,7 @@ type DbServiceRow = {
   duration_min: number
   price_cents: number
   points_cost: number
+  loyalty_enabled: boolean
   active: boolean
   visible_public: boolean
   pricing_mode: "fixed" | "per_zone"
@@ -61,7 +62,7 @@ export async function fetchCatalog(): Promise<Category[]> {
     .select(
       `
       id, slug, name, tagline, sort_order,
-      services:services(id, slug, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode, zone_selection, service_zones(id, name, duration_min, active, order_index, price_cents))
+      services:services(id, slug, name, description, duration_min, price_cents, points_cost, loyalty_enabled, active, visible_public, pricing_mode, zone_selection, service_zones(id, name, duration_min, active, order_index, price_cents))
     `
     )
     .eq("active", true)
@@ -83,7 +84,7 @@ export async function fetchCatalog(): Promise<Category[]> {
           duration: s.duration_min,
           price: Math.round(s.price_cents / 100),
           desc: s.description ?? "",
-          pointsCost: s.points_cost,
+          pointsCost: s.loyalty_enabled ? s.points_cost : 0,
           pricingMode: s.pricing_mode,
           zoneSelection: s.zone_selection ?? "multiple",
           zones: (s.service_zones ?? [])

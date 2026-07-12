@@ -64,7 +64,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents, points_cost, pricing_mode, zone_selection")
+    .select("id, name, duration_min, price_cents, points_cost, loyalty_enabled, pricing_mode, zone_selection")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -118,7 +118,7 @@ export async function createBooking(
 
   const depositCents = Math.round(totalCents * 0.3)
   const totalPointsCost = services.reduce(
-    (a, s) => a + (s.points_cost ?? 0),
+    (a, s) => a + (s.loyalty_enabled ? (s.points_cost ?? 0) : 0),
     0
   )
   const redeem = !!input.redeemWithPoints

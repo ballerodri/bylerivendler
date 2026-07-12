@@ -76,13 +76,13 @@ export async function updateAppointmentStatus(
     prev.status !== "completed" &&
     prev.client_id
   ) {
-    type EarnedRow = { service: { points_earned: number } | null }
+    type EarnedRow = { service: { points_earned: number; loyalty_enabled: boolean } | null }
     const { data: rows } = await admin
       .from("appointment_services")
-      .select("service:services(points_earned)")
+      .select("service:services(points_earned, loyalty_enabled)")
       .eq("appointment_id", appointmentId)
     const earned = ((rows as unknown as EarnedRow[] | null) ?? []).reduce(
-      (sum, r) => sum + (r.service?.points_earned ?? 0),
+      (sum, r) => sum + (r.service?.loyalty_enabled ? (r.service.points_earned ?? 0) : 0),
       0
     )
     if (earned > 0) {
@@ -685,6 +685,31 @@ export async function updateStaffProfessional(
 }
 
 // ─── Profesionales por servicio ───────────────────────────────────────────────
+
+// Programa Cerca: participación + puntos (suma/canje) de todos los servicios de una.
+export async function updateLoyaltyConfig(
+  rows: { id: string; loyalty_enabled: boolean; points_earned: number; points_cost: number }[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const results = await Promise.all(
+    rows.map((r) =>
+      admin
+        .from("services")
+        .update({
+          loyalty_enabled: r.loyalty_enabled,
+          points_earned: Math.max(0, r.points_earned),
+          points_cost: Math.max(0, r.points_cost),
+        })
+        .eq("id", r.id)
+    )
+  )
+  const failed = results.find((res) => res.error)
+  if (failed?.error) return { ok: false, error: failed.error.message }
+  revalidatePath("/admin/programa-cerca")
+  revalidatePath("/admin/servicios")
+  return { ok: true }
+}
 
 export async function updateServiceStaff(
   serviceId: string,
