@@ -3,6 +3,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "../../reserva/data"
+import { packReferenceCents } from "@/lib/servicios/pack-pricing"
 import PackActiveToggle from "./active-toggle"
 import PackDeleteButton from "./delete-button"
 
@@ -14,6 +15,7 @@ type PackRow = {
   sessions: number
   interval_days: number | null
   total_price_cents: number
+  zones_count: number | null
   active: boolean
   service: { name: string; price_cents: number } | null
 }
@@ -33,7 +35,7 @@ export default async function AdminPacksPage() {
 
   const { data } = await admin
     .from("packs")
-    .select("id, name, sessions, interval_days, total_price_cents, active, service:services(name, price_cents)")
+    .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, service:services(name, price_cents)")
     .order("name", { ascending: true })
 
   const packs = (data ?? []) as unknown as PackRow[]
@@ -52,7 +54,7 @@ export default async function AdminPacksPage() {
           <div className="adm-empty">No hay packs cargados todavía.</div>
         ) : (
           packs.map((p) => {
-            const full = (p.service?.price_cents ?? 0) * p.sessions
+            const full = packReferenceCents(p.service?.price_cents ?? 0, p.sessions, p.zones_count)
             const saving = full - p.total_price_cents
             return (
               <div key={p.id} className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto auto auto" }}>
