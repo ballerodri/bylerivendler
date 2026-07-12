@@ -79,8 +79,6 @@ export default function ServiceEditor({
     zone_selection: service.zone_selection ?? "multiple",
     duration_min: service.duration_min,
     price_cents: service.price_cents,
-    points_earned: service.points_earned,
-    points_cost: service.points_cost,
     active: service.active,
     visible_public: service.visible_public,
   })
@@ -184,51 +182,10 @@ export default function ServiceEditor({
 
       {data.pricing_mode === "per_zone" && <ZonesEditor zones={zones} setZones={setZones} single={data.zone_selection === "single"} />}
 
-      <h3
-        style={{
-          fontFamily: "var(--serif)",
-          fontWeight: 500,
-          fontSize: 16,
-          marginTop: 24,
-          marginBottom: 8,
-        }}
-      >
-        Programa Cerca
-      </h3>
-      <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
-        Cuántos puntos suma este servicio al completarse, y cuántos hacen
-        falta para canjearlo sin pagar.
+      <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 24 }}>
+        Los puntos del Programa Cerca (participación, suma y canje) se configuran en la
+        sección <strong>Programa Cerca</strong> del menú.
       </p>
-      <div className="adm-grid">
-        <Field label="Puntos que suma">
-          <input
-            className="adm-input"
-            type="number"
-            min={0}
-            value={data.points_earned}
-            onChange={(e) =>
-              setData({
-                ...data,
-                points_earned: parseInt(e.target.value) || 0,
-              })
-            }
-          />
-        </Field>
-        <Field label="Puntos para canjear">
-          <input
-            className="adm-input"
-            type="number"
-            min={0}
-            value={data.points_cost}
-            onChange={(e) =>
-              setData({
-                ...data,
-                points_cost: parseInt(e.target.value) || 0,
-              })
-            }
-          />
-        </Field>
-      </div>
 
       <h3
         style={{

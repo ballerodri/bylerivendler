@@ -375,8 +375,8 @@ const ServicePatch = z.object({
   zone_selection: z.enum(["multiple", "single"]).default("multiple"),
   duration_min: z.number().int().nonnegative(),
   price_cents: z.number().int().nonnegative(),
-  points_earned: z.number().int().nonnegative(),
-  points_cost: z.number().int().nonnegative(),
+  points_earned: z.number().int().nonnegative().optional(),
+  points_cost: z.number().int().nonnegative().optional(),
   active: z.boolean(),
   visible_public: z.boolean(),
   zones: z.array(ZoneInput).default([]),
@@ -614,8 +614,8 @@ export async function createService(
     zone_selection?: "multiple" | "single"
     duration_min: number
     price_cents: number
-    points_earned: number
-    points_cost: number
+    points_earned?: number
+    points_cost?: number
     zones: { name: string; duration_min: number; price_cents: number | null }[]
   }
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
@@ -639,8 +639,8 @@ export async function createService(
       zone_selection: data.zone_selection ?? "multiple",
       duration_min: data.pricing_mode === "per_zone" ? 0 : data.duration_min,
       price_cents: data.price_cents,
-      points_earned: data.points_earned,
-      points_cost: data.points_cost,
+      points_earned: data.points_earned ?? 0,
+      points_cost: data.points_cost ?? 0,
       active: true,
       visible_public: true,
     })

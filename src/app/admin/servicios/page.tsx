@@ -56,7 +56,8 @@ export default async function AdminServiciosPage() {
         Tus <em>servicios</em>
       </h1>
       <p className="adm-lede">
-        Editá precios, duración y puntos del Programa Cerca por servicio.
+        Editá precios y duración por servicio. Los puntos del Programa Cerca se manejan en su
+        propia sección.
       </p>
 
       {categories.map((cat) => (
@@ -94,7 +95,7 @@ export default async function AdminServiciosPage() {
                   key={s.id}
                   href={`/admin/servicios/${s.id}`}
                   className="adm-list-row"
-                  style={{ gridTemplateColumns: "1fr 100px 110px 110px 80px 80px" }}
+                  style={{ gridTemplateColumns: "1fr 110px 140px 90px" }}
                 >
                   <div>
                     <div className="adm-name">{s.name}</div>
@@ -110,8 +111,6 @@ export default async function AdminServiciosPage() {
                   <div style={{ fontSize: 18, fontFamily: "var(--serif)", fontWeight: 500 }}>
                     {fmtPrice(s.price_cents / 100)}
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--gold)" }}>+{s.points_earned} pts</div>
-                  <div style={{ fontSize: 13, color: "var(--ink-mute)" }}>{s.points_cost} pts</div>
                   <div className="adm-actions">
                     <span className="adm-btn adm-btn--ghost">Editar →</span>
                   </div>

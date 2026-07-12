@@ -22,8 +22,6 @@ export default function NewServiceForm({
     zone_selection: "multiple" as "multiple" | "single",
     duration_min: 60,
     price_cents: 0,
-    points_earned: 0,
-    points_cost: 0,
   })
   const [zones, setZones] = useState<{ name: string; duration_min: number; price_cents: number | null }[]>([])
 
@@ -37,8 +35,6 @@ export default function NewServiceForm({
         zone_selection: data.zone_selection,
         duration_min: data.duration_min,
         price_cents: data.price_cents,
-        points_earned: data.points_earned,
-        points_cost: data.points_cost,
         zones: data.pricing_mode === "per_zone" ? zones : [],
       })
       if (r.ok) {
@@ -129,29 +125,9 @@ export default function NewServiceForm({
         <ZonesEditor zones={zones} setZones={setZones} single={data.zone_selection === "single"} />
       )}
 
-      <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginTop: 24, marginBottom: 8 }}>
-        Programa Cerca
-      </h3>
-      <div className="adm-grid">
-        <Field label="Puntos que suma">
-          <input
-            className="adm-input"
-            type="number"
-            min={0}
-            value={data.points_earned}
-            onChange={(e) => setData({ ...data, points_earned: parseInt(e.target.value) || 0 })}
-          />
-        </Field>
-        <Field label="Puntos para canjear">
-          <input
-            className="adm-input"
-            type="number"
-            min={0}
-            value={data.points_cost}
-            onChange={(e) => setData({ ...data, points_cost: parseInt(e.target.value) || 0 })}
-          />
-        </Field>
-      </div>
+      <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
+        Después de crear el servicio, definí sus puntos en la sección <strong>Programa Cerca</strong> del menú.
+      </p>
 
       <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 12 }}>
         <button
