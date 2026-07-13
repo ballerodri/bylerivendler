@@ -45,6 +45,7 @@ devolver una sesión que nunca se contó. Hay que arreglarlo para pre-agendar se
 3. Reserva online: elegir N sesiones al comprar; crear un turno por sesión elegida.
 4. Descuento automático del pack al Completar un turno ya ligado al pack (fix del bug).
 5. Admin: agendar sesiones pendientes desde la ficha de la clienta (pudiendo saltear el intervalo).
+6. Admin: **"Confirmar pack"** — un clic confirma **todas** las sesiones pendientes de esa compra.
 
 ### Etapa 2 (futuro, fuera de este spec)
 
@@ -72,8 +73,13 @@ El pack se paga **una sola vez**:
 | 1ª sesión (portador) | `pack.total_price_cents` | 30% | `false` | `pending` |
 | Sesiones 2..N | `0` | `0` | `true` | `pending` |
 
-Todas nacen `pending` (el salón las confirma, igual que hoy). Ojo: con el cambio reciente, el
-recordatorio por mail/WhatsApp sólo sale para turnos **confirmados**.
+Todas nacen `pending` **a propósito**: el salón primero verifica que la seña esté pagada y recién
+ahí confirma.
+
+Como el pack se paga **una sola vez** pero genera N turnos, confirmarlos de a uno es tedioso y se
+prestan a olvidos (y un turno sin confirmar **no recibe recordatorio**, que ahora sale sólo para
+confirmados). Por eso: **"Confirmar pack"** — una acción que pasa a `confirmed` **todas** las
+sesiones pendientes de esa compra de una vez.
 
 Lo mismo en `appointment_services.price_cents` (pack en la 1ª, `0` en el resto). Si todas
 llevaran el precio, un pack de $170.000 × 4 aparecería como $680.000 de ingreso.
@@ -116,6 +122,8 @@ Calendario + horarios libres de un día, para **una** sesión.
 - `schedulePackSession(packPurchaseId, startsAtISO, { allowIntervalOverride })`
   (`src/app/admin/actions.ts`, nuevo): crea **un** turno en `0` ligado al pack. Usado por el admin
   (y, en Etapa 2, por el portal sin override).
+- `confirmPackSessions(packPurchaseId)` (`src/app/admin/actions.ts`, nuevo): pasa a `confirmed`
+  **todos** los turnos `pending` de esa compra. No toca los cancelados/completados.
 - `updateAppointmentStatus`: si el turno **ya tiene** `pack_purchase_id`, descuenta **solo** al
   entrar a `completed` (sin que el llamador pase nada), con guarda `sessions_used < sessions_total`.
   El parámetro `packPurchaseId` sigue existiendo para turnos **sueltos** que se descuentan de un pack.
@@ -154,11 +162,17 @@ En la ficha de la clienta, por cada pack con sesiones sin agendar:
 
 ```
 Pack Vela Slim Plus · 4 sesiones     2 agendadas · 2 sin agendar
-  [ Agendar sesión ]
+  Sesión 1  Lun 20/07 14:00   PENDIENTE
+  Sesión 2  Lun 27/07 14:00   PENDIENTE
+
+  [ Agendar sesión ]   [ Confirmar las 2 sesiones ]
 ```
 
-Abre el mismo selector. El intervalo se **sugiere** pero se puede **saltear**:
+"Agendar sesión" abre el mismo selector. El intervalo se **sugiere** pero se puede **saltear**:
 > "Ojo: faltan 5 días de la sesión anterior. [Agendar igual]"
+
+"Confirmar las N sesiones" (`confirmPackSessions`) pasa todas las pendientes a `confirmed` de una
+vez, después de verificar el pago.
 
 ## Validaciones y errores
 
@@ -205,7 +219,8 @@ confirmar y **no crea nada**; ella vuelve a elegir esa sesión.
 - `src/app/reserva/screens.tsx` — paso de fecha del pack → lista de sesiones
 - `src/app/reserva/data.ts` — `BookingState.packSlots`; `ReservaPack.intervalDays`
 - `src/app/reserva/queries.ts` — `fetchReservaPacks` trae `interval_days`
-- `src/app/admin/actions.ts` — `schedulePackSession`; fix del descuento en `updateAppointmentStatus`
+- `src/app/admin/actions.ts` — `schedulePackSession`, `confirmPackSessions`; fix del descuento en
+  `updateAppointmentStatus`
 - `src/app/admin/_components/status-actions.tsx` — no ofrecer "¿Descontar de un pack?" si el turno
   ya está ligado a uno
 - `src/app/admin/turnos/page.tsx` — pasar a `StatusActions` si el turno ya está ligado a un pack
