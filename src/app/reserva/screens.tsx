@@ -24,7 +24,7 @@ import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
-import { validateSeparateSlots } from "@/lib/servicios/multi-booking"
+import { totalDueNowSeparate, validateSeparateSlots } from "@/lib/servicios/multi-booking"
 
 type Variant = "mobile" | "desktop"
 
@@ -1890,12 +1890,25 @@ export function Screen5Confirm({
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const payChoice: PayChoice = state.payChoice ?? "deposit"
+  const separados =
+    !pack && !combo && services.length >= 2 && (state.bookingMode ?? "juntos") === "separados"
+
   // Se calcula en CENTAVOS, igual que el servidor, para que no haya diferencias
   // de redondeo entre lo que ve la clienta y lo que se guarda.
   const totalCents = Math.round(total * 100)
-  const depositCents = redeeming ? 0 : amountDueNow(totalCents, payChoice)
+  // En "separados" cada turno lleva su propia seña: lo que transfiere es la
+  // SUMA de esas señas, no el 30% del total (cada turno redondea la suya).
+  const depositCents = redeeming
+    ? 0
+    : separados
+      ? totalDueNowSeparate(services.map((s) => Math.round(effective(s).price * 100)), payChoice)
+      : amountDueNow(totalCents, payChoice)
   const deposit = depositCents / 100
   const remaining = redeeming ? 0 : total - deposit
+  const dueNowFor = (c: PayChoice) =>
+    separados
+      ? totalDueNowSeparate(services.map((s) => Math.round(effective(s).price * 100)), c)
+      : amountDueNow(totalCents, c)
 
   const setPayChoice = (c: PayChoice) => setState({ ...state, payChoice: c })
 
@@ -1948,13 +1961,25 @@ export function Screen5Confirm({
     // arriba): esta pantalla puede ser la primera en montar tras restaurar el
     // estado persistido, así que no podemos asumir que ya vino limpio.
     const packSlotsPicked = pack ? cleanPackSlots(state.packSlots ?? [], pack.pack.sessions) : []
-    const missingDate = pack ? packSlotsPicked.length === 0 : (!state.selectedDate || !state.selectedTime)
+    const missingDate = pack
+      ? packSlotsPicked.length === 0
+      : separados
+        ? !services.every((s) => state.serviceSlots?.[s.id])
+        : (!state.selectedDate || !state.selectedTime)
     if (!state.form || missingDate) {
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
       return
     }
 
-    const startsAt = pack ? new Date(packSlotsPicked[0]) : combineDateTime(state.selectedDate!, state.selectedTime!)
+    // En separados el servidor usa serviceSlots; startsAt va igual porque el
+    // schema lo exige: mandamos el más temprano de los elegidos.
+    const startsAt = pack
+      ? new Date(packSlotsPicked[0])
+      : separados
+        ? new Date(
+            Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime()))
+          )
+        : combineDateTime(state.selectedDate!, state.selectedTime!)
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón
@@ -1975,8 +2000,10 @@ export function Screen5Confirm({
       // quedó seleccionado después de haber resuelto un turno suelto, esos
       // campos podrían traer un profesional que la clienta nunca eligió para
       // el pack. Belt-and-braces: nunca los mandamos cuando hay pack.
-      serviceOrder: pack ? undefined : state.serviceOrder,
-      resolvedStaff: pack ? undefined : state.resolvedStaff,
+      serviceOrder: pack || separados ? undefined : state.serviceOrder,
+      resolvedStaff: pack || separados ? undefined : state.resolvedStaff,
+      serviceSlots: separados ? state.serviceSlots : undefined,
+      serviceStaff: separados ? state.serviceStaff : undefined,
       redeemWithPoints: redeeming,
       payChoice,
       savedClientId: state.savedClientId,
@@ -2004,7 +2031,8 @@ export function Screen5Confirm({
         localStorage.removeItem("blv_booking")
         localStorage.removeItem("blv_step")
       } catch {}
-      window.location.href = `/reserva/exito?id=${result.appointmentId}`
+      const ids = result.appointmentIds ?? [result.appointmentId]
+      window.location.href = `/reserva/exito?id=${ids.join(",")}`
     } else {
       setPaying(false)
       setError(result.error)
@@ -2080,6 +2108,16 @@ export function Screen5Confirm({
                   </small>
                 )}
               </div>
+            ) : separados ? (
+              services.map((s) => {
+                const iso = state.serviceSlots?.[s.id]
+                return (
+                  <div key={s.id} className="breakdown__row">
+                    <span>{s.name}</span>
+                    <span>{iso ? fmtSlotAR(iso) : "—"}</span>
+                  </div>
+                )
+              })
             ) : (
               <>
                 {dow} {dateObj && dateObj.getDate()} de{" "}
@@ -2219,7 +2257,7 @@ export function Screen5Confirm({
                 <br />
                 <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
               </span>
-              <strong>{fmtPrice(amountDueNow(totalCents, o.v) / 100)}</strong>
+              <strong>{fmtPrice(dueNowFor(o.v) / 100)}</strong>
             </label>
           ))}
         </div>
