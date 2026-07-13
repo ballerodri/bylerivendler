@@ -32,13 +32,19 @@ export async function GET(req: NextRequest) {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  // Cron runs once daily at 12:00 UTC (09:00 Buenos Aires).
-  // Window: 18h–42h from now → catches every appointment in the next day,
-  // regardless of time. reminder_sent_at IS NULL prevents duplicates.
-  // Sólo se recuerdan turnos CONFIRMADOS: si sigue pendiente cuando corre el
-  // cron, no se manda recordatorio.
+  // El cron corre una vez por día, 12:00 UTC (09:00 Buenos Aires).
+  //
+  // Ventana 3h–42h: agarra lo que queda de HOY (desde las 12:00) y TODO mañana.
+  //  - Caso normal: el turno de mañana se recuerda hoy → recordatorio el día previo.
+  //  - Red de seguridad: un turno que en la corrida anterior todavía estaba PENDIENTE
+  //    (y por eso no se recordó) se vuelve a mirar en la corrida de su propio día, y
+  //    si ya está confirmado se le manda ahí. Con el mínimo viejo de 18h eso nunca
+  //    pasaba: cada turno se miraba una sola vez y se perdía para siempre.
+  //
+  // reminder_sent_at IS NULL evita duplicados (un solo recordatorio por turno).
+  // Sólo se recuerdan turnos CONFIRMADOS.
   const now = new Date()
-  const windowStart = new Date(now.getTime() + 18 * 60 * 60 * 1000).toISOString()
+  const windowStart = new Date(now.getTime() + 3 * 60 * 60 * 1000).toISOString()
   const windowEnd = new Date(now.getTime() + 42 * 60 * 60 * 1000).toISOString()
 
   const { data, error } = await admin
