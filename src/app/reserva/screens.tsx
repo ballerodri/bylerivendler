@@ -40,6 +40,18 @@ type ScreenProps = {
 const stepLabel = (n: number, label: string) =>
   `Paso ${String(n).padStart(2, "0")} — ${label}`
 
+// Fechas de sesión de pack ya elegidas (`packSlots`), depuradas:
+//  - nunca más que las sesiones que el pack ACTUAL tiene (si se cambió de
+//    pack a uno con menos sesiones, el estado viejo puede traer de más)
+//  - se corta en la primera fecha que ya no está en el futuro (las sesiones
+//    siguientes dependen de la anterior, así que también se descartan)
+function cleanPackSlots(raw: string[], sessionsTotal: number): string[] {
+  const clamped = raw.slice(0, sessionsTotal)
+  const now = Date.now()
+  const cut = clamped.findIndex((iso) => new Date(iso).getTime() <= now)
+  return cut === -1 ? clamped : clamped.slice(0, cut)
+}
+
 // Precio (pesos) y duración (min) efectivos de un servicio según el modo.
 // Para "per_zone", se calculan a partir de las zonas elegidas (zoneSel[s.id]);
 // para "fixed", se usan directamente s.price / s.duration.
@@ -84,10 +96,15 @@ export function Screen1Services({
   const selectedCombo = state.combo ?? null
   const selectedPack = state.pack ?? null
 
+  // Nota: cada handler que cambia qué se está comprando limpia `packSlots`
+  // (las fechas de sesión ya elegidas). Si no se limpiara, un pack viejo con
+  // más sesiones (o zonas, que cambian la duración) dejaría fechas "fantasma"
+  // que el paso de fecha intenta reusar y el servidor termina rechazando sin
+  // que la clienta pueda corregirlo (ver Screen2DateTime).
   const switchTab = (tab: string) => {
     if (tab !== COMBOS_TAB && tab !== PACKS_TAB && (selectedCombo || selectedPack)) {
       // Al cambiar a servicios individuales, limpiamos el combo y el pack
-      setState({ ...state, combo: null, pack: null, services: [], activeCat: tab })
+      setState({ ...state, combo: null, pack: null, services: [], activeCat: tab, packSlots: undefined })
     } else {
       setActiveCat(tab)
     }
@@ -96,19 +113,19 @@ export function Screen1Services({
 
   const toggleCombo = (c: Combo) => {
     if (selectedCombo?.id === c.id) {
-      setState({ ...state, combo: null, services: [] })
+      setState({ ...state, combo: null, services: [], packSlots: undefined })
     } else {
       // Elegir un combo limpia el pack (excluyente)
-      setState({ ...state, combo: c, services: c.services, pack: null })
+      setState({ ...state, combo: c, services: c.services, pack: null, packSlots: undefined })
     }
   }
 
   const togglePack = (p: ReservaPack) => {
     if (selectedPack?.pack.id === p.id) {
-      setState({ ...state, pack: null })
+      setState({ ...state, pack: null, packSlots: undefined })
     } else {
       // Elegir un pack limpia servicios sueltos y combo (excluyente)
-      setState({ ...state, pack: { pack: p, zoneIds: [] }, services: [], combo: null })
+      setState({ ...state, pack: { pack: p, zoneIds: [] }, services: [], combo: null, packSlots: undefined })
     }
   }
 
@@ -116,13 +133,15 @@ export function Screen1Services({
     if (!selectedPack) return
     const cur = selectedPack.zoneIds
     const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
-    setState({ ...state, pack: { ...selectedPack, zoneIds: next } })
+    // Cambiar las zonas cambia la duración de la sesión (pricingMode
+    // "per_zone"): las fechas ya elegidas podrían quedar superpuestas.
+    setState({ ...state, pack: { ...selectedPack, zoneIds: next }, packSlots: undefined })
   }
 
   const toggle = (svc: Service) => {
     const exists = selected.find((s) => s.id === svc.id)
     const next = exists ? selected.filter((s) => s.id !== svc.id) : [...selected, svc]
-    setState({ ...state, combo: null, pack: null, services: next, activeCat })
+    setState({ ...state, combo: null, pack: null, services: next, activeCat, packSlots: undefined })
   }
 
   // serviceId → zoneId[] elegidas (solo para servicios pricingMode === "per_zone")
@@ -579,6 +598,20 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, assignmentKey])
 
+  // Pack: al entrar a este paso, depurar `packSlots` (sesiones vencidas o de
+  // más si se cambió de pack — ver `cleanPackSlots`) para que la lista y el
+  // botón de continuar nunca muestren/envíen datos que el servidor va a
+  // rechazar. El hook corre siempre (regla de hooks); sólo actúa si hay pack.
+  useEffect(() => {
+    if (!selectedPack) return
+    const raw = state.packSlots ?? []
+    const cleaned = cleanPackSlots(raw, selectedPack.pack.sessions)
+    if (cleaned.length !== raw.length) {
+      setState({ ...state, packSlots: cleaned })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPack, state.packSlots])
+
   const selectSeqSlot = (result: import("./actions").SlotResult) => {
     const d = parseYmd(result.date)
     setViewYear(d.getFullYear())
@@ -912,7 +945,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // ── Pack: se eligen las fechas de las sesiones, no una sola ───────────────
   if (selectedPack) {
     const pack = selectedPack.pack
-    const picked = state.packSlots ?? []
+    // Defensa en profundidad: además del efecto de arriba (que ya depuró y
+    // persistió `state.packSlots`), nunca leemos/mostramos más sesiones de
+    // las que el pack actual tiene ni fechas que ya pasaron.
+    const picked = cleanPackSlots(state.packSlots ?? [], pack.sessions)
     const proHint = state.pro ?? "auto"
 
     const setSlot = (idx: number, iso: string) => {
@@ -928,14 +964,24 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       if (idx === 0) return null
       const prev = picked[idx - 1]
       if (!prev) return null
-      return minStartForNextSession(new Date(prev), pack.intervalDays)
+      const prevStart = new Date(prev)
+      const intervalMin = minStartForNextSession(prevStart, pack.intervalDays)
+      // Sin regla de intervalo (o con una más corta que la sesión), no
+      // ofrecer nunca un horario que empiece antes de que la sesión previa
+      // termine — si no, el picker deja elegir una sesión que se superpone
+      // consigo misma (el servidor la rechaza, pero recién en el pago).
+      const noOverlapMin = new Date(prevStart.getTime() + packDurationMin * 60_000)
+      return intervalMin.getTime() > noOverlapMin.getTime() ? intervalMin : noOverlapMin
     }
 
+    const backToList = () => setPickingIdx(null)
+
     if (pickingIdx !== null) {
-      return (
-        <div className="screen__body">
-          <h1 className="headline">Sesión {pickingIdx + 1} de {pack.sessions}</h1>
-          {pack.intervalDays && pickingIdx > 0 && (
+      const idx = pickingIdx
+      const PickerBody = () => (
+        <>
+          <h1 className="headline">Sesión {idx + 1} de {pack.sessions}</h1>
+          {pack.intervalDays && idx > 0 && (
             <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
               Tiene que haber al menos {pack.intervalDays} días desde la sesión anterior.
             </p>
@@ -944,16 +990,47 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             businessHours={businessHours}
             durationMin={packDurationMin}
             proHint={proHint}
-            minDate={minFor(pickingIdx)}
-            onPick={(iso) => setSlot(pickingIdx, iso)}
-            onCancel={() => setPickingIdx(null)}
+            minDate={minFor(idx)}
+            onPick={(iso) => setSlot(idx, iso)}
+            onCancel={backToList}
           />
+        </>
+      )
+      const PickerFooterCTA = () => (
+        <div className="footer">
+          <div className="footer__row">
+            <button className="btn--back" onClick={backToList}>
+              ← Atrás
+            </button>
+          </div>
+        </div>
+      )
+
+      if (variant === "desktop") {
+        return (
+          <div className="dmain">
+            <div className="dmain__inner">
+              {PickerBody()}
+            </div>
+            {PickerFooterCTA()}
+          </div>
+        )
+      }
+
+      return (
+        <div className="screen">
+          <TopBar onBack={backToList} onClose={onClose} />
+          <Progress step={stepNumber} total={totalSteps} />
+          <div className="screen__body">
+            {PickerBody()}
+          </div>
+          {PickerFooterCTA()}
         </div>
       )
     }
 
-    return (
-      <div className="screen__body">
+    const ListBody = () => (
+      <>
         <h1 className="headline">Tus <em>sesiones</em></h1>
         <p className="lede">
           {pack.name} · {pack.sessions} sesiones. Elegí al menos la primera; el resto lo podés
@@ -995,16 +1072,50 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             )
           })}
         </div>
+      </>
+    )
 
-        <button
-          className="btn btn--primary"
-          disabled={picked.length === 0}
-          onClick={onNext}
-        >
-          {picked.length === 0
-            ? "Elegí la fecha de la primera sesión"
-            : `Continuar (${picked.length} de ${pack.sessions} agendadas)`}
-        </button>
+    const ListFooterCTA = () => (
+      <div className="footer">
+        <div className="footer__row">
+          <button className="btn--back" onClick={onBack}>
+            ← Atrás
+          </button>
+          <button
+            className="btn btn--primary"
+            disabled={picked.length === 0}
+            onClick={onNext}
+          >
+            {picked.length === 0
+              ? "Elegí la fecha de la primera sesión"
+              : `Continuar (${picked.length} de ${pack.sessions} agendadas)`}
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
+      </div>
+    )
+
+    if (variant === "desktop") {
+      return (
+        <div className="dmain">
+          <div className="dmain__inner">
+            {ListBody()}
+          </div>
+          {ListFooterCTA()}
+        </div>
+      )
+    }
+
+    return (
+      <div className="screen">
+        <TopBar onBack={onBack} onClose={onClose} />
+        <Progress step={stepNumber} total={totalSteps} />
+        <div className="screen__body">
+          {ListBody()}
+        </div>
+        {ListFooterCTA()}
       </div>
     )
   }
@@ -1508,7 +1619,9 @@ export function Screen5Confirm({
   const effective = (s: Service) => effectiveService(s, zoneSel)
   const packZones = pack ? pack.pack.zones.filter((z) => pack.zoneIds.includes(z.id)) : []
   const packDurationMin = pack
-    ? (pack.pack.pricingMode === "per_zone" ? packZones.reduce((a, z) => a + z.durationMin, 0) : 0)
+    ? (pack.pack.pricingMode === "per_zone"
+        ? packZones.reduce((a, z) => a + z.durationMin, 0)
+        : pack.pack.serviceDurationMin)
     : 0
   const total = pack ? pack.pack.priceCents / 100 : combo ? combo.price : services.reduce((a, s) => a + effective(s).price, 0)
   const totalMin = pack ? packDurationMin : combo ? combo.duration : services.reduce((a, s) => a + effective(s).duration, 0)
@@ -1525,6 +1638,9 @@ export function Screen5Confirm({
   // Para packs, la fecha se eligió sesión por sesión (`packSlots`); acá
   // mostramos la de la 1ª sesión. `state.selectedDate/selectedTime` no se
   // usan en el flujo de pack (ver Screen2DateTime).
+  // Defensa en profundidad, igual que en Screen2DateTime: nunca mostrar más
+  // sesiones que las que el pack actual tiene (ver `cleanPackSlots`).
+  const packSlotsForDisplay = pack ? (state.packSlots ?? []).slice(0, pack.pack.sessions) : []
   const packFirstSlotAr = pack && state.packSlots?.[0] ? arPartsFromUtc(new Date(state.packSlots[0])) : null
   const dateObj = packFirstSlotAr
     ? parseYmd(packFirstSlotAr.dateStr)
@@ -1562,10 +1678,18 @@ export function Screen5Confirm({
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
       return
     }
-    setPaying(true)
-    setError(null)
 
     const startsAt = pack ? new Date(packSlotsPicked[0]) : combineDateTime(state.selectedDate!, state.selectedTime!)
+    if (Number.isNaN(startsAt.getTime())) {
+      // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
+      // abajo tira un RangeError después de `setPaying(true)` y el botón
+      // queda trabado en "Confirmando…" para siempre, sin mensaje.
+      setError("La fecha del turno no es válida. Volvé al paso de fecha y horario.")
+      return
+    }
+
+    setPaying(true)
+    setError(null)
 
     const result = await createBooking({
       serviceIds: services.map((s) => s.id),
@@ -1653,11 +1777,36 @@ export function Screen5Confirm({
         <div className="summary__row">
           <span className="summary__label">Cuándo</span>
           <div className="summary__value">
-            {dow} {dateObj && dateObj.getDate()} de{" "}
-            {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
-            <small>
-              {displayTime}hs · {fmtDuration(totalMin)}
-            </small>
+            {pack ? (
+              <div>
+                {packSlotsForDisplay.map((iso, i) => {
+                  const parts = arPartsFromUtc(new Date(iso))
+                  const d = parseYmd(parts.dateStr)
+                  const sessionDow = DOW_NAMES[(d.getDay() + 6) % 7]
+                  return (
+                    <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
+                      <strong>Sesión {i + 1}</strong>
+                      <small>
+                        {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs
+                      </small>
+                    </div>
+                  )
+                })}
+                {pack.pack.sessions > packSlotsForDisplay.length && (
+                  <small>
+                    {`${pack.pack.sessions - packSlotsForDisplay.length} sesión${pack.pack.sessions - packSlotsForDisplay.length > 1 ? "es" : ""} a agendar después`}
+                  </small>
+                )}
+              </div>
+            ) : (
+              <>
+                {dow} {dateObj && dateObj.getDate()} de{" "}
+                {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
+                <small>
+                  {displayTime}hs · {fmtDuration(totalMin)}
+                </small>
+              </>
+            )}
           </div>
         </div>
         {!isMultiResolved && (
