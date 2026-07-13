@@ -3,6 +3,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "./_components/status-actions"
+import PaidBadge from "./_components/paid-badge"
 import { fmtPrice } from "../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "./_components/whatsapp-button"
@@ -127,6 +128,7 @@ export default async function AdminTodayPage() {
                     {services}
                     {!staffProfile?.isProfessionalOnly && pros && ` · ${pros}`}
                     {" · "}{a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                    <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                   </div>
                 </div>
                 <div>

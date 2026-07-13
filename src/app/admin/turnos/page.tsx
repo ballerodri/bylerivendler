@@ -3,8 +3,8 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
+import PaidBadge from "../_components/paid-badge"
 import { fmtPrice } from "../../reserva/data"
-import { paymentSummary } from "@/lib/servicios/payments"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "../_components/whatsapp-button"
 
@@ -204,22 +204,7 @@ export default async function AdminTurnosPage({
                       ))}
                       <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
                         {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
-                        {a.total_cents > 0 && (() => {
-                          const p = paymentSummary(a.paid_cents, a.total_cents)
-                          return (
-                            <span
-                              style={{
-                                marginLeft: 8,
-                                fontSize: 12,
-                                color: p.isPaidInFull ? "#4d6b3e" : p.isUnpaid ? "#8c463c" : "var(--ink-mute)",
-                              }}
-                            >
-                              {p.isPaidInFull
-                                ? "· Pagado ✓"
-                                : `· Pagado ${fmtPrice(p.paidCents / 100)} de ${fmtPrice(p.totalCents / 100)}`}
-                            </span>
-                          )
-                        })()}
+                        <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                       </div>
                     </div>
                   ) : (
@@ -229,22 +214,7 @@ export default async function AdminTurnosPage({
                         <> · {svcItems[0].staff.full_name}</>
                       )}
                       {" · "}{a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
-                      {a.total_cents > 0 && (() => {
-                        const p = paymentSummary(a.paid_cents, a.total_cents)
-                        return (
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              fontSize: 12,
-                              color: p.isPaidInFull ? "#4d6b3e" : p.isUnpaid ? "#8c463c" : "var(--ink-mute)",
-                            }}
-                          >
-                            {p.isPaidInFull
-                              ? "· Pagado ✓"
-                              : `· Pagado ${fmtPrice(p.paidCents / 100)} de ${fmtPrice(p.totalCents / 100)}`}
-                          </span>
-                        )
-                      })()}
+                      <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                     </div>
                   )}
                 </div>

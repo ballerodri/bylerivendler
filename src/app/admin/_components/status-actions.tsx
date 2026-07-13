@@ -162,7 +162,7 @@ export default function StatusActions({
     if (nuevoTotal > totalCents) { setError(`Te pasás: el turno vale ${peso(totalCents)}`); return }
     const prevPaid = paidCents
     startTransition(async () => {
-      const r = await registrarPago(appointmentId, nuevoTotal)
+      const r = await registrarPago(appointmentId, nuevoTotal, prevPaid)
       if (r.ok) {
         setPayingOpen(false)
         setUndoTo(prevPaid)
@@ -177,7 +177,7 @@ export default function StatusActions({
     setError(null)
     const restore = undoTo
     startTransition(async () => {
-      const r = await registrarPago(appointmentId, restore)
+      const r = await registrarPago(appointmentId, restore, paidCents)
       if (r.ok) setUndoTo(null)
       else setError(r.error ?? "Error")
     })
@@ -195,7 +195,7 @@ export default function StatusActions({
     setError(null)
     const prevPaid = paidCents
     startTransition(async () => {
-      const r = await registrarPago(appointmentId, 0)
+      const r = await registrarPago(appointmentId, 0, prevPaid)
       if (r.ok) {
         setPayingOpen(false)
         setClearConfirm(false)

@@ -255,10 +255,17 @@ export async function deleteAppointment(
 /**
  * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
  * mueve): sólo anota lo efectivamente recibido.
+ *
+ * `expectedPaidCents` es lo que la pantalla que llama creía que ya estaba
+ * registrado. El update sólo aplica si la base de datos todavía está de
+ * acuerdo — si otra pantalla (otra pestaña, otro celular) ya cambió el
+ * cobro entre medio, se rechaza en vez de pisarlo. Un reintento de red del
+ * MISMO guardado (mismo `paidCents`) sigue siendo un éxito, no un error.
  */
 export async function registrarPago(
   appointmentId: string,
-  paidCents: number
+  paidCents: number,
+  expectedPaidCents: number
 ): Promise<{ ok: boolean; error?: string }> {
   await requireStaff()
   const admin = adminClient()
@@ -273,11 +280,24 @@ export async function registrarPago(
   const v = validatePayment(paidCents, appt.total_cents as number)
   if (!v.ok) return { ok: false, error: v.error }
 
-  const { error } = await admin
+  const { data: updated, error } = await admin
     .from("appointments")
     .update({ paid_cents: paidCents })
     .eq("id", appointmentId)
+    .eq("paid_cents", expectedPaidCents)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+
+  if (!updated?.length) {
+    // ¿Reintento de red del MISMO cobro? Entonces ya quedó guardado: es un éxito.
+    const { data: now } = await admin
+      .from("appointments")
+      .select("paid_cents")
+      .eq("id", appointmentId)
+      .maybeSingle()
+    if (now?.paid_cents === paidCents) return { ok: true }
+    return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a intentar." }
+  }
 
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
