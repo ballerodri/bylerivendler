@@ -32,9 +32,11 @@ export async function GET(req: NextRequest) {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  // Cron runs once daily at 09:00 UTC (06:00 Buenos Aires).
+  // Cron runs once daily at 12:00 UTC (09:00 Buenos Aires).
   // Window: 18h–42h from now → catches every appointment in the next day,
   // regardless of time. reminder_sent_at IS NULL prevents duplicates.
+  // Sólo se recuerdan turnos CONFIRMADOS: si sigue pendiente cuando corre el
+  // cron, no se manda recordatorio.
   const now = new Date()
   const windowStart = new Date(now.getTime() + 18 * 60 * 60 * 1000).toISOString()
   const windowEnd = new Date(now.getTime() + 42 * 60 * 60 * 1000).toISOString()
@@ -48,7 +50,7 @@ export async function GET(req: NextRequest) {
     )
     .gte("starts_at", windowStart)
     .lte("starts_at", windowEnd)
-    .in("status", ["pending", "confirmed"])
+    .eq("status", "confirmed")
     .is("reminder_sent_at", null)
 
   if (error) {
