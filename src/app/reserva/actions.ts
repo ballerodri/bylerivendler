@@ -119,14 +119,24 @@ async function rollbackSeparateAttempt(
     }
   }
   if (pointsToRefund > 0) {
-    const { data: c } = await supabase
+    const { data: c, error: readErr } = await supabase
       .from("clients")
       .select("loyalty_points")
       .eq("id", clientId)
       .maybeSingle()
+    // Si no pudimos LEER el saldo, NO escribimos: sumarle el reembolso a un
+    // saldo desconocido (que caería en 0) le borraría todos sus puntos.
+    // Preferimos avisarle que llame al salón antes que destruirle el saldo.
+    if (readErr || !c) {
+      return {
+        ok: false,
+        error:
+          "No pudimos completar tu reserva y tampoco confirmar la devolución de tus puntos. Por favor comunicate con el salón: no perdiste nada, lo resolvemos a mano.",
+      }
+    }
     await supabase
       .from("clients")
-      .update({ loyalty_points: ((c?.loyalty_points as number | null) ?? 0) + pointsToRefund })
+      .update({ loyalty_points: ((c.loyalty_points as number | null) ?? 0) + pointsToRefund })
       .eq("id", clientId)
   }
   return { ok: false, error: fallbackError }
@@ -480,10 +490,15 @@ export async function createBooking(
         error: `Te faltan ${totalPointsCost - balance} pts para canjear este turno.`,
       }
     }
-    await supabase
+    // Si el descuento falla, NO seguimos: si siguiéramos, la clienta se llevaría
+    // el turno gratis con los puntos intactos — y peor, en el modo "separados"
+    // un rollback posterior le SUMARÍA puntos que nunca gastó.
+    const { error: spendErr } = await supabase
       .from("clients")
       .update({ loyalty_points: balance - totalPointsCost })
       .eq("id", clientId)
+    if (spendErr)
+      return { ok: false, error: "No pudimos descontar tus puntos. Probá de nuevo en un momento." }
   }
 
   // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
