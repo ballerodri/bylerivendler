@@ -134,6 +134,7 @@ export default function StatusActions({
   const [payingOpen, setPayingOpen] = useState(false)
   const [payInput, setPayInput] = useState("")
   const [undoTo, setUndoTo] = useState<number | null>(null)
+  const [clearConfirm, setClearConfirm] = useState(false)
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
@@ -182,6 +183,29 @@ export default function StatusActions({
     })
   }
 
+  const closePaying = () => {
+    setPayingOpen(false)
+    setError(null)
+    setClearConfirm(false)
+  }
+
+  /** Corrige un cobro mal cargado: vuelve el registro a $0 para volver a
+   *  cargar el monto correcto. El total y el turno no se tocan. */
+  const clearPago = () => {
+    setError(null)
+    const prevPaid = paidCents
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, 0)
+      if (r.ok) {
+        setPayingOpen(false)
+        setClearConfirm(false)
+        setUndoTo(prevPaid)
+      } else {
+        setError(r.error ?? "Error")
+      }
+    })
+  }
+
   const actions = NEXT_ACTIONS[currentStatus] ?? []
   const isCompleted = currentStatus === "completed"
   const canReschedule = RESCHEDULABLE.has(currentStatus)
@@ -209,6 +233,20 @@ export default function StatusActions({
     const nuevoCents = parsePesosToCents(payInput)
     const nuevoTotal = nuevoCents === null ? null : paidCents + nuevoCents
     const seExcede = nuevoTotal !== null && nuevoTotal > totalCents
+
+    if (clearConfirm) {
+      return (
+        <>
+          <span style={{ fontSize: 12, color: "#8c463c", whiteSpace: "nowrap" }}>
+            ¿Borrar los {peso(paidCents)} ya registrados?
+          </span>
+          <button className="adm-btn adm-btn--danger" disabled={pending} onClick={clearPago}>Sí, borrar</button>
+          <button className="adm-btn" onClick={() => setClearConfirm(false)}>No</button>
+          {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+        </>
+      )
+    }
+
     return (
       <>
         {paidCents > 0 && (
@@ -222,7 +260,7 @@ export default function StatusActions({
         <input
           type="number"
           min="0"
-          step="500"
+          step="any"
           value={payInput}
           onChange={(e) => setPayInput(e.target.value)}
           className="adm-input"
@@ -235,7 +273,17 @@ export default function StatusActions({
           </span>
         )}
         <button className="adm-btn adm-btn--primary" disabled={pending || nuevoCents === null || seExcede} onClick={savePago}>Guardar</button>
-        <button className="adm-btn" onClick={() => setPayingOpen(false)}>Cancelar</button>
+        <button className="adm-btn" onClick={closePaying}>Cancelar</button>
+        {paidCents > 0 && (
+          <button
+            type="button"
+            className="adm-btn adm-btn--ghost"
+            disabled={pending}
+            onClick={() => setClearConfirm(true)}
+          >
+            Me equivoqué — borrar lo cobrado
+          </button>
+        )}
         {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
       </>
     )
@@ -306,7 +354,7 @@ export default function StatusActions({
             type="button"
             role="menuitem"
             disabled={pending}
-            onClick={() => { setPayInput(""); setPayingOpen(true) }}
+            onClick={() => { setPayInput(""); setClearConfirm(false); setPayingOpen(true) }}
           >
             Registrar pago
           </button>
