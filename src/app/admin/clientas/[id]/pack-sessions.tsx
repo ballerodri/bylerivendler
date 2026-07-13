@@ -12,6 +12,10 @@ export type PackPurchaseView = {
   sessionsTotal: number
   sessionsUsed: number
   durationMin: number
+  // Si no es null, no podemos calcular la duración de la próxima sesión
+  // (típicamente un pack de un servicio por zona vendido en persona, sin
+  // ninguna sesión creada todavía) y el picker no debe ofrecerse.
+  schedulingBlockedReason: string | null
   intervalDays: number | null
   sessions: { id: string; startsAt: string; status: string }[]
   lastStartsAt: string | null   // última sesión agendada (para el intervalo)
@@ -95,11 +99,17 @@ export default function PackSessions({
           />
         </div>
       ) : (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           {missing > 0 && (
-            <button className="adm-btn" disabled={pending} onClick={() => setPicking(true)}>
-              Agendar sesión
-            </button>
+            purchase.schedulingBlockedReason ? (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: 0 }}>
+                {purchase.schedulingBlockedReason}
+              </p>
+            ) : (
+              <button className="adm-btn" disabled={pending} onClick={() => setPicking(true)}>
+                Agendar sesión
+              </button>
+            )
           )}
           {pendingCount > 0 && (
             <button className="adm-btn adm-btn--primary" disabled={pending} onClick={confirmAll}>

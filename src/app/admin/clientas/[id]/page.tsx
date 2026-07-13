@@ -86,45 +86,64 @@ export default async function AdminClientDetailPage({
   const businessHours = await fetchBusinessHours()
 
   const purchaseIds = purchases.map((p) => p.id)
+  // Traemos los turnos del pack en CUALQUIER estado (incluidos cancelados):
+  // una sesión cancelada igual registró bien cuánto dura una sesión de este
+  // pack, y eso es lo único que nos permite calcular la duración cuando el
+  // servicio es "por zona" (ver duración más abajo). Para la lista visible
+  // de sesiones seguimos mostrando sólo las no canceladas.
   const { data: packApptsData } = purchaseIds.length
     ? await admin
         .from("appointments")
         .select("id, starts_at, status, duration_min, pack_purchase_id")
         .in("pack_purchase_id", purchaseIds)
-        .neq("status", "cancelled")
         .order("starts_at", { ascending: true })
     : { data: [] as { id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string }[] }
-  const packAppts = (packApptsData ?? []) as {
+  const packApptsAll = (packApptsData ?? []) as {
     id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string
   }[]
+  const packAppts = packApptsAll.filter((a) => a.status !== "cancelled")
 
-  // interval_days + duración del servicio de cada pack comprado
+  // interval_days + duración/modo de precio del servicio de cada pack comprado
   const { data: packMetaData } = await admin
     .from("pack_purchases")
-    .select("id, pack:packs(interval_days, service:services(duration_min))")
+    .select("id, pack:packs(interval_days, service:services(duration_min, pricing_mode))")
     .in("id", purchaseIds.length ? purchaseIds : ["00000000-0000-0000-0000-000000000000"])
   const packMeta = new Map(
     ((packMetaData ?? []) as unknown as {
       id: string
-      pack: { interval_days: number | null; service: { duration_min: number } | null } | null
+      pack: {
+        interval_days: number | null
+        service: { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
+      } | null
     }[]).map((m) => [m.id, m])
   )
+
+  const SCHEDULING_BLOCKED_REASON =
+    "No podemos calcular la duración: es un servicio por zona y este pack todavía no tiene ninguna sesión creada. Agendá la primera sesión desde \"Nueva reserva\", eligiendo las zonas, y después vas a poder usar \"Agendar sesión\" para el resto."
 
   const purchaseViews: PackPurchaseView[] = purchases.map((p) => {
     const sessions = packAppts
       .filter((a) => a.pack_purchase_id === p.id)
       .map((a) => ({ id: a.id, startsAt: a.starts_at, status: a.status }))
     const meta = packMeta.get(p.id)
+    const pricingMode = meta?.pack?.service?.pricing_mode ?? "fixed"
+    // Duración: la de CUALQUIER turno ya creado de este pack (aunque esté
+    // cancelado). Si no hay ninguno, sólo se puede confiar en la duración
+    // del servicio cuando es 'fixed' — para 'per_zone' no hay forma de
+    // saberla sin adivinar, así que queda sin resolver (null).
+    const anyAppt = packApptsAll.find((a) => a.pack_purchase_id === p.id)
+    const knownDuration =
+      anyAppt?.duration_min ??
+      (pricingMode === "fixed" ? meta?.pack?.service?.duration_min ?? null : null)
+    const durationMin = knownDuration && knownDuration > 0 ? knownDuration : 0
     return {
       id: p.id,
       packName: p.pack_name,
       serviceName: p.service_name,
       sessionsTotal: p.sessions_total,
       sessionsUsed: p.sessions_used,
-      durationMin:
-        packAppts.find((a) => a.pack_purchase_id === p.id)?.duration_min ??
-        meta?.pack?.service?.duration_min ??
-        0,
+      durationMin,
+      schedulingBlockedReason: durationMin > 0 ? null : SCHEDULING_BLOCKED_REASON,
       intervalDays: meta?.pack?.interval_days ?? null,
       sessions,
       lastStartsAt: sessions.length ? sessions[sessions.length - 1].startsAt : null,

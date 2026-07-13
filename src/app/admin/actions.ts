@@ -1297,30 +1297,66 @@ export async function schedulePackSession(
 
   const { data: pack } = await admin
     .from("packs")
-    .select("interval_days, service:services(duration_min)")
+    .select("interval_days, total_price_cents, service:services(duration_min, pricing_mode)")
     .eq("id", pp.pack_id)
     .maybeSingle()
   const intervalDays = (pack?.interval_days as number | null) ?? null
-  const svcDuration = ((pack?.service as unknown as { duration_min: number } | null)?.duration_min) ?? 0
+  const totalPriceCents = pack?.total_price_cents ?? 0
+  const svc = pack?.service as unknown as { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
+  const svcDuration = svc?.duration_min ?? 0
+  const pricingMode = svc?.pricing_mode ?? "fixed"
 
-  // Turnos ya agendados de este pack (no cancelados), en orden.
-  const { data: existing } = await admin
+  // Turnos de este pack en CUALQUIER estado (incluidos cancelados), con su
+  // instantánea de zonas y su precio. De acá salen tres cosas:
+  //  - la duración real de una sesión (Finding 1): una sesión cancelada
+  //    igual registró bien cuánto dura, así que sirve como referencia;
+  //  - si el pack YA tiene su precio puesto en algún turno (Finding 2):
+  //    cancelar un turno no le borra el total_cents, así que el precio
+  //    sigue "ocupado" ahí y no se vuelve a poner en otro;
+  //  - la instantánea de zonas a repetir en la nueva sesión (Finding 4).
+  const { data: allExisting } = await admin
     .from("appointments")
-    .select("id, starts_at, duration_min")
+    .select("id, starts_at, duration_min, status, total_cents, appointment_services(zones)")
     .eq("pack_purchase_id", packPurchaseId)
-    .neq("status", "cancelled")
     .order("starts_at", { ascending: true })
-  const rows = (existing ?? []) as { id: string; starts_at: string; duration_min: number }[]
+  type ExistingRow = {
+    id: string
+    starts_at: string
+    duration_min: number
+    status: string
+    total_cents: number
+    appointment_services: { zones: ZoneSnapshot[] | null }[]
+  }
+  const allRows = (allExisting ?? []) as unknown as ExistingRow[]
+  const rows = allRows.filter((r) => r.status !== "cancelled")
 
   if (rows.length >= pp.sessions_total)
     return { ok: false, error: "Este pack ya tiene todas sus sesiones agendadas." }
 
   const startsAt = new Date(startsAtIso)
   if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
+  if (startsAt.getTime() <= Date.now())
+    return { ok: false, error: "La sesión tiene que ser en una fecha futura." }
 
-  // Duración: la de las sesiones ya creadas (respeta las zonas del pack); si no
-  // hay ninguna, la del servicio.
-  const durationMin = rows[0]?.duration_min ?? svcDuration
+  // Duración: la de CUALQUIER sesión ya creada de este pack (ver arriba). Si
+  // no hay ninguna, sólo podemos confiar en la duración del servicio cuando
+  // es 'fixed' — un servicio 'per_zone' no tiene duración propia (depende de
+  // las zonas elegidas, y una venta en persona nunca las registra). Nunca
+  // hay que adivinar: hay que pedir que la primera sesión se cree desde
+  // "Nueva reserva", donde sí se eligen las zonas.
+  const reference = allRows[0]
+  let durationMin: number
+  if (reference) {
+    durationMin = reference.duration_min
+  } else if (pricingMode === "fixed") {
+    durationMin = svcDuration
+  } else {
+    return {
+      ok: false,
+      error:
+        "No podemos calcular la duración: es un servicio por zona y este pack todavía no tiene ninguna sesión creada. Agendá la primera sesión desde \"Nueva reserva\", eligiendo las zonas, y después usá \"Agendar sesión\" para el resto.",
+    }
+  }
   if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
 
   // Intervalo contra la sesión inmediatamente anterior (salvo override).
@@ -1333,10 +1369,30 @@ export async function schedulePackSession(
       return { ok: false, error: `Entre sesiones tienen que pasar al menos ${intervalDays} días.` }
   }
 
-  // Disponibilidad real.
-  const { dateStr, timeStr } = arPartsFromUtc(startsAt)
+  // Horario del negocio (mismo criterio que la compra online): la fecha
+  // elegida tiene que caer en un slot que el salón realmente atiende.
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startsAt)
+  const { data: bh } = await admin
+    .from("business_hours")
+    .select("is_open, slots")
+    .eq("day_of_week", dayOfWeek)
+    .maybeSingle()
+  if (!bh?.is_open || !bh.slots.includes(timeStr))
+    return { ok: false, error: "Ese horario está fuera del horario de atención." }
+
+  // Disponibilidad real (turnos ya existentes).
   const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
   if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
+
+  // El precio del pack aparece UNA sola vez entre todos sus turnos: si
+  // ninguno lo tiene todavía (venta en persona, sin turno "portador"), esta
+  // sesión lo lleva; si ya está en otro turno (venta online), va en 0 como
+  // siempre. NUNCA se usa packSessionPrices() acá: esa función reparte el
+  // precio de un LOTE nuevo (índice 0 = portador) y llamarla para agendar
+  // sesiones sueltas pondría el precio completo de nuevo, duplicándolo.
+  const priceAlreadyCarried = allRows.some((r) => r.total_cents > 0)
+  const sessionTotalCents = priceAlreadyCarried ? 0 : totalPriceCents
+  const zonesSnapshot = reference?.appointment_services?.[0]?.zones ?? null
 
   const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
   const endsAt = new Date(startsAt.getTime() + durationMin * 60_000)
@@ -1350,9 +1406,9 @@ export async function schedulePackSession(
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
       duration_min: durationMin,
-      total_cents: 0,          // el pack ya está pagado
+      total_cents: sessionTotalCents,
       deposit_cents: 0,
-      deposit_paid: true,
+      deposit_paid: true,     // el pack ya está pagado (online o en persona)
       status: "pending",
       source: "admin",
       pack_purchase_id: packPurchaseId,
@@ -1366,7 +1422,8 @@ export async function schedulePackSession(
     appointment_id: appt.id,
     service_id: pp.service_id,
     duration_min: durationMin,
-    price_cents: 0,
+    price_cents: sessionTotalCents,
+    zones: zonesSnapshot,
     staff_id: null,
     starts_at: startsAt.toISOString(),
   })
