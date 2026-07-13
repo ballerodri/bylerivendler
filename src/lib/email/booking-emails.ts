@@ -346,3 +346,47 @@ function escape(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
 }
+
+export async function sendPackConfirmation(data: {
+  to: string
+  firstName: string
+  packName: string
+  sessionsTotal: number
+  startsAtList: Date[]
+  totalCents: number
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) return { ok: false, error: "Resend no configurado" }
+
+  const subject = `Tu pack está reservado · ${data.packName}`
+  const missing = data.sessionsTotal - data.startsAtList.length
+
+  const rows = data.startsAtList
+    .map(
+      (d, i) =>
+        `<tr><td style="padding:6px 0;color:#7a6e64;font-size:13px;">Sesión ${i + 1}</td>` +
+        `<td style="padding:6px 0;text-align:right;font-size:13px;">${escape(fmtDateAR(d))}</td></tr>`
+    )
+    .join("")
+
+  const missingNote =
+    missing > 0
+      ? `<p style="font-size:13px;color:#7a6e64;">Te quedan <strong>${missing}</strong> sesión(es) por agendar. Coordinamos con vos para fijarlas.</p>`
+      : ""
+
+  const body = `
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Pack reservado</p>
+    <h1 style="font-family:Georgia,serif;font-size:22px;margin:0 0 16px;">${escape(data.packName)}</h1>
+    <p style="font-size:14px;margin:0 0 16px;">Hola ${escape(data.firstName)}, reservamos tu pack de ${data.sessionsTotal} sesiones.</p>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;">${rows}</table>
+    ${missingNote}
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">Total del pack: <strong>${fmtPrice(data.totalCents)}</strong></p>
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
+  `
+
+  try {
+    await resend.emails.send({ from: FROM, to: data.to, subject, html: shell(subject, body) })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Error al enviar" }
+  }
+}
