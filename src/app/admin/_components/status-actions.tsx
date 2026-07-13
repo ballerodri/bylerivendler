@@ -25,6 +25,20 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
 
 const RESCHEDULABLE = new Set(["pending", "confirmed"])
 
+/** Centavos → pesos para mostrar (mismo estilo que fmtPrice de reserva/data). */
+const peso = (cents: number) => "$" + (cents / 100).toLocaleString("es-AR")
+
+/**
+ * Pesos tecleados por la usuaria → centavos, redondeando (no truncando) para
+ * no perder los centavos de "1500.50". Null si no es un número válido.
+ */
+function parsePesosToCents(input: string): number | null {
+  if (input.trim() === "") return null
+  const pesos = parseFloat(input)
+  if (!Number.isFinite(pesos) || pesos < 0) return null
+  return Math.round(pesos * 100)
+}
+
 /** Menú "⋯" flotante para las acciones secundarias. Se dibuja con portal en
  *  <body> (posición fija) para que no lo recorte el overflow:hidden de la
  *  tarjeta; se cierra al hacer clic afuera, con Escape o al hacer scroll. */
@@ -119,10 +133,12 @@ export default function StatusActions({
   const [choosingPack, setChoosingPack] = useState(false)
   const [payingOpen, setPayingOpen] = useState(false)
   const [payInput, setPayInput] = useState("")
+  const [undoTo, setUndoTo] = useState<number | null>(null)
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
     setChoosingPack(false)
+    setUndoTo(null)
     startTransition(async () => {
       const r = await updateAppointmentStatus(appointmentId, status, packPurchaseId)
       if (!r.ok) setError(r.error ?? "Error")
@@ -139,11 +155,29 @@ export default function StatusActions({
 
   const savePago = () => {
     setError(null)
-    const pesos = parseInt(payInput, 10)
-    if (isNaN(pesos) || pesos < 0) { setError("Monto inválido"); return }
+    const nuevoCents = parsePesosToCents(payInput)
+    if (nuevoCents === null) { setError("Monto inválido"); return }
+    const nuevoTotal = paidCents + nuevoCents
+    if (nuevoTotal > totalCents) { setError(`Te pasás: el turno vale ${peso(totalCents)}`); return }
+    const prevPaid = paidCents
     startTransition(async () => {
-      const r = await registrarPago(appointmentId, pesos * 100)
-      if (r.ok) setPayingOpen(false)
+      const r = await registrarPago(appointmentId, nuevoTotal)
+      if (r.ok) {
+        setPayingOpen(false)
+        setUndoTo(prevPaid)
+      } else {
+        setError(r.error ?? "Error")
+      }
+    })
+  }
+
+  const undoPago = () => {
+    if (undoTo === null) return
+    setError(null)
+    const restore = undoTo
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, restore)
+      if (r.ok) setUndoTo(null)
       else setError(r.error ?? "Error")
     })
   }
@@ -172,19 +206,35 @@ export default function StatusActions({
   }
 
   if (payingOpen) {
+    const nuevoCents = parsePesosToCents(payInput)
+    const nuevoTotal = nuevoCents === null ? null : paidCents + nuevoCents
+    const seExcede = nuevoTotal !== null && nuevoTotal > totalCents
     return (
       <>
-        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>Cobrado $</span>
+        {paidCents > 0 && (
+          <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+            Ya registrado: {peso(paidCents)} de {peso(totalCents)}
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+          ¿Cuánto cobraste ahora? $
+        </span>
         <input
           type="number"
           min="0"
+          step="500"
           value={payInput}
           onChange={(e) => setPayInput(e.target.value)}
           className="adm-input"
           style={{ width: 100, fontSize: 13, textAlign: "right" }}
           autoFocus
         />
-        <button className="adm-btn adm-btn--primary" disabled={pending} onClick={savePago}>Guardar</button>
+        {nuevoTotal !== null && (
+          <span style={{ fontSize: 11, color: seExcede ? "#8c463c" : "var(--ink-mute)", whiteSpace: "nowrap" }}>
+            {seExcede ? `Te pasás: el turno vale ${peso(totalCents)}` : `Va a quedar: ${peso(nuevoTotal)} de ${peso(totalCents)}`}
+          </span>
+        )}
+        <button className="adm-btn adm-btn--primary" disabled={pending || nuevoCents === null || seExcede} onClick={savePago}>Guardar</button>
         <button className="adm-btn" onClick={() => setPayingOpen(false)}>Cancelar</button>
         {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
       </>
@@ -203,7 +253,7 @@ export default function StatusActions({
   }
 
   // Cantidad de ítems del menú (para decidir si abre hacia arriba).
-  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + 1 // +Eliminar
+  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + (totalCents > 0 ? 1 : 0) + 1 // +Eliminar
 
   return (
     <>
@@ -225,7 +275,7 @@ export default function StatusActions({
           disabled={pending}
           onClick={
             primaryAction.status === "completed" && matchingPacks.length > 0 && !packLinked
-              ? () => setChoosingPack(true)
+              ? () => { setUndoTo(null); setChoosingPack(true) }
               : () => change(primaryAction.status)
           }
         >
@@ -256,20 +306,29 @@ export default function StatusActions({
             type="button"
             role="menuitem"
             disabled={pending}
-            onClick={() => {
-              // Se pre-carga con lo que falta cobrar.
-              setPayInput(String(Math.round(Math.max(0, totalCents - paidCents) / 100)))
-              setPayingOpen(true)
-            }}
+            onClick={() => { setPayInput(""); setPayingOpen(true) }}
           >
             Registrar pago
           </button>
         )}
         {(secondaryActions.length > 0 || canReschedule) && <div className="adm-menu__sep" />}
-        <button type="button" role="menuitem" className="adm-menu__danger" disabled={pending} onClick={() => setConfirmDelete(true)}>
+        <button
+          type="button"
+          role="menuitem"
+          className="adm-menu__danger"
+          disabled={pending}
+          onClick={() => { setUndoTo(null); setConfirmDelete(true) }}
+        >
           Eliminar
         </button>
       </OverflowMenu>
+
+      {undoTo !== null && (
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+          Cobro registrado.{" "}
+          <button type="button" className="adm-btn" disabled={pending} onClick={undoPago}>Deshacer</button>
+        </span>
+      )}
 
       {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
     </>
