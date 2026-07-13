@@ -119,7 +119,7 @@ export default async function AdminClientDetailPage({
   )
 
   const SCHEDULING_BLOCKED_REASON =
-    "No podemos calcular la duración: es un servicio por zona y este pack todavía no tiene ninguna sesión creada. Agendá la primera sesión desde \"Nueva reserva\", eligiendo las zonas, y después vas a poder usar \"Agendar sesión\" para el resto."
+    "Este pack no se puede agendar desde acá todavía: es un servicio por zona y sus zonas nunca quedaron registradas (se vendió sin crear ninguna sesión). Comunicate con soporte, o agendalo como un turno común."
 
   const purchaseViews: PackPurchaseView[] = purchases.map((p) => {
     const sessions = packAppts

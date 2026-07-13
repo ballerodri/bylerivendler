@@ -139,7 +139,7 @@ export default async function AdminTodayPage() {
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
-                  <StatusActions appointmentId={a.id} currentStatus={a.status} />
+                  <StatusActions appointmentId={a.id} currentStatus={a.status} totalCents={a.total_cents} />
                 </div>
               </div>
             )

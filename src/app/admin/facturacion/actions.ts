@@ -76,6 +76,14 @@ export async function emitirFacturaTurno(
 
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
+  if (appt.total_cents <= 0) {
+    return {
+      ok: false,
+      error:
+        "Este turno es de $0 (es una sesión de un pack, ya cubierta por la factura del pack). No se puede emitir una factura por $0.",
+    }
+  }
+
   const { data: yaFacturada } = await admin
     .from("invoices")
     .select("id")

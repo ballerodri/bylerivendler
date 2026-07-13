@@ -101,11 +101,13 @@ function OverflowMenu({ itemCount, children }: { itemCount: number; children: Re
 export default function StatusActions({
   appointmentId,
   currentStatus,
+  totalCents,
   matchingPacks = [],
   packLinked = false,
 }: {
   appointmentId: string
   currentStatus: string
+  totalCents: number
   matchingPacks?: { id: string; label: string }[]
   packLinked?: boolean
 }) {
@@ -171,9 +173,13 @@ export default function StatusActions({
   return (
     <>
       {isCompleted ? (
-        <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
-          Facturar
-        </a>
+        totalCents > 0 ? (
+          <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
+            Facturar
+          </a>
+        ) : (
+          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>Cubierta por la factura del pack</span>
+        )
       ) : primaryAction ? (
         <button
           className={`adm-btn ${primaryAction.variant === "primary" ? "adm-btn--primary" : ""}`}

@@ -234,6 +234,7 @@ export default async function AdminTurnosPage({
                   <StatusActions
                     appointmentId={a.id}
                     currentStatus={a.status}
+                    totalCents={a.total_cents}
                     matchingPacks={packsForAppt(a)}
                     packLinked={!!a.pack_purchase_id}
                   />
