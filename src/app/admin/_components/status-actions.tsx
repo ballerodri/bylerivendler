@@ -178,7 +178,11 @@ export default function StatusActions({
             Facturar
           </a>
         ) : (
-          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>Cubierta por la factura del pack</span>
+          // Un turno en $0 puede ser una sesión de un pack (ya cubierta por su
+          // factura) o un canje con puntos del Programa Cerca. No confundirlos.
+          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+            {packLinked ? "Cubierta por la factura del pack" : "Turno en $0 — no se factura"}
+          </span>
         )
       ) : primaryAction ? (
         <button

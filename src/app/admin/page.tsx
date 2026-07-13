@@ -16,6 +16,7 @@ type ApptRow = {
   status: string
   duration_min: number
   total_cents: number
+  pack_purchase_id: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: { service: { name: string } | null; staff: { full_name: string } | null }[]
 }
@@ -53,7 +54,7 @@ export default async function AdminTodayPage() {
   let q = admin
     .from("appointments")
     .select(`
-      id, starts_at, ends_at, status, duration_min, total_cents,
+      id, starts_at, ends_at, status, duration_min, total_cents, pack_purchase_id,
       client:clients(id, first_name, last_name, phone),
       appointment_services(service:services(name), staff:staff(full_name))
     `)
@@ -139,7 +140,12 @@ export default async function AdminTodayPage() {
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
-                  <StatusActions appointmentId={a.id} currentStatus={a.status} totalCents={a.total_cents} />
+                  <StatusActions
+                    appointmentId={a.id}
+                    currentStatus={a.status}
+                    totalCents={a.total_cents}
+                    packLinked={!!a.pack_purchase_id}
+                  />
                 </div>
               </div>
             )
