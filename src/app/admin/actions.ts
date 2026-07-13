@@ -295,10 +295,12 @@ export async function registrarPago(
       .select("paid_cents")
       .eq("id", appointmentId)
       .maybeSingle()
-    if (now?.paid_cents === paidCents) return { ok: true }
-    return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a intentar." }
+    if (now?.paid_cents !== paidCents)
+      return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a intentar." }
   }
 
+  // También tras un reintento: la pantalla tiene que ver el monto real, o
+  // seguiría mostrando el viejo y un "Deshacer" desde ahí sería rechazado.
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
   revalidatePath("/admin/clientas")
