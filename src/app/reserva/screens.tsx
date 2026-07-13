@@ -177,7 +177,19 @@ export function Screen1Services({
     const next = single
       ? [zoneId] // producto: una sola opción, reemplaza la anterior
       : cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
-    setState({ ...state, zoneSelections: { ...zoneSel, [serviceId]: next } })
+    // La duración (y precio) de ESTE servicio cambió (pricingMode "per_zone"):
+    // la fecha que se había elegido para él en modo "separados" se eligió
+    // para otra duración y ya no vale. Las fechas de los OTROS servicios
+    // siguen siendo válidas, así que no tocamos todo `clearedResolution`
+    // (eso también borraría selectedDate/selectedTime del modo "juntos", que
+    // hoy se autocorrige solo vía el efecto de `assignmentKey`).
+    const slots = { ...(state.serviceSlots ?? {}) }
+    delete slots[serviceId]
+    setState({
+      ...state,
+      zoneSelections: { ...zoneSel, [serviceId]: next },
+      serviceSlots: Object.keys(slots).length ? slots : undefined,
+    })
   }
 
   const effective = (s: Service) => effectiveService(s, zoneSel)
@@ -565,14 +577,22 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const serviceStaff: Record<string, string> =
     state.serviceStaff ?? Object.fromEntries(state.services.map((s) => [s.id, "auto"]))
 
-  const updateServiceStaff = (serviceId: string, staffId: string) =>
+  const updateServiceStaff = (serviceId: string, staffId: string) => {
+    // El profesional de ESTE servicio cambió: la fecha que se había elegido
+    // para él en modo "separados" se ofreció según la disponibilidad de OTRO
+    // profesional y puede no valer para el nuevo. Las de los demás servicios
+    // siguen siendo válidas.
+    const slots = { ...(state.serviceSlots ?? {}) }
+    delete slots[serviceId]
     setState({
       ...state,
       serviceStaff: { ...serviceStaff, [serviceId]: staffId },
       selectedTime: null,
       serviceOrder: undefined,
       resolvedStaff: undefined,
+      serviceSlots: Object.keys(slots).length ? slots : undefined,
     })
+  }
 
   // Sequential availability result
   const [seqResult, setSeqResult] = useState<import("./actions").SequentialAvailabilityResult | null>(null)
@@ -884,13 +904,17 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   }
 
   const setMode = (m: "juntos" | "separados") => {
-    // Al cambiar de modo, lo elegido en el otro modo deja de valer.
+    // Al cambiar de modo, lo elegido en el otro modo deja de valer. Incluye
+    // `serviceStaff`: si el modo anterior auto-resolvió un profesional
+    // (ver `selectSeqSlot`), eso fue el algoritmo, no una preferencia de la
+    // clienta, y no debe seguir acotando la disponibilidad en el modo nuevo.
     setState({
       ...state,
       bookingMode: m,
       serviceSlots: undefined,
       serviceOrder: undefined,
       resolvedStaff: undefined,
+      serviceStaff: undefined,
       selectedDate: undefined,
       selectedTime: null,
     })
@@ -1282,6 +1306,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         <p className="lede">Elegí la fecha de cada servicio.</p>
 
         {ModeChooser()}
+        {ProPicker()}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
           {state.services.map((s) => {
@@ -1365,8 +1390,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           <p className="lede">
             Horario de Buenos Aires (GMT-3). Los días con punto dorado son hoy.
           </p>
+          {ModeChooser()}
           <div className="dcol-2">
-            {ModeChooser()}
             {Cal()}
             <div>
               {Slots()}
