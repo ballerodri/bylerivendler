@@ -14,6 +14,24 @@ import {
   slotToUtcMs,
   type BusinessHour,
 } from "../data"
+import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+
+/**
+ * De los slots candidatos de un día, cuáles quedan realmente disponibles:
+ * ni pasados/dentro del margen de antelación (`filterFutureSlots`) ni
+ * anteriores al corte EXACTO (fecha+hora) de `minDate` (la regla del
+ * intervalo entre sesiones). Usado tanto por el calendario (para decidir si
+ * un día se pinta disponible) como por el efecto que pide el detalle al
+ * servidor, para que ambos nunca puedan desalinearse.
+ *
+ * No contempla los turnos ya ocupados por otras reservas: eso requiere la
+ * ida y vuelta al servidor que hace el efecto.
+ */
+function allowedSlotsForDay(dateStr: string, daySlots: string[], minDate: Date | null): string[] {
+  const future = filterFutureSlots(dateStr, daySlots)
+  if (!minDate) return future
+  return future.filter((t) => slotToUtcMs(dateStr, t) >= minDate.getTime())
+}
 
 /**
  * Elige fecha y hora de UNA sesión de pack. Se usa al comprar el pack y desde
@@ -45,27 +63,25 @@ export default function PackSessionPicker({
   const [slots, setSlots] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
 
-  // El día mínimo permitido (por la regla del intervalo). Si no hay, hoy.
-  const minDay = (() => {
-    if (!minDate) return today
-    const d = new Date(minDate)
-    d.setHours(0, 0, 0, 0)
-    return d > today ? d : today
+  // El día mínimo permitido (por la regla del intervalo), como "YYYY-MM-DD"
+  // en hora de Argentina (fija UTC-3) — no en la zona horaria del navegador.
+  // Si no hay `minDate`, hoy.
+  const todayStr = ymd(today)
+  const minDayStr = (() => {
+    if (!minDate) return todayStr
+    const arDayStr = arPartsFromUtc(minDate).dateStr
+    return arDayStr > todayStr ? arDayStr : todayStr
   })()
 
   useEffect(() => {
     if (!selectedDate) { setSlots([]); return }
-    const candidates = filterFutureSlots(selectedDate, availability[selectedDate] ?? [])
+    const candidates = allowedSlotsForDay(selectedDate, availability[selectedDate] ?? [], minDate)
     if (!candidates.length) { setSlots([]); return }
     let cancelled = false
     setLoading(true)
     fetchDayAvailability(selectedDate, durationMin, proHint, candidates).then((free) => {
       if (cancelled) return
-      // Además del cupo, respetar el mínimo exacto (hora incluida) del intervalo.
-      const okByInterval = minDate
-        ? free.filter((t) => slotToUtcMs(selectedDate, t) >= minDate.getTime())
-        : free
-      setSlots(okByInterval)
+      setSlots(free)
       setLoading(false)
     })
     return () => { cancelled = true }
@@ -116,14 +132,13 @@ export default function PackSessionPicker({
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1
             const dateStr = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`
-            const dateObj = new Date(viewYear, viewMonth, day)
             const isSel = selectedDate === dateStr
             const isToday = dateStr === ymd(today)
-            const tooEarly = dateObj < minDay
+            const tooEarly = dateStr < minDayStr
             const hasSlots =
               !tooEarly &&
               !!availability[dateStr] &&
-              filterFutureSlots(dateStr, availability[dateStr]).length > 0
+              allowedSlotsForDay(dateStr, availability[dateStr], minDate).length > 0
             return (
               <button
                 key={day}
