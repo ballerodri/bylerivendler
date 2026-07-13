@@ -51,7 +51,9 @@ const VERSION_KEY = "blv_flow_version"
 // los clientes con estado viejo en localStorage no rompan el render.
 // v3: se quitó la ficha médica digital y el consentimiento de depilación del
 // flujo (pasan a un formulario en papel); cambia el orden de pantallas.
-const FLOW_VERSION = 3
+// v4: se agregó bookingMode/serviceSlots (modo "separados"); un estado viejo
+// no tiene esta forma.
+const FLOW_VERSION = 4
 
 function useVariant(): "mobile" | "desktop" {
   const [variant, setVariant] = useState<"mobile" | "desktop">("mobile")

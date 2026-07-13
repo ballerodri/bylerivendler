@@ -24,6 +24,7 @@ import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
+import { validateSeparateSlots } from "@/lib/servicios/multi-booking"
 
 type Variant = "mobile" | "desktop"
 
@@ -70,6 +71,15 @@ function effectiveService(
   }
 }
 
+// Modo separados: formatea la fecha/hora elegida de un servicio, en hora AR.
+function fmtSlotAR(iso: string): string {
+  return new Date(iso).toLocaleString("es-AR", {
+    weekday: "short", day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+    timeZone: "America/Argentina/Buenos_Aires",
+  })
+}
+
 // ---------- Screen 1: Services ----------
 const COMBOS_TAB = "__combos__"
 const PACKS_TAB = "__packs__"
@@ -109,6 +119,8 @@ export function Screen1Services({
   // asignarle un profesional que la clienta nunca eligió para eso.
   const clearedResolution = {
     packSlots: undefined,
+    serviceSlots: undefined,
+    bookingMode: undefined,
     serviceOrder: undefined,
     resolvedStaff: undefined,
     selectedDate: undefined,
@@ -569,12 +581,21 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const [waitlistDone, setWaitlistDone] = useState(false)
   // Pack: qué sesión se está eligiendo ahora mismo (null = mostrando la lista)
   const [pickingIdx, setPickingIdx] = useState<number | null>(null)
+  // Modo separados: qué servicio se está fechando ahora (null = mostrando la lista)
+  const [pickingServiceId, setPickingServiceId] = useState<string | null>(null)
 
   const zoneSel = state.zoneSelections ?? {}
 
   // Pack seleccionado (excluyente con servicios/combo): la disponibilidad se
   // consulta con el servicio del pack y la duración calculada por zonas.
   const selectedPack = state.pack ?? null
+
+  // Elegir "separados" sólo tiene sentido con 2+ servicios sueltos: un combo es
+  // un turno por definición, y un pack ya tiene su propia pantalla de fechas.
+  const canSeparate = !selectedPack && !state.combo && state.services.length >= 2
+  const bookingMode = canSeparate ? (state.bookingMode ?? "juntos") : "juntos"
+  const serviceSlots = state.serviceSlots ?? {}
+
   const packDurationMin = selectedPack
     ? (selectedPack.pack.pricingMode === "per_zone"
         ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
@@ -862,6 +883,56 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
+  const setMode = (m: "juntos" | "separados") => {
+    // Al cambiar de modo, lo elegido en el otro modo deja de valer.
+    setState({
+      ...state,
+      bookingMode: m,
+      serviceSlots: undefined,
+      serviceOrder: undefined,
+      resolvedStaff: undefined,
+      selectedDate: undefined,
+      selectedTime: null,
+    })
+    setPickingServiceId(null)
+  }
+
+  const ModeChooser = () =>
+    !canSeparate ? null : (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "0 0 20px" }}>
+        <strong style={{ fontFamily: "var(--serif)", fontSize: 15 }}>
+          Elegiste {state.services.length} servicios. ¿Cómo los querés?
+        </strong>
+        {([
+          { v: "juntos" as const, label: "El mismo día, uno después del otro", note: "Venís una sola vez" },
+          { v: "separados" as const, label: "Cada uno en su fecha y horario", note: "Elegís cuándo va cada uno" },
+        ]).map((o) => (
+          <label
+            key={o.v}
+            style={{
+              display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
+              padding: "12px 14px", borderRadius: 12, fontSize: 13,
+              border: `1px solid ${bookingMode === o.v ? "var(--nude)" : "var(--line)"}`,
+              background: bookingMode === o.v ? "var(--rose-wash)" : "transparent",
+            }}
+          >
+            <input
+              type="radio"
+              name="bookingMode"
+              checked={bookingMode === o.v}
+              onChange={() => setMode(o.v)}
+              style={{ width: 16, height: 16, accentColor: "#b68a5f" }}
+            />
+            <span style={{ flex: 1 }}>
+              <strong>{o.label}</strong>
+              <br />
+              <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    )
+
   const ProPicker = () => (
     <div style={{ marginTop: 24 }}>
       <p className="eyebrow">
@@ -1134,6 +1205,155 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
+  // ── Separados: cada servicio con SU fecha ─────────────────────────────────
+  if (bookingMode === "separados") {
+    const picking = pickingServiceId
+      ? state.services.find((s) => s.id === pickingServiceId) ?? null
+      : null
+
+    if (picking) {
+      const eff = effectiveService(picking, zoneSel)
+      const backToList = () => setPickingServiceId(null)
+
+      const PickerBody = () => (
+        <>
+          <h1 className="headline">{picking.name}</h1>
+          <p className="lede">Elegí cuándo querés este servicio.</p>
+          <PackSessionPicker
+            businessHours={businessHours}
+            durationMin={eff.duration}
+            proHint={serviceStaff[picking.id] ?? "auto"}
+            minDate={null}
+            onPick={(iso) => {
+              setState({ ...state, serviceSlots: { ...serviceSlots, [picking.id]: iso } })
+              setPickingServiceId(null)
+            }}
+            onCancel={backToList}
+          />
+        </>
+      )
+      const PickerFooterCTA = () => (
+        <div className="footer">
+          <div className="footer__row">
+            <button className="btn--back" onClick={backToList}>
+              ← Atrás
+            </button>
+          </div>
+        </div>
+      )
+
+      if (variant === "desktop") {
+        return (
+          <div className="dmain">
+            <div className="dmain__inner">{PickerBody()}</div>
+            {PickerFooterCTA()}
+          </div>
+        )
+      }
+
+      return (
+        <div className="screen">
+          <TopBar onBack={backToList} onClose={onClose} />
+          <Progress step={stepNumber} total={totalSteps} />
+          <div className="screen__body">{PickerBody()}</div>
+          {PickerFooterCTA()}
+        </div>
+      )
+    }
+
+    // Las fechas elegidas, validadas con la MISMA regla que el servidor.
+    const chosen = state.services
+      .filter((s) => serviceSlots[s.id])
+      .map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(serviceSlots[s.id]).getTime(),
+        durationMin: effectiveService(s, zoneSel).duration,
+        priceCents: Math.round(effectiveService(s, zoneSel).price * 100),
+      }))
+    const overlap =
+      chosen.length >= 2 ? validateSeparateSlots(chosen, Date.now()) : ({ ok: true } as const)
+    const allPicked = state.services.every((s) => serviceSlots[s.id])
+    const canContinue = allPicked && overlap.ok
+
+    const SepBody = () => (
+      <>
+        <h1 className="headline">Tus <em>turnos</em></h1>
+        <p className="lede">Elegí la fecha de cada servicio.</p>
+
+        {ModeChooser()}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
+          {state.services.map((s) => {
+            const iso = serviceSlots[s.id]
+            const eff = effectiveService(s, zoneSel)
+            return (
+              <div
+                key={s.id}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+                  borderRadius: 10,
+                }}
+              >
+                <span style={{ fontSize: 13 }}>
+                  <strong>{s.name}</strong> · {eff.duration} min
+                  <br />
+                  {iso ? (
+                    fmtSlotAR(iso)
+                  ) : (
+                    <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                  )}
+                </span>
+                <button className="btn" onClick={() => setPickingServiceId(s.id)}>
+                  {iso ? "Cambiar" : "Elegir fecha"}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+
+        {!overlap.ok && (
+          <p style={{ fontSize: 12, color: "#8c463c", margin: "0 0 8px" }}>{overlap.error}</p>
+        )}
+      </>
+    )
+
+    const SepFooterCTA = () => (
+      <div className="footer">
+        <div className="footer__row">
+          <button className="btn--back" onClick={onBack}>
+            ← Atrás
+          </button>
+          <button className="btn btn--primary" disabled={!canContinue} onClick={onNext}>
+            {!allPicked ? "Elegí la fecha de cada servicio" : "Continuar"}
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
+      </div>
+    )
+
+    if (variant === "desktop") {
+      return (
+        <div className="dmain">
+          <div className="dmain__inner">{SepBody()}</div>
+          {SepFooterCTA()}
+        </div>
+      )
+    }
+
+    return (
+      <div className="screen">
+        <TopBar onBack={onBack} onClose={onClose} />
+        <Progress step={stepNumber} total={totalSteps} />
+        <div className="screen__body">{SepBody()}</div>
+        {SepFooterCTA()}
+      </div>
+    )
+  }
+
   if (variant === "desktop") {
     return (
       <div className="dmain">
@@ -1146,6 +1366,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             Horario de Buenos Aires (GMT-3). Los días con punto dorado son hoy.
           </p>
           <div className="dcol-2">
+            {ModeChooser()}
             {Cal()}
             <div>
               {Slots()}
@@ -1171,6 +1392,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           Horario de Buenos Aires. Los días con turnos disponibles son
           seleccionables.
         </p>
+        {ModeChooser()}
         {Cal()}
         {Slots()}
         {ProPicker()}
