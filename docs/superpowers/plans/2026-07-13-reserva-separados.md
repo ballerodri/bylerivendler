@@ -267,7 +267,7 @@ export function validateSeparateSlots(
 - [ ] **Step 4: Correr los tests y verificar que pasan**
 
 Run: `npx vitest run src/lib/servicios/multi-booking.test.ts`
-Expected: PASS — **15 tests** (4 de `separateDeposits`, 3 de `totalDueNowSeparate`, 8 de `validateSeparateSlots`).
+Expected: PASS — **16 tests** (4 de `separateDeposits`, 3 de `totalDueNowSeparate`, 9 de `validateSeparateSlots`).
 
 Run: `npx tsc --noEmit`
 Expected: exit 0.
@@ -675,7 +675,7 @@ Ubicación **exacta**: dentro de `createBooking`, **después** del bloque `if (r
 - [ ] **Step 4: Verificar**
 
 Run: `npx tsc --noEmit && npx vitest run && npm run build`
-Expected: los tres en 0. Vitest: los 60 previos + 15 de Task 1 = **75**.
+Expected: los tres en 0. Vitest: los 60 previos + 16 de Task 1 = **76**.
 
 - [ ] **Step 5: Commit**
 
@@ -1319,7 +1319,7 @@ git commit -m "feat(separados): la confirmación suma una sola seña y crea los 
 ```bash
 npx tsc --noEmit && npx vitest run && npm run build && npx eslint src --quiet
 ```
-Expected: tsc 0, vitest **75** verdes, build 0, eslint **sin errores nuevos** respecto de `main` (main tiene 16 pre-existentes: compararlos, no contarlos).
+Expected: tsc 0, vitest **76** verdes, build 0, eslint **sin errores nuevos** respecto de `main` (main tiene 16 pre-existentes: compararlos, no contarlos).
 
 - [ ] **Step 2: Recorrido end-to-end en dev**
 
