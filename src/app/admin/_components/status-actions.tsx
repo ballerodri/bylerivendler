@@ -102,10 +102,12 @@ export default function StatusActions({
   appointmentId,
   currentStatus,
   matchingPacks = [],
+  packLinked = false,
 }: {
   appointmentId: string
   currentStatus: string
   matchingPacks?: { id: string; label: string }[]
+  packLinked?: boolean
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -177,7 +179,7 @@ export default function StatusActions({
           className={`adm-btn ${primaryAction.variant === "primary" ? "adm-btn--primary" : ""}`}
           disabled={pending}
           onClick={
-            primaryAction.status === "completed" && matchingPacks.length > 0
+            primaryAction.status === "completed" && matchingPacks.length > 0 && !packLinked
               ? () => setChoosingPack(true)
               : () => change(primaryAction.status)
           }

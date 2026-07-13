@@ -104,21 +104,28 @@ export async function updateAppointmentStatus(
   const enteringCompleted = parsed.data === "completed" && prev?.status !== "completed"
   const leavingCompleted = prev?.status === "completed" && parsed.data !== "completed"
 
-  if (enteringCompleted && packPurchaseId) {
-    const { data: pp } = await admin
-      .from("pack_purchases")
-      .select("sessions_total, sessions_used")
-      .eq("id", packPurchaseId)
-      .maybeSingle()
-    if (pp && pp.sessions_used < pp.sessions_total) {
-      await admin
+  if (enteringCompleted) {
+    // Un turno que YA nace de un pack (sesión pre-agendada) descuenta SOLO.
+    // Un turno suelto descuenta sólo si quien llama eligió un pack a mano.
+    const linkedId = prev?.pack_purchase_id ?? packPurchaseId ?? null
+    if (linkedId) {
+      const { data: pp } = await admin
         .from("pack_purchases")
-        .update({ sessions_used: pp.sessions_used + 1 })
-        .eq("id", packPurchaseId)
-      await admin
-        .from("appointments")
-        .update({ pack_purchase_id: packPurchaseId })
-        .eq("id", appointmentId)
+        .select("sessions_total, sessions_used")
+        .eq("id", linkedId)
+        .maybeSingle()
+      if (pp && pp.sessions_used < pp.sessions_total) {
+        await admin
+          .from("pack_purchases")
+          .update({ sessions_used: pp.sessions_used + 1 })
+          .eq("id", linkedId)
+        if (!prev?.pack_purchase_id) {
+          await admin
+            .from("appointments")
+            .update({ pack_purchase_id: linkedId })
+            .eq("id", appointmentId)
+        }
+      }
     }
   }
 
