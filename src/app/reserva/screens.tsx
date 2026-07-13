@@ -21,6 +21,8 @@ import { createBooking, saveClientEarly, fetchSequentialAvailability, joinWaitli
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
+import PackSessionPicker from "./_components/pack-session-picker"
+import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 
 type Variant = "mobile" | "desktop"
 
@@ -532,6 +534,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const [slotsLoading, setSlotsLoading] = useState(false)
   const [showWaitlist, setShowWaitlist] = useState(false)
   const [waitlistDone, setWaitlistDone] = useState(false)
+  // Pack: qué sesión se está eligiendo ahora mismo (null = mostrando la lista)
+  const [pickingIdx, setPickingIdx] = useState<number | null>(null)
 
   const zoneSel = state.zoneSelections ?? {}
 
@@ -904,6 +908,106 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       </div>
     </div>
   )
+
+  // ── Pack: se eligen las fechas de las sesiones, no una sola ───────────────
+  if (selectedPack) {
+    const pack = selectedPack.pack
+    const picked = state.packSlots ?? []
+    const proHint = state.pro ?? "auto"
+
+    const setSlot = (idx: number, iso: string) => {
+      const next = [...picked]
+      next[idx] = iso
+      setState({ ...state, packSlots: next.slice(0, idx + 1) }) // al cambiar una, se re-eligen las siguientes
+      setPickingIdx(null)
+    }
+    const clearFrom = (idx: number) =>
+      setState({ ...state, packSlots: picked.slice(0, idx) })
+
+    const minFor = (idx: number): Date | null => {
+      if (idx === 0) return null
+      const prev = picked[idx - 1]
+      if (!prev) return null
+      return minStartForNextSession(new Date(prev), pack.intervalDays)
+    }
+
+    if (pickingIdx !== null) {
+      return (
+        <div className="screen__body">
+          <h1 className="headline">Sesión {pickingIdx + 1} de {pack.sessions}</h1>
+          {pack.intervalDays && pickingIdx > 0 && (
+            <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
+              Tiene que haber al menos {pack.intervalDays} días desde la sesión anterior.
+            </p>
+          )}
+          <PackSessionPicker
+            businessHours={businessHours}
+            durationMin={packDurationMin}
+            proHint={proHint}
+            minDate={minFor(pickingIdx)}
+            onPick={(iso) => setSlot(pickingIdx, iso)}
+            onCancel={() => setPickingIdx(null)}
+          />
+        </div>
+      )
+    }
+
+    return (
+      <div className="screen__body">
+        <h1 className="headline">Tus <em>sesiones</em></h1>
+        <p className="lede">
+          {pack.name} · {pack.sessions} sesiones. Elegí al menos la primera; el resto lo podés
+          agendar después.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
+          {Array.from({ length: pack.sessions }).map((_, i) => {
+            const iso = picked[i]
+            const blocked = i > 0 && !picked[i - 1]   // no se puede elegir la 3ª sin la 2ª
+            return (
+              <div
+                key={i}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+                  borderRadius: 10, opacity: blocked ? 0.45 : 1,
+                }}
+              >
+                <span style={{ fontSize: 13 }}>
+                  <strong>Sesión {i + 1}</strong>{" "}
+                  {iso
+                    ? new Date(iso).toLocaleString("es-AR", {
+                        weekday: "short", day: "2-digit", month: "short",
+                        hour: "2-digit", minute: "2-digit", hour12: false,
+                        timeZone: "America/Argentina/Buenos_Aires",
+                      })
+                    : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
+                </span>
+                <span style={{ display: "flex", gap: 8 }}>
+                  <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
+                    {iso ? "Cambiar" : "Elegir fecha"}
+                  </button>
+                  {iso && i > 0 && (
+                    <button className="btn" onClick={() => clearFrom(i)}>Quitar</button>
+                  )}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        <button
+          className="btn btn--primary"
+          disabled={picked.length === 0}
+          onClick={onNext}
+        >
+          {picked.length === 0
+            ? "Elegí la fecha de la primera sesión"
+            : `Continuar (${picked.length} de ${pack.sessions} agendadas)`}
+        </button>
+      </div>
+    )
+  }
 
   if (variant === "desktop") {
     return (
@@ -1418,8 +1522,15 @@ export function Screen5Confirm({
     setState({ ...state, redeemWithPoints: v })
   }
 
-  const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
+  // Para packs, la fecha se eligió sesión por sesión (`packSlots`); acá
+  // mostramos la de la 1ª sesión. `state.selectedDate/selectedTime` no se
+  // usan en el flujo de pack (ver Screen2DateTime).
+  const packFirstSlotAr = pack && state.packSlots?.[0] ? arPartsFromUtc(new Date(state.packSlots[0])) : null
+  const dateObj = packFirstSlotAr
+    ? parseYmd(packFirstSlotAr.dateStr)
+    : (state.selectedDate ? parseYmd(state.selectedDate) : null)
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
+  const displayTime = packFirstSlotAr ? packFirstSlotAr.timeStr : state.selectedTime
   const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
 
   // Per-service schedule for multi-professional bookings
@@ -1443,14 +1554,18 @@ export function Screen5Confirm({
   const [error, setError] = useState<string | null>(null)
 
   const pay = async () => {
-    if (!state.form || !state.selectedDate || !state.selectedTime) {
+    // El pack elige sus fechas en `packSlots` (Screen2DateTime), no en
+    // `selectedDate/selectedTime` — sólo el flujo sin pack usa esos dos.
+    const packSlotsPicked = pack ? (state.packSlots ?? []) : []
+    const missingDate = pack ? packSlotsPicked.length === 0 : (!state.selectedDate || !state.selectedTime)
+    if (!state.form || missingDate) {
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
       return
     }
     setPaying(true)
     setError(null)
 
-    const startsAt = combineDateTime(state.selectedDate, state.selectedTime)
+    const startsAt = pack ? new Date(packSlotsPicked[0]) : combineDateTime(state.selectedDate!, state.selectedTime!)
 
     const result = await createBooking({
       serviceIds: services.map((s) => s.id),
@@ -1463,6 +1578,7 @@ export function Screen5Confirm({
       comboId: state.combo?.id,
       packId: state.pack?.pack.id,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
+      packSlots: state.pack ? (state.packSlots ?? []) : undefined,
       zoneSelections: Object.fromEntries(
         services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
       ),
@@ -1540,7 +1656,7 @@ export function Screen5Confirm({
             {dow} {dateObj && dateObj.getDate()} de{" "}
             {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
             <small>
-              {state.selectedTime}hs · {fmtDuration(totalMin)}
+              {displayTime}hs · {fmtDuration(totalMin)}
             </small>
           </div>
         </div>
