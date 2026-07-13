@@ -5,6 +5,8 @@ import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
+import PackSessions, { type PackPurchaseView } from "./pack-sessions"
+import { fetchBusinessHours } from "@/app/reserva/queries"
 
 export const dynamic = "force-dynamic"
 
@@ -81,6 +83,73 @@ export default async function AdminClientDetailPage({
     .order("created_at", { ascending: false })
   const purchases = (purchasesData ?? []) as PurchaseRow[]
 
+  const businessHours = await fetchBusinessHours()
+
+  const purchaseIds = purchases.map((p) => p.id)
+  // Traemos los turnos del pack en CUALQUIER estado (incluidos cancelados):
+  // una sesión cancelada igual registró bien cuánto dura una sesión de este
+  // pack, y eso es lo único que nos permite calcular la duración cuando el
+  // servicio es "por zona" (ver duración más abajo). Para la lista visible
+  // de sesiones seguimos mostrando sólo las no canceladas.
+  const { data: packApptsData } = purchaseIds.length
+    ? await admin
+        .from("appointments")
+        .select("id, starts_at, status, duration_min, pack_purchase_id")
+        .in("pack_purchase_id", purchaseIds)
+        .order("starts_at", { ascending: true })
+    : { data: [] as { id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string }[] }
+  const packApptsAll = (packApptsData ?? []) as {
+    id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string
+  }[]
+  const packAppts = packApptsAll.filter((a) => a.status !== "cancelled")
+
+  // interval_days + duración/modo de precio del servicio de cada pack comprado
+  const { data: packMetaData } = await admin
+    .from("pack_purchases")
+    .select("id, pack:packs(interval_days, service:services(duration_min, pricing_mode))")
+    .in("id", purchaseIds.length ? purchaseIds : ["00000000-0000-0000-0000-000000000000"])
+  const packMeta = new Map(
+    ((packMetaData ?? []) as unknown as {
+      id: string
+      pack: {
+        interval_days: number | null
+        service: { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
+      } | null
+    }[]).map((m) => [m.id, m])
+  )
+
+  const SCHEDULING_BLOCKED_REASON =
+    "Este pack no se puede agendar desde acá todavía: es un servicio por zona y sus zonas nunca quedaron registradas (se vendió sin crear ninguna sesión). Comunicate con soporte, o agendalo como un turno común."
+
+  const purchaseViews: PackPurchaseView[] = purchases.map((p) => {
+    const sessions = packAppts
+      .filter((a) => a.pack_purchase_id === p.id)
+      .map((a) => ({ id: a.id, startsAt: a.starts_at, status: a.status }))
+    const meta = packMeta.get(p.id)
+    const pricingMode = meta?.pack?.service?.pricing_mode ?? "fixed"
+    // Duración: la de CUALQUIER turno ya creado de este pack (aunque esté
+    // cancelado). Si no hay ninguno, sólo se puede confiar en la duración
+    // del servicio cuando es 'fixed' — para 'per_zone' no hay forma de
+    // saberla sin adivinar, así que queda sin resolver (null).
+    const anyAppt = packApptsAll.find((a) => a.pack_purchase_id === p.id)
+    const knownDuration =
+      anyAppt?.duration_min ??
+      (pricingMode === "fixed" ? meta?.pack?.service?.duration_min ?? null : null)
+    const durationMin = knownDuration && knownDuration > 0 ? knownDuration : 0
+    return {
+      id: p.id,
+      packName: p.pack_name,
+      serviceName: p.service_name,
+      sessionsTotal: p.sessions_total,
+      sessionsUsed: p.sessions_used,
+      durationMin,
+      schedulingBlockedReason: durationMin > 0 ? null : SCHEDULING_BLOCKED_REASON,
+      intervalDays: meta?.pack?.interval_days ?? null,
+      sessions,
+      lastStartsAt: sessions.length ? sessions[sessions.length - 1].startsAt : null,
+    }
+  })
+
   const { data: activePacksData } = await admin
     .from("packs")
     .select("id, name, sessions, total_price_cents")
@@ -154,19 +223,25 @@ export default async function AdminClientDetailPage({
             const remaining = p.sessions_total - p.sessions_used
             const done = remaining <= 0
             return (
-              <div key={p.id} className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
-                <div>
-                  <div className="adm-name">{p.pack_name}</div>
-                  <div className="adm-sub">{p.service_name}</div>
+              <div key={p.id}>
+                <div className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                  <div>
+                    <div className="adm-name">{p.pack_name}</div>
+                    <div className="adm-sub">{p.service_name}</div>
+                  </div>
+                  <div style={{ fontSize: 13, textAlign: "right" }}>
+                    usó {p.sessions_used} / quedan {Math.max(0, remaining)}
+                  </div>
+                  <div>
+                    <span className={`adm-pill ${done ? "adm-pill--inactive" : "adm-pill--active"}`}>
+                      {done ? "Completado" : "Activo"}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, textAlign: "right" }}>
-                  usó {p.sessions_used} / quedan {Math.max(0, remaining)}
-                </div>
-                <div>
-                  <span className={`adm-pill ${done ? "adm-pill--inactive" : "adm-pill--active"}`}>
-                    {done ? "Completado" : "Activo"}
-                  </span>
-                </div>
+                <PackSessions
+                  purchase={purchaseViews.find((v) => v.id === p.id)!}
+                  businessHours={businessHours}
+                />
               </div>
             )
           })

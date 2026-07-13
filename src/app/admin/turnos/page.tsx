@@ -21,6 +21,7 @@ type ApptRow = {
   status: string
   duration_min: number
   total_cents: number
+  pack_purchase_id: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: ApptService[]
 }
@@ -65,7 +66,7 @@ export default async function AdminTurnosPage({
 
   let q = admin.from("appointments").select(
     `
-      id, starts_at, status, duration_min, total_cents,
+      id, starts_at, status, duration_min, total_cents, pack_purchase_id,
       client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
@@ -230,7 +231,13 @@ export default async function AdminTurnosPage({
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
                   })()}
-                  <StatusActions appointmentId={a.id} currentStatus={a.status} matchingPacks={packsForAppt(a)} />
+                  <StatusActions
+                    appointmentId={a.id}
+                    currentStatus={a.status}
+                    totalCents={a.total_cents}
+                    matchingPacks={packsForAppt(a)}
+                    packLinked={!!a.pack_purchase_id}
+                  />
                 </div>
               </div>
             )

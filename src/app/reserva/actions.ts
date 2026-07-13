@@ -4,11 +4,12 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingConfirmation } from "@/lib/email/booking-emails"
+import { sendBookingConfirmation, sendPackConfirmation } from "@/lib/email/booking-emails"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
+import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -23,6 +24,7 @@ const BookingInput = z.object({
   zoneSelections: z.record(z.string().uuid(), z.array(z.string().uuid())).optional(),
   packId: z.string().uuid().optional(),
   packZoneIds: z.array(z.string().uuid()).optional(),
+  packSlots: z.array(z.string().datetime()).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -48,6 +50,35 @@ function adminClient() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
+}
+
+/**
+ * Deshace (todo o nada) los turnos de un pack creados hasta el momento de una
+ * falla a mitad de camino. `appointments.pack_purchase_id` tiene ON DELETE SET
+ * NULL, así que borrar `pack_purchases` SIEMPRE funciona aunque el borrado de
+ * los turnos haya fallado — por eso hay que chequear ese error a mano: si no
+ * pudimos borrar los turnos ya creados, NO borramos la compra del pack (queda
+ * enganchada y visible/recuperable en Admin) y le avisamos al cliente que no
+ * reintente solo, sino que se comunique con el salón.
+ */
+async function rollbackPackAttempt(
+  supabase: ReturnType<typeof adminClient>,
+  createdIds: string[],
+  purchaseId: string,
+  fallbackError: string
+): Promise<CreateBookingResult> {
+  if (createdIds.length) {
+    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
+    if (delErr) {
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tu pack y no pudimos deshacerlo por completo. Por favor comunicate con el salón para confirmar el estado de tu reserva antes de volver a intentar.",
+      }
+    }
+  }
+  await supabase.from("pack_purchases").delete().eq("id", purchaseId)
+  return { ok: false, error: fallbackError }
 }
 
 
@@ -188,7 +219,7 @@ export async function createBooking(
   if (input.packId) {
     const { data: pack } = await supabase
       .from("packs")
-      .select("id, name, sessions, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
+      .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
       .eq("id", input.packId)
       .eq("active", true)
       .eq("visible_reserva", true)
@@ -215,11 +246,58 @@ export async function createBooking(
       zonesSnapshot = p.zones
     }
 
-    const packStartsAt = new Date(input.startsAt)
-    const packEndsAt = new Date(packStartsAt.getTime() + firstDuration * 60_000)
-    const packDeposit = Math.round(pack.total_price_cents * 0.3)
+    // ── Fechas de las sesiones ────────────────────────────────────────────────
+    const rawSlots = (input.packSlots?.length ? input.packSlots : [input.startsAt])
+    const slotDates = rawSlots.map((s) => new Date(s))
+    if (slotDates.some((d) => isNaN(d.getTime())))
+      return { ok: false, error: "Alguna fecha del pack es inválida." }
 
-    // Crear la compra del pack
+    const nowMs = Date.now()
+    const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
+    if (pastIdx !== -1)
+      return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+
+    const rules = validatePackSlots(slotDates, {
+      sessionsTotal: pack.sessions,
+      intervalDays: pack.interval_days ?? null,
+    })
+    if (!rules.ok) return { ok: false, error: rules.error }
+
+    // Sala + staff (mismo criterio que el turno normal)
+    const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+    const packStaffId = input.resolvedStaff
+      ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
+      : (input.proHint !== "auto" ? input.proHint : null)
+    const packProHint = packStaffId ?? "auto"
+
+    // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
+    const { data: bhRows } = await supabase
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+    const bhByDow = new Map(
+      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+        .map((h) => [h.day_of_week, h])
+    )
+
+    for (let i = 0; i < slotDates.length; i++) {
+      // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
+      // recién más abajo), así que fetchDayAvailability no las puede ver entre
+      // sí. Sin una regla de intervalo (interval_days null) dos sesiones
+      // podrían quedar más cerca que la duración de la sesión y superponerse:
+      // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
+      if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
+        return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
+
+      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
+      const bh = bhByDow.get(dayOfWeek)
+      if (!bh?.is_open || !bh.slots.includes(timeStr))
+        return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
+      const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr])
+      if (!free.includes(timeStr))
+        return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
+    }
+
+    // ── Crear la compra del pack ──────────────────────────────────────────────
     const { data: purchase, error: purErr } = await supabase
       .from("pack_purchases")
       .insert({
@@ -235,68 +313,92 @@ export async function createBooking(
       .single()
     if (purErr || !purchase) return { ok: false, error: `No pudimos registrar el pack: ${purErr?.message}` }
 
-    // Sala + staff (mismo criterio que el turno normal)
-    const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
-    const packStaffId = input.resolvedStaff
-      ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
-      : (input.proHint !== "auto" ? input.proHint : null)
+    // ── Un turno por sesión elegida ───────────────────────────────────────────
+    const prices = packSessionPrices(pack.total_price_cents, slotDates.length)
+    const createdIds: string[] = []
 
-    const { data: packAppt, error: packApptErr } = await supabase
-      .from("appointments")
-      .insert({
-        client_id: clientId,
-        staff_id: packStaffId,
-        room_id: packRoom?.id ?? null,
-        starts_at: packStartsAt.toISOString(),
-        ends_at: packEndsAt.toISOString(),
+    for (let i = 0; i < slotDates.length; i++) {
+      const startsAt = slotDates[i]
+      const endsAt = new Date(startsAt.getTime() + firstDuration * 60_000)
+      const price = prices[i]
+
+      const { data: appt, error: apptErr } = await supabase
+        .from("appointments")
+        .insert({
+          client_id: clientId,
+          staff_id: packStaffId,
+          room_id: packRoom?.id ?? null,
+          starts_at: startsAt.toISOString(),
+          ends_at: endsAt.toISOString(),
+          duration_min: firstDuration,
+          total_cents: price.totalCents,
+          deposit_cents: price.depositCents,
+          deposit_paid: price.depositPaid,
+          status: "pending",
+          source: "web",
+          pack_purchase_id: purchase.id,
+          notes_internal: `Pack: ${pack.name} (sesión ${i + 1} de ${pack.sessions})`,
+        })
+        .select("id")
+        .single()
+
+      if (apptErr || !appt) {
+        // Todo o nada: deshacer lo creado hasta acá (ver rollbackPackAttempt).
+        return await rollbackPackAttempt(
+          supabase,
+          createdIds,
+          purchase.id,
+          `No pudimos crear la sesión ${i + 1}: ${apptErr?.message}`
+        )
+      }
+      createdIds.push(appt.id)
+
+      const { error: linkErr } = await supabase.from("appointment_services").insert({
+        appointment_id: appt.id,
+        service_id: svc.id,
         duration_min: firstDuration,
-        total_cents: pack.total_price_cents,
-        deposit_cents: packDeposit,
-        deposit_paid: false,
-        status: "pending",
-        source: "web",
-        pack_purchase_id: purchase.id,
-        notes_internal: `Pack: ${pack.name} (sesión 1 de ${pack.sessions})`,
+        price_cents: price.totalCents,
+        zones: zonesSnapshot,
+        staff_id: packStaffId,
+        starts_at: startsAt.toISOString(),
       })
-      .select("id")
-      .single()
-    if (packApptErr || !packAppt) return { ok: false, error: `Turno del pack: ${packApptErr?.message}` }
+      if (linkErr) {
+        return await rollbackPackAttempt(
+          supabase,
+          createdIds,
+          purchase.id,
+          `Servicio de la sesión ${i + 1}: ${linkErr.message}`
+        )
+      }
+    }
 
-    const { error: packLinkErr } = await supabase.from("appointment_services").insert({
-      appointment_id: packAppt.id,
-      service_id: svc.id,
-      duration_min: firstDuration,
-      price_cents: pack.total_price_cents,
-      zones: zonesSnapshot,
-      staff_id: packStaffId,
-      starts_at: packStartsAt.toISOString(),
-    })
-    if (packLinkErr) return { ok: false, error: `Servicio del turno: ${packLinkErr.message}` }
-
-    // Email de confirmación (best-effort, no bloqueante)
+    // ── Avisos (best-effort) ──────────────────────────────────────────────────
     try {
-      await sendBookingConfirmation({
+      await sendPackConfirmation({
         to: email,
         firstName: input.client.firstName.trim(),
-        servicesNames: [`${pack.name} (sesión 1 de ${pack.sessions})`],
-        startsAt: packStartsAt,
-        durationMin: firstDuration,
+        packName: pack.name,
+        sessionsTotal: pack.sessions,
+        startsAtList: slotDates,
         totalCents: pack.total_price_cents,
-        appointmentId: packAppt.id,
       })
     } catch {}
 
-    await notifyNewBooking(supabase, {
-      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-      clientPhone: input.client.phone,
-      servicesNames: [`${pack.name} (pack · ${pack.sessions} sesiones)`],
-      startsAt: packStartsAt,
-      durationMin: firstDuration,
-      totalCents: pack.total_price_cents,
-      assignedStaffIds: [packStaffId],
-    })
+    try {
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: [`${pack.name} (pack · ${slotDates.length} de ${pack.sessions} sesiones agendadas)`],
+        startsAt: slotDates[0],
+        durationMin: firstDuration,
+        totalCents: pack.total_price_cents,
+        assignedStaffIds: [packStaffId],
+      })
+    } catch {
+      // no bloqueante: el pack y sus turnos ya están confirmados.
+    }
 
-    return { ok: true, appointmentId: packAppt.id }
+    return { ok: true, appointmentId: createdIds[0] }
   }
 
   // 4) Default room (first active room)

@@ -101,11 +101,15 @@ function OverflowMenu({ itemCount, children }: { itemCount: number; children: Re
 export default function StatusActions({
   appointmentId,
   currentStatus,
+  totalCents,
   matchingPacks = [],
+  packLinked = false,
 }: {
   appointmentId: string
   currentStatus: string
+  totalCents: number
   matchingPacks?: { id: string; label: string }[]
+  packLinked?: boolean
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -169,15 +173,23 @@ export default function StatusActions({
   return (
     <>
       {isCompleted ? (
-        <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
-          Facturar
-        </a>
+        totalCents > 0 ? (
+          <a href={`/admin/turnos/${appointmentId}/facturar`} className="adm-btn adm-btn--primary">
+            Facturar
+          </a>
+        ) : (
+          // Un turno en $0 puede ser una sesión de un pack (ya cubierta por su
+          // factura) o un canje con puntos del Programa Cerca. No confundirlos.
+          <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+            {packLinked ? "Cubierta por la factura del pack" : "Turno en $0 — no se factura"}
+          </span>
+        )
       ) : primaryAction ? (
         <button
           className={`adm-btn ${primaryAction.variant === "primary" ? "adm-btn--primary" : ""}`}
           disabled={pending}
           onClick={
-            primaryAction.status === "completed" && matchingPacks.length > 0
+            primaryAction.status === "completed" && matchingPacks.length > 0 && !packLinked
               ? () => setChoosingPack(true)
               : () => change(primaryAction.status)
           }

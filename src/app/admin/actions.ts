@@ -9,6 +9,8 @@ import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
+import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { fetchDayAvailability } from "@/app/reserva/actions"
 
 const StatusSchema = z.enum([
   "pending",
@@ -38,6 +40,13 @@ function adminClient() {
   )
 }
 
+// "Vivo" = no cancelado ni no_show. Un turno cancelado/no_show no cuenta
+// como sesión ocupada del pack a efectos de plata (estadísticas ya los
+// excluye de la facturación) ni de superposición de horarios.
+function isAliveStatus(status: string): boolean {
+  return status !== "cancelled" && status !== "no_show"
+}
+
 export async function updateAppointmentStatus(
   appointmentId: string,
   status: string,
@@ -56,6 +65,42 @@ export async function updateAppointmentStatus(
     .select("status, client_id, google_event_id, pack_purchase_id")
     .eq("id", appointmentId)
     .maybeSingle()
+
+  // Reactivar (mover de cancelled/no_show hacia cualquier otro estado) un
+  // turno de un pack: si el pack ya tiene sessions_total turnos VIVOS sin
+  // contar este, reactivarlo le regalaría una sesión de más a la clienta
+  // (ya pagó por sessions_total nomás). Se rechaza acá, ANTES de tocar nada.
+  const wasDead = prev?.status === "cancelled" || prev?.status === "no_show"
+  const reactivating = wasDead && isAliveStatus(parsed.data)
+  if (reactivating && prev?.pack_purchase_id) {
+    const { data: pp } = await admin
+      .from("pack_purchases")
+      .select("sessions_total")
+      .eq("id", prev.pack_purchase_id)
+      .maybeSingle()
+    if (pp) {
+      const { count, error: countErr } = await admin
+        .from("appointments")
+        .select("id", { count: "exact", head: true })
+        .eq("pack_purchase_id", prev.pack_purchase_id)
+        .neq("id", appointmentId)
+        .not("status", "in", "(cancelled,no_show)")
+      // Fail closed: si no podemos leer cuántas sesiones vivas tiene el pack,
+      // no arriesgamos regalar una sesión de más — se rechaza la reactivación.
+      if (countErr) {
+        return {
+          ok: false,
+          error: "No pudimos verificar las sesiones de este pack. Probá de nuevo en un momento.",
+        }
+      }
+      if ((count ?? 0) >= pp.sessions_total) {
+        return {
+          ok: false,
+          error: "Este pack ya tiene agendadas todas sus sesiones pagas: no podés reactivar esta sin cancelar otra primero.",
+        }
+      }
+    }
+  }
 
   const { error } = await admin
     .from("appointments")
@@ -104,21 +149,28 @@ export async function updateAppointmentStatus(
   const enteringCompleted = parsed.data === "completed" && prev?.status !== "completed"
   const leavingCompleted = prev?.status === "completed" && parsed.data !== "completed"
 
-  if (enteringCompleted && packPurchaseId) {
-    const { data: pp } = await admin
-      .from("pack_purchases")
-      .select("sessions_total, sessions_used")
-      .eq("id", packPurchaseId)
-      .maybeSingle()
-    if (pp && pp.sessions_used < pp.sessions_total) {
-      await admin
+  if (enteringCompleted) {
+    // Un turno que YA nace de un pack (sesión pre-agendada) descuenta SOLO.
+    // Un turno suelto descuenta sólo si quien llama eligió un pack a mano.
+    const linkedId = prev?.pack_purchase_id ?? packPurchaseId ?? null
+    if (linkedId) {
+      const { data: pp } = await admin
         .from("pack_purchases")
-        .update({ sessions_used: pp.sessions_used + 1 })
-        .eq("id", packPurchaseId)
-      await admin
-        .from("appointments")
-        .update({ pack_purchase_id: packPurchaseId })
-        .eq("id", appointmentId)
+        .select("sessions_total, sessions_used")
+        .eq("id", linkedId)
+        .maybeSingle()
+      if (pp && pp.sessions_used < pp.sessions_total) {
+        await admin
+          .from("pack_purchases")
+          .update({ sessions_used: pp.sessions_used + 1 })
+          .eq("id", linkedId)
+        if (!prev?.pack_purchase_id) {
+          await admin
+            .from("appointments")
+            .update({ pack_purchase_id: linkedId })
+            .eq("id", appointmentId)
+        }
+      }
     }
   }
 
@@ -134,10 +186,11 @@ export async function updateAppointmentStatus(
         .update({ sessions_used: pp.sessions_used - 1 })
         .eq("id", prev.pack_purchase_id)
     }
-    await admin
-      .from("appointments")
-      .update({ pack_purchase_id: null })
-      .eq("id", appointmentId)
+    // NO se limpia pack_purchase_id: las sesiones de un pack nacen ligadas
+    // (se pre-crean al comprar el pack) y el vínculo es intrínseco al turno,
+    // esté completado o no. Si lo borráramos, la sesión desaparecería de la
+    // lista del pack y "sesiones por agendar" (total − ligadas) subiría,
+    // permitiendo agendar de más sobre lo pagado.
   }
 
   revalidatePath("/admin")
@@ -156,7 +209,7 @@ export async function deleteAppointment(
   // Borrar evento de Google Calendar si existe
   const { data: appt } = await admin
     .from("appointments")
-    .select("google_event_id, pack_purchase_id")
+    .select("google_event_id, pack_purchase_id, status")
     .eq("id", appointmentId)
     .maybeSingle()
   if (appt?.google_event_id) {
@@ -170,8 +223,14 @@ export async function deleteAppointment(
 
   if (error) return { ok: false, error: error.message }
 
-  // Devolver la sesión al pack si el turno tenía uno asignado
-  if (appt?.pack_purchase_id) {
+  // Devolver la sesión al pack SOLO si el turno llegó a consumirla (status
+  // "completed"). Las sesiones de un pack se pre-crean al comprar el pack,
+  // ya ligadas (pack_purchase_id) pero SIN haber descontado sessions_used
+  // todavía — eso pasa recién al completarse. Si devolviéramos la sesión
+  // por cualquier turno ligado sin importar su estado, borrar una sesión
+  // "pending" (nunca completada) le regalaría a la clienta una sesión que
+  // nunca gastó.
+  if (appt?.pack_purchase_id && appt.status === "completed") {
     const { data: pp } = await admin
       .from("pack_purchases")
       .select("sessions_used")
@@ -1256,4 +1315,217 @@ async function requireAdmin_action() {
   const { data: { user } } = await ssr.auth.getUser()
   if (!user) throw new Error("Sin sesión")
   await requireAdmin(user.id)
+}
+
+// ─── Sesiones de un pack ──────────────────────────────────────────────────────
+
+/**
+ * Agenda UNA sesión pendiente de un pack ya comprado. El turno va en 0 (el pack
+ * ya está pagado). El intervalo del pack se respeta salvo que se pida saltearlo.
+ */
+export async function schedulePackSession(
+  packPurchaseId: string,
+  startsAtIso: string,
+  opts?: { allowIntervalOverride?: boolean }
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pp } = await admin
+    .from("pack_purchases")
+    .select("id, client_id, pack_id, service_id, sessions_total")
+    .eq("id", packPurchaseId)
+    .maybeSingle()
+  if (!pp) return { ok: false, error: "No encontramos ese pack." }
+
+  const { data: pack } = await admin
+    .from("packs")
+    .select("interval_days, service:services(duration_min, pricing_mode)")
+    .eq("id", pp.pack_id)
+    .maybeSingle()
+  const intervalDays = (pack?.interval_days as number | null) ?? null
+  const svc = pack?.service as unknown as { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
+  const svcDuration = svc?.duration_min ?? 0
+  const pricingMode = svc?.pricing_mode ?? "fixed"
+
+  // Turnos de este pack en CUALQUIER estado (incluidos cancelados), con su
+  // instantánea de zonas. De acá salen dos cosas:
+  //  - la duración real de una sesión: una sesión cancelada igual registró
+  //    bien cuánto dura, así que sirve como referencia;
+  //  - la instantánea de zonas a repetir en la nueva sesión.
+  const { data: allExisting } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, appointment_services(zones)")
+    .eq("pack_purchase_id", packPurchaseId)
+    .order("starts_at", { ascending: true })
+  type ExistingRow = {
+    id: string
+    starts_at: string
+    duration_min: number
+    status: string
+    appointment_services: { zones: ZoneSnapshot[] | null }[]
+  }
+  const allRows = (allExisting ?? []) as unknown as ExistingRow[]
+  const rows = allRows.filter((r) => r.status !== "cancelled")
+
+  if (rows.length >= pp.sessions_total)
+    return { ok: false, error: "Este pack ya tiene todas sus sesiones agendadas." }
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
+  if (startsAt.getTime() <= Date.now())
+    return { ok: false, error: "La sesión tiene que ser en una fecha futura." }
+
+  // Duración: la de CUALQUIER sesión ya creada de este pack (ver arriba). Si
+  // no hay ninguna, sólo podemos confiar en la duración del servicio cuando
+  // es 'fixed' — un servicio 'per_zone' no tiene duración propia (depende de
+  // las zonas elegidas, y una venta en persona nunca las registra). Nunca
+  // hay que adivinar: hay que pedir que la primera sesión se cree desde
+  // "Nueva reserva", donde sí se eligen las zonas.
+  const reference = allRows[0]
+  let durationMin: number
+  if (reference) {
+    durationMin = reference.duration_min
+  } else if (pricingMode === "fixed") {
+    durationMin = svcDuration
+  } else {
+    return {
+      ok: false,
+      error:
+        "Este pack no se puede agendar desde acá todavía: es un servicio por zona y sus zonas nunca quedaron registradas (se vendió sin crear ninguna sesión). Comunicate con soporte, o agendalo como un turno común.",
+    }
+  }
+  if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
+
+  // Que esta sesión NO se superponga con ninguna otra sesión VIVA (no
+  // cancelada/no_show) de este MISMO pack. Independiente del chequeo de
+  // intervalo de abajo: aplica AUNQUE se tilde "Saltear el mínimo", que sólo
+  // excusa la regla de los N días entre sesiones, no el doble turno.
+  const aliveRows = allRows.filter((r) => isAliveStatus(r.status))
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + durationMin * 60_000
+  const conflict = aliveRows.find((r) => {
+    const rStart = new Date(r.starts_at).getTime()
+    const rEnd = rStart + r.duration_min * 60_000
+    return newStartMs < rEnd && newEndMs > rStart
+  })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    return {
+      ok: false,
+      error: `Ese horario se superpone con otra sesión de este mismo pack (${when}hs). Elegí otro horario.`,
+    }
+  }
+
+  // Intervalo contra la sesión inmediatamente anterior (salvo override).
+  if (!opts?.allowIntervalOverride && intervalDays && rows.length) {
+    const previous = rows
+      .map((r) => new Date(r.starts_at))
+      .filter((d) => d.getTime() < startsAt.getTime())
+      .sort((a, b) => b.getTime() - a.getTime())[0]
+    if (previous && startsAt.getTime() < minStartForNextSession(previous, intervalDays).getTime())
+      return { ok: false, error: `Entre sesiones tienen que pasar al menos ${intervalDays} días.` }
+  }
+
+  // Horario del negocio (mismo criterio que la compra online): la fecha
+  // elegida tiene que caer en un slot que el salón realmente atiende.
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startsAt)
+  const { data: bh } = await admin
+    .from("business_hours")
+    .select("is_open, slots")
+    .eq("day_of_week", dayOfWeek)
+    .maybeSingle()
+  if (!bh?.is_open || !bh.slots.includes(timeStr))
+    return { ok: false, error: "Ese horario está fuera del horario de atención." }
+
+  // Disponibilidad real (turnos ya existentes).
+  const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
+  if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
+
+  // Esta sesión es SIEMPRE $0: el pack ya está pagado por completo desde el
+  // momento de la compra (online, en el primer turno que crea `createBooking`
+  // vía `packSessionPrices`; en persona, en la Factura C que emite
+  // `venderPack`, sin turno asociado). Una sesión agendada después de la
+  // compra NUNCA es la portadora del precio: si lo fuera, completarla
+  // mostraría el botón "Facturar" y generaría una segunda Factura C
+  // irreversible para el mismo pack.
+  const zonesSnapshot = reference?.appointment_services?.[0]?.zones ?? null
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+  const endsAt = new Date(startsAt.getTime() + durationMin * 60_000)
+
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: pp.client_id,
+      staff_id: null,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      duration_min: durationMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,     // el pack ya está pagado (online o en persona)
+      status: "pending",
+      source: "admin",
+      pack_purchase_id: packPurchaseId,
+      notes_internal: `Pack: sesión ${rows.length + 1} de ${pp.sessions_total}`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos crear la sesión: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert({
+    appointment_id: appt.id,
+    service_id: pp.service_id,
+    duration_min: durationMin,
+    price_cents: 0,
+    zones: zonesSnapshot,
+    staff_id: null,
+    starts_at: startsAt.toISOString(),
+  })
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
+  }
+
+  revalidatePath(`/admin/clientas/${pp.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
+ * Confirma de una vez TODAS las sesiones pendientes de un pack (se usa después
+ * de verificar que la seña está pagada). No toca canceladas ni completadas.
+ */
+export async function confirmPackSessions(
+  packPurchaseId: string
+): Promise<{ ok: boolean; error?: string; confirmed?: number }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pending } = await admin
+    .from("appointments")
+    .select("id, client_id")
+    .eq("pack_purchase_id", packPurchaseId)
+    .eq("status", "pending")
+  const rows = (pending ?? []) as { id: string; client_id: string }[]
+  if (!rows.length) return { ok: true, confirmed: 0 }
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ status: "confirmed" })
+    .in("id", rows.map((r) => r.id))
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(`/admin/clientas/${rows[0].client_id}`)
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  return { ok: true, confirmed: rows.length }
 }

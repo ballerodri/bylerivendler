@@ -258,7 +258,7 @@ export function arPartsFromUtc(d: Date): { dateStr: string; timeStr: string; day
 - [ ] **Step 4: Correr los tests y verificar que pasan**
 
 Run: `npx vitest run src/lib/servicios/pack-sessions.test.ts`
-Expected: PASS — 12 tests.
+Expected: PASS — 16 tests.
 
 Run: `npx tsc --noEmit`
 Expected: exit 0, sin salida.
@@ -316,7 +316,16 @@ En `src/app/admin/actions.ts`, reemplazar el bloque que empieza en `if (entering
   }
 ```
 
-El bloque `if (leavingCompleted && prev?.pack_purchase_id)` queda **igual** (devuelve la sesión).
+**Corregido en revisión (el plan original decía "queda igual" — estaba mal):** el nuevo modelo
+rompe la invariante vieja `ligado ⟺ ya consumió una sesión`, porque las sesiones **nacen ligadas
+pero sin consumir**. Hay que arreglar dos lugares:
+
+1. En `leavingCompleted`: sigue devolviendo la sesión (`sessions_used--`), pero **ya no borra**
+   `pack_purchase_id`. El vínculo es **intrínseco** (la sesión pertenece al pack aunque se
+   des-complete); borrarlo la dejaba huérfana y hacía que el pack creyera que le falta agendar una.
+2. En `deleteAppointment`: sólo devuelve la sesión si el turno estaba **`completed`** (hay que
+   agregar `status` a su `select`). Antes devolvía siempre que hubiera `pack_purchase_id`, así que
+   borrar una sesión pendiente le **regalaba** una sesión a la clienta (5 pagando 4).
 
 - [ ] **Step 2: No ofrecer "¿Descontar de un pack?" si el turno ya viene de uno**
 
@@ -1490,7 +1499,7 @@ git commit -m "feat(packs): agendar sesiones pendientes y confirmar el pack de u
 ```bash
 npx tsc --noEmit && npx vitest run && npm run build
 ```
-Expected: los tres en 0. Vitest: 25 tests previos + 12 nuevos = 37.
+Expected: los tres en 0. Vitest: 25 tests previos + 16 nuevos = 41.
 
 - [ ] **Step 2: Recorrido end-to-end en dev**
 

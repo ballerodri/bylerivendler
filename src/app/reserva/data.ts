@@ -165,6 +165,7 @@ export type ReservaPack = {
   description: string
   priceCents: number
   sessions: number
+  intervalDays: number | null   // cada cuántos días va una sesión (null = sin regla)
   serviceId: string
   serviceName: string
   pricingMode: "fixed" | "per_zone"
@@ -186,6 +187,9 @@ export type BookingState = {
   serviceOrder?: string[]                 // service IDs in execution order (resolved)
   resolvedStaff?: Record<string, string>  // serviceId → actual staffId (resolved after slot pick)
   zoneSelections?: Record<string, string[]>  // serviceId → zoneId[] elegidas (solo pricingMode === "per_zone")
+  // Fechas elegidas de las sesiones del pack (ISO UTC, en orden). La [0] es la
+  // 1ª sesión (obligatoria); puede haber menos que sessions (el resto se agenda después).
+  packSlots?: string[]
   clientMode?: "new" | "existing"
   form?: ClientForm
   redeemWithPoints?: boolean

@@ -20,11 +20,25 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
 
   const { data: appt } = await admin
     .from("appointments")
-    .select(`total_cents, client:clients(first_name, last_name, dni, email), appointment_services(service:services(name))`)
+    .select(`total_cents, pack_purchase_id, client:clients(first_name, last_name, dni, email), appointment_services(service:services(name))`)
     .eq("id", appointmentId)
     .maybeSingle()
 
   if (!appt) return <p className="adm-lede">Turno no encontrado.</p>
+
+  if (appt.total_cents <= 0) {
+    return (
+      <>
+        <p className="adm-eyebrow">Facturación</p>
+        <h1 className="adm-h1">Facturar <em>turno</em></h1>
+        <p className="adm-lede">
+          {appt.pack_purchase_id
+            ? "Este turno es de $0 (es una sesión de un pack, ya cubierta por la factura del pack). No se puede emitir una factura por $0."
+            : "Este turno es de $0. No se puede emitir una factura por $0."}
+        </p>
+      </>
+    )
+  }
 
   const client = appt.client as unknown as { first_name: string; last_name: string; dni: string | null; email: string | null } | null
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]

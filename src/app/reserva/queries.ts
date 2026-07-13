@@ -261,6 +261,7 @@ type DbReservaPackRow = {
   total_price_cents: number
   sessions: number
   zones_count: number | null
+  interval_days: number | null
   service: {
     id: string
     name: string
@@ -275,7 +276,7 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
   const { data } = await supabase
     .from("packs")
     .select(`
-      id, name, description, total_price_cents, sessions, zones_count,
+      id, name, description, total_price_cents, sessions, zones_count, interval_days,
       service:services(id, name, pricing_mode, duration_min, service_zones(id, name, duration_min, active, order_index, price_cents))
     `)
     .eq("active", true)
@@ -291,6 +292,7 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
       description: p.description ?? "",
       priceCents: p.total_price_cents,
       sessions: p.sessions,
+      intervalDays: p.interval_days,
       serviceId: p.service!.id,
       serviceName: p.service!.name,
       pricingMode: p.service!.pricing_mode,
