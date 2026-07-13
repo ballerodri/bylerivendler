@@ -56,6 +56,13 @@ export type PackSessionPrice = { totalCents: number; depositCents: number; depos
  * Reparte el precio del pack entre sus turnos: la 1ª sesión lleva el precio
  * completo (con seña del 30%) y las demás van en 0 (ya vienen pagadas por el
  * pack). Así el pack se cuenta UNA sola vez en facturación/estadísticas.
+ *
+ * ⚠️ IMPORTANTE: se llama UNA sola vez por compra de pack, para el lote de
+ * sesiones que se crea en el momento de la compra (el índice 0 es el turno
+ * "portador" del precio completo). Una acción futura que agende las sesiones
+ * RESTANTES de un pack ya comprado NO debe llamar a esta función pasándole
+ * esas sesiones: su índice 0 pondría el precio completo del pack en una
+ * sesión posterior, cobrando el pack dos veces.
  */
 export function packSessionPrices(totalPriceCents: number, count: number): PackSessionPrice[] {
   return Array.from({ length: count }, (_, i) =>

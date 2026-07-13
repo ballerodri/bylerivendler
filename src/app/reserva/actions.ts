@@ -24,7 +24,7 @@ const BookingInput = z.object({
   zoneSelections: z.record(z.string().uuid(), z.array(z.string().uuid())).optional(),
   packId: z.string().uuid().optional(),
   packZoneIds: z.array(z.string().uuid()).optional(),
-  packSlots: z.array(z.string()).optional(),
+  packSlots: z.array(z.string().datetime()).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -50,6 +50,35 @@ function adminClient() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
+}
+
+/**
+ * Deshace (todo o nada) los turnos de un pack creados hasta el momento de una
+ * falla a mitad de camino. `appointments.pack_purchase_id` tiene ON DELETE SET
+ * NULL, así que borrar `pack_purchases` SIEMPRE funciona aunque el borrado de
+ * los turnos haya fallado — por eso hay que chequear ese error a mano: si no
+ * pudimos borrar los turnos ya creados, NO borramos la compra del pack (queda
+ * enganchada y visible/recuperable en Admin) y le avisamos al cliente que no
+ * reintente solo, sino que se comunique con el salón.
+ */
+async function rollbackPackAttempt(
+  supabase: ReturnType<typeof adminClient>,
+  createdIds: string[],
+  purchaseId: string,
+  fallbackError: string
+): Promise<CreateBookingResult> {
+  if (createdIds.length) {
+    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
+    if (delErr) {
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tu pack y no pudimos deshacerlo por completo. Por favor comunicate con el salón para confirmar el estado de tu reserva antes de volver a intentar.",
+      }
+    }
+  }
+  await supabase.from("pack_purchases").delete().eq("id", purchaseId)
+  return { ok: false, error: fallbackError }
 }
 
 
@@ -223,6 +252,11 @@ export async function createBooking(
     if (slotDates.some((d) => isNaN(d.getTime())))
       return { ok: false, error: "Alguna fecha del pack es inválida." }
 
+    const nowMs = Date.now()
+    const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
+    if (pastIdx !== -1)
+      return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+
     const rules = validatePackSlots(slotDates, {
       sessionsTotal: pack.sessions,
       intervalDays: pack.interval_days ?? null,
@@ -246,6 +280,14 @@ export async function createBooking(
     )
 
     for (let i = 0; i < slotDates.length; i++) {
+      // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
+      // recién más abajo), así que fetchDayAvailability no las puede ver entre
+      // sí. Sin una regla de intervalo (interval_days null) dos sesiones
+      // podrían quedar más cerca que la duración de la sesión y superponerse:
+      // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
+      if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
+        return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
+
       const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
       const bh = bhByDow.get(dayOfWeek)
       if (!bh?.is_open || !bh.slots.includes(timeStr))
@@ -301,11 +343,13 @@ export async function createBooking(
         .single()
 
       if (apptErr || !appt) {
-        // Todo o nada: deshacer lo creado hasta acá.
-        if (createdIds.length)
-          await supabase.from("appointments").delete().in("id", createdIds)
-        await supabase.from("pack_purchases").delete().eq("id", purchase.id)
-        return { ok: false, error: `No pudimos crear la sesión ${i + 1}: ${apptErr?.message}` }
+        // Todo o nada: deshacer lo creado hasta acá (ver rollbackPackAttempt).
+        return await rollbackPackAttempt(
+          supabase,
+          createdIds,
+          purchase.id,
+          `No pudimos crear la sesión ${i + 1}: ${apptErr?.message}`
+        )
       }
       createdIds.push(appt.id)
 
@@ -319,9 +363,12 @@ export async function createBooking(
         starts_at: startsAt.toISOString(),
       })
       if (linkErr) {
-        await supabase.from("appointments").delete().in("id", createdIds)
-        await supabase.from("pack_purchases").delete().eq("id", purchase.id)
-        return { ok: false, error: `Servicio de la sesión ${i + 1}: ${linkErr.message}` }
+        return await rollbackPackAttempt(
+          supabase,
+          createdIds,
+          purchase.id,
+          `Servicio de la sesión ${i + 1}: ${linkErr.message}`
+        )
       }
     }
 
@@ -337,15 +384,19 @@ export async function createBooking(
       })
     } catch {}
 
-    await notifyNewBooking(supabase, {
-      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-      clientPhone: input.client.phone,
-      servicesNames: [`${pack.name} (pack · ${slotDates.length} de ${pack.sessions} sesiones agendadas)`],
-      startsAt: slotDates[0],
-      durationMin: firstDuration,
-      totalCents: pack.total_price_cents,
-      assignedStaffIds: [packStaffId],
-    })
+    try {
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: [`${pack.name} (pack · ${slotDates.length} de ${pack.sessions} sesiones agendadas)`],
+        startsAt: slotDates[0],
+        durationMin: firstDuration,
+        totalCents: pack.total_price_cents,
+        assignedStaffIds: [packStaffId],
+      })
+    } catch {
+      // no bloqueante: el pack y sus turnos ya están confirmados.
+    }
 
     return { ok: true, appointmentId: createdIds[0] }
   }
