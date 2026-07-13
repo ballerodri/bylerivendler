@@ -5,6 +5,7 @@ import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
+import { validatePayment } from "@/lib/servicios/payments"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -248,6 +249,39 @@ export async function deleteAppointment(
   revalidatePath("/admin/turnos")
   revalidatePath("/admin/clientas")
   revalidatePath("/portal")
+  return { ok: true }
+}
+
+/**
+ * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
+ * mueve): sólo anota lo efectivamente recibido.
+ */
+export async function registrarPago(
+  appointmentId: string,
+  paidCents: number
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select("total_cents")
+    .eq("id", appointmentId)
+    .maybeSingle()
+  if (!appt) return { ok: false, error: "Turno no encontrado." }
+
+  const v = validatePayment(paidCents, appt.total_cents as number)
+  if (!v.ok) return { ok: false, error: v.error }
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ paid_cents: paidCents })
+    .eq("id", appointmentId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
   return { ok: true }
 }
 

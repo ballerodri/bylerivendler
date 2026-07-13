@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useTransition, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { updateAppointmentStatus, deleteAppointment } from "../actions"
+import { updateAppointmentStatus, deleteAppointment, registrarPago } from "../actions"
 
 const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: string }[]> = {
   pending: [
@@ -102,12 +102,14 @@ export default function StatusActions({
   appointmentId,
   currentStatus,
   totalCents,
+  paidCents,
   matchingPacks = [],
   packLinked = false,
 }: {
   appointmentId: string
   currentStatus: string
   totalCents: number
+  paidCents: number
   matchingPacks?: { id: string; label: string }[]
   packLinked?: boolean
 }) {
@@ -115,6 +117,8 @@ export default function StatusActions({
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [choosingPack, setChoosingPack] = useState(false)
+  const [payingOpen, setPayingOpen] = useState(false)
+  const [payInput, setPayInput] = useState("")
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
@@ -130,6 +134,17 @@ export default function StatusActions({
     startTransition(async () => {
       const r = await deleteAppointment(appointmentId)
       if (!r.ok) setError(r.error ?? "Error")
+    })
+  }
+
+  const savePago = () => {
+    setError(null)
+    const pesos = parseInt(payInput, 10)
+    if (isNaN(pesos) || pesos < 0) { setError("Monto inválido"); return }
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, pesos * 100)
+      if (r.ok) setPayingOpen(false)
+      else setError(r.error ?? "Error")
     })
   }
 
@@ -151,6 +166,26 @@ export default function StatusActions({
         ))}
         <button className="adm-btn" disabled={pending} onClick={() => change("completed")}>Sin pack</button>
         <button className="adm-btn" onClick={() => setChoosingPack(false)}>Volver</button>
+        {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+      </>
+    )
+  }
+
+  if (payingOpen) {
+    return (
+      <>
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>Cobrado $</span>
+        <input
+          type="number"
+          min="0"
+          value={payInput}
+          onChange={(e) => setPayInput(e.target.value)}
+          className="adm-input"
+          style={{ width: 100, fontSize: 13, textAlign: "right" }}
+          autoFocus
+        />
+        <button className="adm-btn adm-btn--primary" disabled={pending} onClick={savePago}>Guardar</button>
+        <button className="adm-btn" onClick={() => setPayingOpen(false)}>Cancelar</button>
         {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
       </>
     )
@@ -215,6 +250,20 @@ export default function StatusActions({
           <a role="menuitem" href={`/admin/turnos/${appointmentId}/reagendar`}>
             Reagendar
           </a>
+        )}
+        {totalCents > 0 && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={pending}
+            onClick={() => {
+              // Se pre-carga con lo que falta cobrar.
+              setPayInput(String(Math.round(Math.max(0, totalCents - paidCents) / 100)))
+              setPayingOpen(true)
+            }}
+          >
+            Registrar pago
+          </button>
         )}
         {(secondaryActions.length > 0 || canReschedule) && <div className="adm-menu__sep" />}
         <button type="button" role="menuitem" className="adm-menu__danger" disabled={pending} onClick={() => setConfirmDelete(true)}>
