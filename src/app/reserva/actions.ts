@@ -4,13 +4,14 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingConfirmation, sendPackConfirmation } from "@/lib/email/booking-emails"
+import { sendBookingConfirmation, sendPackConfirmation, sendMultiBookingConfirmation } from "@/lib/email/booking-emails"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
+import { validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -27,6 +28,11 @@ const BookingInput = z.object({
   packZoneIds: z.array(z.string().uuid()).optional(),
   packSlots: z.array(z.string().datetime()).optional(),
   payChoice: z.enum(["deposit", "full"]).optional(),
+  // Modo "separados": una fecha por servicio (serviceId → ISO). Si no viene,
+  // la reserva es la de siempre: UN turno con los servicios encadenados.
+  serviceSlots: z.record(z.string().uuid(), z.string().datetime()).optional(),
+  // Profesional preferida por servicio ("auto" o un staffId).
+  serviceStaff: z.record(z.string().uuid(), z.string()).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -43,7 +49,7 @@ const BookingInput = z.object({
 export type CreateBookingInput = z.infer<typeof BookingInput>
 
 export type CreateBookingResult =
-  | { ok: true; appointmentId: string }
+  | { ok: true; appointmentId: string; appointmentIds?: string[] }
   | { ok: false; error: string }
 
 function adminClient() {
@@ -80,6 +86,45 @@ async function rollbackPackAttempt(
     }
   }
   await supabase.from("pack_purchases").delete().eq("id", purchaseId)
+  return { ok: false, error: fallbackError }
+}
+
+/**
+ * Deshace (todo o nada) los turnos ya creados de una reserva "separados" que
+ * falló a mitad de camino. Si la clienta había canjeado con puntos, los puntos
+ * ya se descontaron ANTES de crear los turnos: se le devuelven, porque no se
+ * queda con ningún turno.
+ */
+async function rollbackSeparateAttempt(
+  supabase: ReturnType<typeof adminClient>,
+  createdIds: string[],
+  clientId: string,
+  pointsToRefund: number,
+  fallbackError: string
+): Promise<CreateBookingResult> {
+  if (createdIds.length) {
+    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
+    if (delErr) {
+      // No pudimos deshacer: quedan turnos sueltos en la agenda. Que NO
+      // reintente sola (duplicaría los turnos): que llame al salón.
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tus turnos y no pudimos deshacerlo por completo. Por favor comunicate con el salón para confirmar el estado de tu reserva antes de volver a intentar.",
+      }
+    }
+  }
+  if (pointsToRefund > 0) {
+    const { data: c } = await supabase
+      .from("clients")
+      .select("loyalty_points")
+      .eq("id", clientId)
+      .maybeSingle()
+    await supabase
+      .from("clients")
+      .update({ loyalty_points: ((c?.loyalty_points as number | null) ?? 0) + pointsToRefund })
+      .eq("id", clientId)
+  }
   return { ok: false, error: fallbackError }
 }
 
@@ -435,6 +480,212 @@ export async function createBooking(
       .from("clients")
       .update({ loyalty_points: balance - totalPointsCost })
       .eq("id", clientId)
+  }
+
+  // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
+  // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
+  // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
+  // sigue siendo UN turno, más abajo, exactamente como siempre.
+  if (input.serviceSlots && services.length >= 2 && !input.comboId) {
+    // En este modo las fechas son TODAS obligatorias.
+    if (services.some((s) => !input.serviceSlots![s.id]))
+      return { ok: false, error: "Elegí fecha y hora para cada servicio." }
+
+    const slots: SlotItem[] = services.map((s) => ({
+      serviceId: s.id,
+      name: s.name,
+      startsAtMs: new Date(input.serviceSlots![s.id]).getTime(),
+      durationMin: computed[s.id].durationMin,
+      priceCents: computed[s.id].priceCents,
+    }))
+
+    const rules = validateSeparateSlots(slots, Date.now())
+    if (!rules.ok) return { ok: false, error: rules.error }
+
+    // Revalidar CADA horario contra la disponibilidad real (autoritativo),
+    // con la duración y la profesional de ESE servicio.
+    const { data: bhRows } = await supabase
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+    const bhByDow = new Map(
+      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+        .map((h) => [h.day_of_week, h])
+    )
+
+    const hintFor = (serviceId: string) => {
+      const h = input.serviceStaff?.[serviceId] ?? input.proHint
+      return h && h !== "auto" ? h : "auto"
+    }
+
+    for (const s of slots) {
+      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(s.startsAtMs))
+      const bh = bhByDow.get(dayOfWeek)
+      if (!bh?.is_open || !bh.slots.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} ya no está disponible. Elegí otro.` }
+      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr])
+      if (!free.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
+    }
+
+    // ── Un turno por servicio ────────────────────────────────────────────────
+    const createdIds: string[] = []
+    const refund = redeem ? totalPointsCost : 0
+
+    for (const s of slots) {
+      const hint = hintFor(s.serviceId)
+      const staffId = hint !== "auto" ? hint : null
+      const sStart = new Date(s.startsAtMs)
+      const sEnd = new Date(s.startsAtMs + s.durationMin * 60_000)
+
+      const { data: a, error: aErr } = await supabase
+        .from("appointments")
+        .insert({
+          client_id: clientId,
+          staff_id: staffId,
+          room_id: room?.id ?? null,
+          starts_at: sStart.toISOString(),
+          ends_at: sEnd.toISOString(),
+          duration_min: s.durationMin,
+          // Cada turno lleva el precio de SU servicio y SU propia seña.
+          total_cents: redeem ? 0 : s.priceCents,
+          deposit_cents: redeem ? 0 : amountDueNow(s.priceCents, payChoice),
+          deposit_paid: redeem,
+          paid_cents: 0,
+          status: redeem ? "confirmed" : "pending",
+          source: "web",
+          notes_internal: redeem
+            ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
+            : null,
+        })
+        .select("id")
+        .single()
+
+      if (aErr || !a)
+        return await rollbackSeparateAttempt(
+          supabase, createdIds, clientId, refund,
+          `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
+        )
+      createdIds.push(a.id)
+
+      const { error: lErr } = await supabase.from("appointment_services").insert({
+        appointment_id: a.id,
+        service_id: s.serviceId,
+        duration_min: s.durationMin,
+        // El snapshot guarda lo que VALE el servicio aunque se haya canjeado
+        // (igual que en el camino normal).
+        price_cents: s.priceCents,
+        zones: computed[s.serviceId].zones,
+        staff_id: staffId,
+        starts_at: sStart.toISOString(),
+      })
+      if (lErr)
+        return await rollbackSeparateAttempt(
+          supabase, createdIds, clientId, refund,
+          `Servicio del turno de ${s.name}: ${lErr.message}`
+        )
+    }
+
+    // ── De acá para abajo, todo es best-effort: los turnos YA están creados ──
+    const ordered = [...slots].sort((a, b) => a.startsAtMs - b.startsAtMs)
+    const firstStart = new Date(ordered[0].startsAtMs)
+    const sumDuration = slots.reduce((a, s) => a + s.durationMin, 0)
+    const sumTotal = redeem ? 0 : slots.reduce((a, s) => a + s.priceCents, 0)
+    const dueNow = redeem
+      ? 0
+      : slots.reduce((a, s) => a + amountDueNow(s.priceCents, payChoice), 0)
+
+    // Google Calendar: un evento por turno.
+    for (let i = 0; i < createdIds.length; i++) {
+      try {
+        const s = slots[i]
+        const hint = hintFor(s.serviceId)
+        const staffId = hint !== "auto" ? hint : null
+        let staffName: string | null = null
+        let staffEmail: string | null = null
+        let staffColorId: string | null = null
+        if (staffId) {
+          const { data: staffRow } = await supabase
+            .from("staff")
+            .select("full_name, email, calendar_color_id")
+            .eq("id", staffId)
+            .maybeSingle()
+          staffName = staffRow?.full_name ?? null
+          staffEmail = staffRow?.email ?? null
+          staffColorId = (staffRow as { calendar_color_id?: string | null } | null)?.calendar_color_id ?? null
+        }
+        const eventId = await createCalendarEvent({
+          appointmentId: createdIds[i],
+          clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+          serviceNames: [s.name],
+          staffName,
+          staffEmail,
+          staffColorId,
+          startsAt: new Date(s.startsAtMs),
+          endsAt: new Date(s.startsAtMs + s.durationMin * 60_000),
+          notes: null,
+        })
+        if (eventId)
+          await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", createdIds[i])
+      } catch {
+        // Non-fatal: los turnos ya están creados.
+      }
+    }
+
+    // UN solo mail, con UNA sola seña.
+    try {
+      await sendMultiBookingConfirmation({
+        to: email,
+        firstName: input.client.firstName.trim(),
+        items: ordered.map((s) => ({ serviceName: s.name, startsAt: new Date(s.startsAtMs) })),
+        totalCents: sumTotal,
+        dueNowCents: dueNow,
+      })
+    } catch {
+      // ignore — la reserva ya está; el equipo puede reenviar manualmente.
+    }
+
+    // UN solo aviso al salón (no uno por turno).
+    try {
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: ordered.map((s) => s.name),
+        startsAt: firstStart,
+        durationMin: sumDuration,
+        totalCents: sumTotal,
+        assignedStaffIds: slots.map((s) => {
+          const h = hintFor(s.serviceId)
+          return h !== "auto" ? h : null
+        }),
+      })
+    } catch {
+      // ignore
+    }
+
+    if (!authUser && !alreadyLinked) {
+      try {
+        const h = await headers()
+        const proto = h.get("x-forwarded-proto") ?? "http"
+        const host = h.get("host")
+        const origin = `${proto}://${host}`
+        const plain = createClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          { auth: { persistSession: false, autoRefreshToken: false } }
+        )
+        await plain.auth.signInWithOtp({
+          email,
+          options: {
+            emailRedirectTo: `${origin}/auth/callback?next=/portal`,
+            shouldCreateUser: true,
+          },
+        })
+      } catch {
+        // ignore
+      }
+    }
+
+    return { ok: true, appointmentId: createdIds[0], appointmentIds: createdIds }
   }
 
   // 5) Determine main staff (first service's resolved pro, or proHint)
