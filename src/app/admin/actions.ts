@@ -141,10 +141,11 @@ export async function updateAppointmentStatus(
         .update({ sessions_used: pp.sessions_used - 1 })
         .eq("id", prev.pack_purchase_id)
     }
-    await admin
-      .from("appointments")
-      .update({ pack_purchase_id: null })
-      .eq("id", appointmentId)
+    // NO se limpia pack_purchase_id: las sesiones de un pack nacen ligadas
+    // (se pre-crean al comprar el pack) y el vínculo es intrínseco al turno,
+    // esté completado o no. Si lo borráramos, la sesión desaparecería de la
+    // lista del pack y "sesiones por agendar" (total − ligadas) subiría,
+    // permitiendo agendar de más sobre lo pagado.
   }
 
   revalidatePath("/admin")
@@ -163,7 +164,7 @@ export async function deleteAppointment(
   // Borrar evento de Google Calendar si existe
   const { data: appt } = await admin
     .from("appointments")
-    .select("google_event_id, pack_purchase_id")
+    .select("google_event_id, pack_purchase_id, status")
     .eq("id", appointmentId)
     .maybeSingle()
   if (appt?.google_event_id) {
@@ -177,8 +178,14 @@ export async function deleteAppointment(
 
   if (error) return { ok: false, error: error.message }
 
-  // Devolver la sesión al pack si el turno tenía uno asignado
-  if (appt?.pack_purchase_id) {
+  // Devolver la sesión al pack SOLO si el turno llegó a consumirla (status
+  // "completed"). Las sesiones de un pack se pre-crean al comprar el pack,
+  // ya ligadas (pack_purchase_id) pero SIN haber descontado sessions_used
+  // todavía — eso pasa recién al completarse. Si devolviéramos la sesión
+  // por cualquier turno ligado sin importar su estado, borrar una sesión
+  // "pending" (nunca completada) le regalaría a la clienta una sesión que
+  // nunca gastó.
+  if (appt?.pack_purchase_id && appt.status === "completed") {
     const { data: pp } = await admin
       .from("pack_purchases")
       .select("sessions_used")
