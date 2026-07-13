@@ -193,6 +193,8 @@ export type BookingState = {
   clientMode?: "new" | "existing"
   form?: ClientForm
   redeemWithPoints?: boolean
+  // Cuánto eligió pagar ahora: la seña (30%) o el total. Default: "deposit".
+  payChoice?: "deposit" | "full"
   savedClientId?: string
 }
 

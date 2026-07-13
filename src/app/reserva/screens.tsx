@@ -23,6 +23,7 @@ import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
+import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 
 type Variant = "mobile" | "desktop"
 
@@ -1641,8 +1642,15 @@ export function Screen5Confirm({
   const totalPointsCost = (pack || combo) ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
-  const deposit = redeeming ? 0 : Math.round(total * 0.3)
+  const payChoice: PayChoice = state.payChoice ?? "deposit"
+  // Se calcula en CENTAVOS, igual que el servidor, para que no haya diferencias
+  // de redondeo entre lo que ve la clienta y lo que se guarda.
+  const totalCents = Math.round(total * 100)
+  const depositCents = redeeming ? 0 : amountDueNow(totalCents, payChoice)
+  const deposit = depositCents / 100
   const remaining = redeeming ? 0 : total - deposit
+
+  const setPayChoice = (c: PayChoice) => setState({ ...state, payChoice: c })
 
   const toggleRedeem = (v: boolean) => {
     setState({ ...state, redeemWithPoints: v })
@@ -1723,6 +1731,7 @@ export function Screen5Confirm({
       serviceOrder: pack ? undefined : state.serviceOrder,
       resolvedStaff: pack ? undefined : state.resolvedStaff,
       redeemWithPoints: redeeming,
+      payChoice,
       savedClientId: state.savedClientId,
       comboId: state.combo?.id,
       packId: state.pack?.pack.id,
@@ -1762,8 +1771,9 @@ export function Screen5Confirm({
         Casi <em>listo</em>.
       </h1>
       <p className="lede">
-        Revisá los detalles. Te coordinamos el pago de la seña del 30% por
-        WhatsApp para dejar el turno confirmado.
+        {payChoice === "full"
+          ? "Revisá los detalles. Te coordinamos el pago del total por WhatsApp para dejar el turno confirmado."
+          : "Revisá los detalles. Te coordinamos el pago de la seña del 30% por WhatsApp para dejar el turno confirmado."}
       </p>
 
       <div className="summary">
@@ -1920,17 +1930,53 @@ export function Screen5Confirm({
           </>
         ) : (
           <>
-            <div className="breakdown__row">
-              <span>Resto a abonar en el local</span>
-              <span>{fmtPrice(remaining)}</span>
-            </div>
+            {remaining > 0 && (
+              <div className="breakdown__row">
+                <span>Resto a abonar en el local</span>
+                <span>{fmtPrice(remaining)}</span>
+              </div>
+            )}
             <div className="breakdown__row breakdown__row--total">
-              <span>Seña (30%) hoy</span>
+              <span>{payChoice === "full" ? "Total a pagar hoy" : "Seña (30%) hoy"}</span>
               <span>{fmtPrice(deposit)}</span>
             </div>
           </>
         )}
       </div>
+
+      {!redeeming && total > 0 && (
+        <div style={{ margin: "16px 0", display: "flex", flexDirection: "column", gap: 8 }}>
+          <strong style={{ fontFamily: "var(--serif)", fontSize: 15 }}>¿Cuánto vas a pagar ahora?</strong>
+          {([
+            { v: "deposit" as const, label: "La seña (30%)", note: "El resto lo abonás en el local" },
+            { v: "full" as const, label: "El total", note: "No debés nada al llegar" },
+          ]).map((o) => (
+            <label
+              key={o.v}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
+                padding: "12px 14px", borderRadius: 12, fontSize: 13,
+                border: `1px solid ${payChoice === o.v ? "var(--nude)" : "var(--line)"}`,
+                background: payChoice === o.v ? "var(--rose-wash)" : "transparent",
+              }}
+            >
+              <input
+                type="radio"
+                name="payChoice"
+                checked={payChoice === o.v}
+                onChange={() => setPayChoice(o.v)}
+                style={{ width: 16, height: 16, accentColor: "#b68a5f" }}
+              />
+              <span style={{ flex: 1 }}>
+                <strong>{o.label}</strong>
+                <br />
+                <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
+              </span>
+              <strong>{fmtPrice(amountDueNow(totalCents, o.v) / 100)}</strong>
+            </label>
+          ))}
+        </div>
+      )}
 
       {!redeeming && (
       <div
@@ -1939,7 +1985,7 @@ export function Screen5Confirm({
       >
         <div className="mp-text" style={{ fontSize: 13, lineHeight: 1.55 }}>
           <strong style={{ display: "block", marginBottom: 4, fontFamily: "var(--serif)", fontSize: 15 }}>
-            Seña por transferencia
+            {payChoice === "full" ? "Pago por transferencia" : "Seña por transferencia"}
           </strong>
           Alias <strong>leri.vendler</strong> · BBVA Argentina<br />
           A nombre de <strong>Vendler Daiana</strong>
@@ -1960,7 +2006,11 @@ export function Screen5Confirm({
           para confirmar tu turno.
           <br />
           <a
-            href={whatsappLink("Hola! Te paso el comprobante de la seña.")}
+            href={whatsappLink(
+              payChoice === "full"
+                ? "Hola! Te paso el comprobante del pago."
+                : "Hola! Te paso el comprobante de la seña."
+            )}
             target="_blank"
             rel="noopener noreferrer"
             style={{
@@ -2021,7 +2071,7 @@ export function Screen5Confirm({
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <div>
-            <div className="footer__summary">Seña</div>
+            <div className="footer__summary">{payChoice === "full" ? "Total" : "Seña"}</div>
             <div className="footer__total">{fmtPrice(deposit)}</div>
           </div>
           <button className="btn btn--primary" disabled={paying} onClick={pay}>

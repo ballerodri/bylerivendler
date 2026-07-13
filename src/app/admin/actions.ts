@@ -5,6 +5,7 @@ import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
+import { validatePayment } from "@/lib/servicios/payments"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -248,6 +249,61 @@ export async function deleteAppointment(
   revalidatePath("/admin/turnos")
   revalidatePath("/admin/clientas")
   revalidatePath("/portal")
+  return { ok: true }
+}
+
+/**
+ * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
+ * mueve): sólo anota lo efectivamente recibido.
+ *
+ * `expectedPaidCents` es lo que la pantalla que llama creía que ya estaba
+ * registrado. El update sólo aplica si la base de datos todavía está de
+ * acuerdo — si otra pantalla (otra pestaña, otro celular) ya cambió el
+ * cobro entre medio, se rechaza en vez de pisarlo. Un reintento de red del
+ * MISMO guardado (mismo `paidCents`) sigue siendo un éxito, no un error.
+ */
+export async function registrarPago(
+  appointmentId: string,
+  paidCents: number,
+  expectedPaidCents: number
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select("total_cents")
+    .eq("id", appointmentId)
+    .maybeSingle()
+  if (!appt) return { ok: false, error: "Turno no encontrado." }
+
+  const v = validatePayment(paidCents, appt.total_cents as number)
+  if (!v.ok) return { ok: false, error: v.error }
+
+  const { data: updated, error } = await admin
+    .from("appointments")
+    .update({ paid_cents: paidCents })
+    .eq("id", appointmentId)
+    .eq("paid_cents", expectedPaidCents)
+    .select("id")
+  if (error) return { ok: false, error: error.message }
+
+  if (!updated?.length) {
+    // ¿Reintento de red del MISMO cobro? Entonces ya quedó guardado: es un éxito.
+    const { data: now } = await admin
+      .from("appointments")
+      .select("paid_cents")
+      .eq("id", appointmentId)
+      .maybeSingle()
+    if (now?.paid_cents !== paidCents)
+      return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a intentar." }
+  }
+
+  // También tras un reintento: la pantalla tiene que ver el monto real, o
+  // seguiría mostrando el viejo y un "Deshacer" desde ahí sería rechazado.
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
   return { ok: true }
 }
 

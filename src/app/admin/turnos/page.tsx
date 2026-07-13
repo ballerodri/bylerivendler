@@ -3,6 +3,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
+import PaidBadge from "../_components/paid-badge"
 import { fmtPrice } from "../../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "../_components/whatsapp-button"
@@ -21,6 +22,7 @@ type ApptRow = {
   status: string
   duration_min: number
   total_cents: number
+  paid_cents: number
   pack_purchase_id: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: ApptService[]
@@ -66,7 +68,7 @@ export default async function AdminTurnosPage({
 
   let q = admin.from("appointments").select(
     `
-      id, starts_at, status, duration_min, total_cents, pack_purchase_id,
+      id, starts_at, status, duration_min, total_cents, paid_cents, pack_purchase_id,
       client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
@@ -202,6 +204,7 @@ export default async function AdminTurnosPage({
                       ))}
                       <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
                         {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
+                        <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                       </div>
                     </div>
                   ) : (
@@ -211,6 +214,7 @@ export default async function AdminTurnosPage({
                         <> · {svcItems[0].staff.full_name}</>
                       )}
                       {" · "}{a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
+                      <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                     </div>
                   )}
                 </div>
@@ -235,6 +239,7 @@ export default async function AdminTurnosPage({
                     appointmentId={a.id}
                     currentStatus={a.status}
                     totalCents={a.total_cents}
+                    paidCents={a.paid_cents}
                     matchingPacks={packsForAppt(a)}
                     packLinked={!!a.pack_purchase_id}
                   />

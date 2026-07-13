@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useTransition, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { updateAppointmentStatus, deleteAppointment } from "../actions"
+import { updateAppointmentStatus, deleteAppointment, registrarPago } from "../actions"
 
 const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: string }[]> = {
   pending: [
@@ -24,6 +24,20 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
 }
 
 const RESCHEDULABLE = new Set(["pending", "confirmed"])
+
+/** Centavos → pesos para mostrar (mismo estilo que fmtPrice de reserva/data). */
+const peso = (cents: number) => "$" + (cents / 100).toLocaleString("es-AR")
+
+/**
+ * Pesos tecleados por la usuaria → centavos, redondeando (no truncando) para
+ * no perder los centavos de "1500.50". Null si no es un número válido.
+ */
+function parsePesosToCents(input: string): number | null {
+  if (input.trim() === "") return null
+  const pesos = parseFloat(input)
+  if (!Number.isFinite(pesos) || pesos < 0) return null
+  return Math.round(pesos * 100)
+}
 
 /** Menú "⋯" flotante para las acciones secundarias. Se dibuja con portal en
  *  <body> (posición fija) para que no lo recorte el overflow:hidden de la
@@ -102,12 +116,14 @@ export default function StatusActions({
   appointmentId,
   currentStatus,
   totalCents,
+  paidCents,
   matchingPacks = [],
   packLinked = false,
 }: {
   appointmentId: string
   currentStatus: string
   totalCents: number
+  paidCents: number
   matchingPacks?: { id: string; label: string }[]
   packLinked?: boolean
 }) {
@@ -115,10 +131,15 @@ export default function StatusActions({
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [choosingPack, setChoosingPack] = useState(false)
+  const [payingOpen, setPayingOpen] = useState(false)
+  const [payInput, setPayInput] = useState("")
+  const [undoTo, setUndoTo] = useState<number | null>(null)
+  const [clearConfirm, setClearConfirm] = useState(false)
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
     setChoosingPack(false)
+    setUndoTo(null)
     startTransition(async () => {
       const r = await updateAppointmentStatus(appointmentId, status, packPurchaseId)
       if (!r.ok) setError(r.error ?? "Error")
@@ -130,6 +151,58 @@ export default function StatusActions({
     startTransition(async () => {
       const r = await deleteAppointment(appointmentId)
       if (!r.ok) setError(r.error ?? "Error")
+    })
+  }
+
+  const savePago = () => {
+    setError(null)
+    const nuevoCents = parsePesosToCents(payInput)
+    if (nuevoCents === null) { setError("Monto inválido"); return }
+    const nuevoTotal = paidCents + nuevoCents
+    if (nuevoTotal > totalCents) { setError(`Te pasás: el turno vale ${peso(totalCents)}`); return }
+    const prevPaid = paidCents
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, nuevoTotal, prevPaid)
+      if (r.ok) {
+        setPayingOpen(false)
+        setUndoTo(prevPaid)
+      } else {
+        setError(r.error ?? "Error")
+      }
+    })
+  }
+
+  const undoPago = () => {
+    if (undoTo === null) return
+    setError(null)
+    const restore = undoTo
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, restore, paidCents)
+      if (r.ok) setUndoTo(null)
+      else setError(r.error ?? "Error")
+    })
+  }
+
+  const closePaying = () => {
+    setPayingOpen(false)
+    setError(null)
+    setClearConfirm(false)
+  }
+
+  /** Corrige un cobro mal cargado: vuelve el registro a $0 para volver a
+   *  cargar el monto correcto. El total y el turno no se tocan. */
+  const clearPago = () => {
+    setError(null)
+    const prevPaid = paidCents
+    startTransition(async () => {
+      const r = await registrarPago(appointmentId, 0, prevPaid)
+      if (r.ok) {
+        setPayingOpen(false)
+        setClearConfirm(false)
+        setUndoTo(prevPaid)
+      } else {
+        setError(r.error ?? "Error")
+      }
     })
   }
 
@@ -156,6 +229,66 @@ export default function StatusActions({
     )
   }
 
+  if (payingOpen) {
+    const nuevoCents = parsePesosToCents(payInput)
+    const nuevoTotal = nuevoCents === null ? null : paidCents + nuevoCents
+    const seExcede = nuevoTotal !== null && nuevoTotal > totalCents
+
+    if (clearConfirm) {
+      return (
+        <>
+          <span style={{ fontSize: 12, color: "#8c463c", whiteSpace: "nowrap" }}>
+            ¿Borrar los {peso(paidCents)} ya registrados?
+          </span>
+          <button className="adm-btn adm-btn--danger" disabled={pending} onClick={clearPago}>Sí, borrar</button>
+          <button className="adm-btn" onClick={() => setClearConfirm(false)}>No</button>
+          {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+        </>
+      )
+    }
+
+    return (
+      <>
+        {paidCents > 0 && (
+          <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+            Ya registrado: {peso(paidCents)} de {peso(totalCents)}
+          </span>
+        )}
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+          ¿Cuánto cobraste ahora? $
+        </span>
+        <input
+          type="number"
+          min="0"
+          step="any"
+          value={payInput}
+          onChange={(e) => setPayInput(e.target.value)}
+          className="adm-input"
+          style={{ width: 100, fontSize: 13, textAlign: "right" }}
+          autoFocus
+        />
+        {nuevoTotal !== null && (
+          <span style={{ fontSize: 11, color: seExcede ? "#8c463c" : "var(--ink-mute)", whiteSpace: "nowrap" }}>
+            {seExcede ? `Te pasás: el turno vale ${peso(totalCents)}` : `Va a quedar: ${peso(nuevoTotal)} de ${peso(totalCents)}`}
+          </span>
+        )}
+        <button className="adm-btn adm-btn--primary" disabled={pending || nuevoCents === null || seExcede} onClick={savePago}>Guardar</button>
+        <button className="adm-btn" onClick={closePaying}>Cancelar</button>
+        {paidCents > 0 && (
+          <button
+            type="button"
+            className="adm-btn adm-btn--ghost"
+            disabled={pending}
+            onClick={() => setClearConfirm(true)}
+          >
+            Me equivoqué — borrar lo cobrado
+          </button>
+        )}
+        {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+      </>
+    )
+  }
+
   if (confirmDelete) {
     return (
       <>
@@ -168,7 +301,7 @@ export default function StatusActions({
   }
 
   // Cantidad de ítems del menú (para decidir si abre hacia arriba).
-  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + 1 // +Eliminar
+  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + (totalCents > 0 ? 1 : 0) + 1 // +Eliminar
 
   return (
     <>
@@ -190,7 +323,7 @@ export default function StatusActions({
           disabled={pending}
           onClick={
             primaryAction.status === "completed" && matchingPacks.length > 0 && !packLinked
-              ? () => setChoosingPack(true)
+              ? () => { setUndoTo(null); setChoosingPack(true) }
               : () => change(primaryAction.status)
           }
         >
@@ -216,11 +349,34 @@ export default function StatusActions({
             Reagendar
           </a>
         )}
+        {totalCents > 0 && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={pending}
+            onClick={() => { setPayInput(""); setClearConfirm(false); setPayingOpen(true) }}
+          >
+            Registrar pago
+          </button>
+        )}
         {(secondaryActions.length > 0 || canReschedule) && <div className="adm-menu__sep" />}
-        <button type="button" role="menuitem" className="adm-menu__danger" disabled={pending} onClick={() => setConfirmDelete(true)}>
+        <button
+          type="button"
+          role="menuitem"
+          className="adm-menu__danger"
+          disabled={pending}
+          onClick={() => { setUndoTo(null); setConfirmDelete(true) }}
+        >
           Eliminar
         </button>
       </OverflowMenu>
+
+      {undoTo !== null && (
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+          Cobro registrado.{" "}
+          <button type="button" className="adm-btn" disabled={pending} onClick={undoPago}>Deshacer</button>
+        </span>
+      )}
 
       {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
     </>

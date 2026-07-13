@@ -3,6 +3,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "./_components/status-actions"
+import PaidBadge from "./_components/paid-badge"
 import { fmtPrice } from "../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "./_components/whatsapp-button"
@@ -16,6 +17,7 @@ type ApptRow = {
   status: string
   duration_min: number
   total_cents: number
+  paid_cents: number
   pack_purchase_id: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: { service: { name: string } | null; staff: { full_name: string } | null }[]
@@ -54,7 +56,7 @@ export default async function AdminTodayPage() {
   let q = admin
     .from("appointments")
     .select(`
-      id, starts_at, ends_at, status, duration_min, total_cents, pack_purchase_id,
+      id, starts_at, ends_at, status, duration_min, total_cents, paid_cents, pack_purchase_id,
       client:clients(id, first_name, last_name, phone),
       appointment_services(service:services(name), staff:staff(full_name))
     `)
@@ -126,6 +128,7 @@ export default async function AdminTodayPage() {
                     {services}
                     {!staffProfile?.isProfessionalOnly && pros && ` · ${pros}`}
                     {" · "}{a.duration_min} min · {fmtPrice(a.total_cents / 100)}
+                    <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
                   </div>
                 </div>
                 <div>
@@ -144,6 +147,7 @@ export default async function AdminTodayPage() {
                     appointmentId={a.id}
                     currentStatus={a.status}
                     totalCents={a.total_cents}
+                    paidCents={a.paid_cents}
                     packLinked={!!a.pack_purchase_id}
                   />
                 </div>
