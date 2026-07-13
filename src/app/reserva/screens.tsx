@@ -1645,7 +1645,8 @@ export function Screen5Confirm({
   const payChoice: PayChoice = state.payChoice ?? "deposit"
   // Se calcula en CENTAVOS, igual que el servidor, para que no haya diferencias
   // de redondeo entre lo que ve la clienta y lo que se guarda.
-  const depositCents = redeeming ? 0 : amountDueNow(Math.round(total * 100), payChoice)
+  const totalCents = Math.round(total * 100)
+  const depositCents = redeeming ? 0 : amountDueNow(totalCents, payChoice)
   const deposit = depositCents / 100
   const remaining = redeeming ? 0 : total - deposit
 
@@ -1770,8 +1771,9 @@ export function Screen5Confirm({
         Casi <em>listo</em>.
       </h1>
       <p className="lede">
-        Revisá los detalles. Te coordinamos el pago de la seña del 30% por
-        WhatsApp para dejar el turno confirmado.
+        {payChoice === "full"
+          ? "Revisá los detalles. Te coordinamos el pago del total por WhatsApp para dejar el turno confirmado."
+          : "Revisá los detalles. Te coordinamos el pago de la seña del 30% por WhatsApp para dejar el turno confirmado."}
       </p>
 
       <div className="summary">
@@ -1963,14 +1965,14 @@ export function Screen5Confirm({
                 name="payChoice"
                 checked={payChoice === o.v}
                 onChange={() => setPayChoice(o.v)}
-                style={{ width: 16, height: 16 }}
+                style={{ width: 16, height: 16, accentColor: "#b68a5f" }}
               />
               <span style={{ flex: 1 }}>
                 <strong>{o.label}</strong>
                 <br />
                 <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
               </span>
-              <strong>{fmtPrice(amountDueNow(Math.round(total * 100), o.v) / 100)}</strong>
+              <strong>{fmtPrice(amountDueNow(totalCents, o.v) / 100)}</strong>
             </label>
           ))}
         </div>
@@ -2004,7 +2006,11 @@ export function Screen5Confirm({
           para confirmar tu turno.
           <br />
           <a
-            href={whatsappLink("Hola! Te paso el comprobante de la seña.")}
+            href={whatsappLink(
+              payChoice === "full"
+                ? "Hola! Te paso el comprobante del pago."
+                : "Hola! Te paso el comprobante de la seña."
+            )}
             target="_blank"
             rel="noopener noreferrer"
             style={{
@@ -2065,7 +2071,7 @@ export function Screen5Confirm({
         </button>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <div>
-            <div className="footer__summary">Seña</div>
+            <div className="footer__summary">{payChoice === "full" ? "Total" : "Seña"}</div>
             <div className="footer__total">{fmtPrice(deposit)}</div>
           </div>
           <button className="btn btn--primary" disabled={paying} onClick={pay}>
