@@ -222,7 +222,8 @@ export default async function AdminTurnosPage({
                   )}
                 </div>
                 <div className="adm-actions">
-                  {!staffProfile?.isProfessionalOnly && a.client?.phone && (() => {
+                  {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
+                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
                     const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
                     const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
                     const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
