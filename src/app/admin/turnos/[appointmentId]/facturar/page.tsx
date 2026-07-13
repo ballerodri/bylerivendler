@@ -26,6 +26,18 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
 
   if (!appt) return <p className="adm-lede">Turno no encontrado.</p>
 
+  if (appt.total_cents <= 0) {
+    return (
+      <>
+        <p className="adm-eyebrow">Facturación</p>
+        <h1 className="adm-h1">Facturar <em>turno</em></h1>
+        <p className="adm-lede">
+          Este turno es de $0 (es una sesión de un pack, ya cubierta por la factura del pack). No se puede emitir una factura por $0.
+        </p>
+      </>
+    )
+  }
+
   const client = appt.client as unknown as { first_name: string; last_name: string; dni: string | null; email: string | null } | null
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
   const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"

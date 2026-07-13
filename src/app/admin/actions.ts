@@ -50,21 +50,28 @@ function isAliveStatus(status: string): boolean {
 /**
  * Garantiza que el precio del pack esté puesto en EXACTAMENTE un turno VIVO
  * (ver `isAliveStatus`). Se llama después de cualquier cambio de estado que
- * pueda matar o resucitar un turno de un pack (cancelar, no_show, reactivar)
- * y también al agendar una sesión nueva.
+ * pueda matar o resucitar un turno de un pack (cancelar, no_show, reactivar,
+ * eliminar) y también al agendar una sesión nueva.
+ *
+ * El blanqueo de turnos MUERTOS que todavía llevaran precio (`zeroDeadCarriers`)
+ * corre en TODAS las ramas, no sólo en la 2: un turno muerto nunca debe
+ * conservar el precio, porque un "Reactivar" posterior lo resucitaría como
+ * SEGUNDO portador (plata duplicada + segunda Factura C a ARCA). No hay
+ * riesgo de perder la plata: el precio siempre se re-deriva de
+ * `packs.total_price_cents`, nunca se acarrea en una variable entre filas.
  *
  * Reglas (en este orden):
- *  1. Si algún turno VIVO ya tiene total_cents > 0 → no se toca nada. Nunca
- *     se mueve un precio ya bien puesto — en particular nunca se le saca el
- *     precio a un turno "completed", cuya plata ya está contabilizada.
+ *  1. Si algún turno VIVO ya tiene total_cents > 0 → no se lo toca (nunca se
+ *     mueve un precio ya bien puesto — en particular nunca se le saca el
+ *     precio a un turno "completed", cuya plata ya está contabilizada), pero
+ *     igual se blanquean los muertos.
  *  2. Si no, y hay al menos un turno vivo → el VIVO más antiguo (por
- *     starts_at) pasa a ser el portador (turno + su appointment_services), y
- *     se ponen en 0 los turnos MUERTOS que todavía llevaran precio (para que
- *     un futuro "Reactivar" no resucite un segundo portador y duplique la
- *     plata).
- *  3. Si no hay NINGÚN turno vivo → no se toca nada: no hay a quién pasarle
- *     el precio todavía; la próxima sesión que se agende lo va a recoger
- *     (ver `schedulePackSession`).
+ *     starts_at) pasa a ser el portador (turno + su appointment_services).
+ *     Si la promoción falla, NO se blanquean los muertos (la plata todavía
+ *     vive ahí; blanquearlos la haría desaparecer del todo).
+ *  3. Si no hay NINGÚN turno vivo → no hay a quién pasarle el precio todavía
+ *     (la próxima sesión que se agende lo va a recoger, ver
+ *     `schedulePackSession`), pero igual se blanquean los muertos.
  */
 async function syncPackPriceCarrier(
   admin: ReturnType<typeof adminClient>,
@@ -91,22 +98,38 @@ async function syncPackPriceCarrier(
   const appts = (apptsData ?? []) as { id: string; status: string; total_cents: number; starts_at: string }[]
 
   const alive = appts.filter((a) => isAliveStatus(a.status))
-  if (alive.some((a) => a.total_cents > 0)) return // regla 1: ya está bien puesto
 
-  if (!alive.length) return // regla 3: nadie vivo todavía
+  const zeroDeadCarriers = async () => {
+    for (const d of appts.filter((a) => !isAliveStatus(a.status) && a.total_cents > 0)) {
+      await admin.from("appointments").update({ total_cents: 0 }).eq("id", d.id)
+      await admin.from("appointment_services").update({ price_cents: 0 }).eq("appointment_id", d.id)
+    }
+  }
+
+  if (alive.some((a) => a.total_cents > 0)) {
+    await zeroDeadCarriers() // regla 1
+    return
+  }
+
+  if (!alive.length) {
+    await zeroDeadCarriers() // regla 3
+    return
+  }
 
   // regla 2: promover al vivo más antiguo y blanquear muertos con precio.
   const carrier = [...alive].sort(
     (a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
   )[0]
-  await admin.from("appointments").update({ total_cents: packPriceCents }).eq("id", carrier.id)
-  await admin.from("appointment_services").update({ price_cents: packPriceCents }).eq("appointment_id", carrier.id)
-
-  const deadCarriers = appts.filter((a) => !isAliveStatus(a.status) && a.total_cents > 0)
-  for (const d of deadCarriers) {
-    await admin.from("appointments").update({ total_cents: 0 }).eq("id", d.id)
-    await admin.from("appointment_services").update({ price_cents: 0 }).eq("appointment_id", d.id)
-  }
+  const { error: promoteErr } = await admin
+    .from("appointments")
+    .update({ total_cents: packPriceCents })
+    .eq("id", carrier.id)
+  if (promoteErr) return // la plata no quedó en un vivo: no blanquear los muertos
+  await admin
+    .from("appointment_services")
+    .update({ price_cents: packPriceCents })
+    .eq("appointment_id", carrier.id)
+  await zeroDeadCarriers()
 }
 
 export async function updateAppointmentStatus(
@@ -141,12 +164,20 @@ export async function updateAppointmentStatus(
       .eq("id", prev.pack_purchase_id)
       .maybeSingle()
     if (pp) {
-      const { count } = await admin
+      const { count, error: countErr } = await admin
         .from("appointments")
         .select("id", { count: "exact", head: true })
         .eq("pack_purchase_id", prev.pack_purchase_id)
         .neq("id", appointmentId)
         .not("status", "in", "(cancelled,no_show)")
+      // Fail closed: si no podemos leer cuántas sesiones vivas tiene el pack,
+      // no arriesgamos regalar una sesión de más — se rechaza la reactivación.
+      if (countErr) {
+        return {
+          ok: false,
+          error: "No pudimos verificar las sesiones de este pack. Probá de nuevo en un momento.",
+        }
+      }
       if ((count ?? 0) >= pp.sessions_total) {
         return {
           ok: false,
@@ -310,6 +341,16 @@ export async function deleteAppointment(
         .update({ sessions_used: pp.sessions_used - 1 })
         .eq("id", appt.pack_purchase_id)
     }
+  }
+
+  // Borrar el turno puede haberse llevado puesto al portador del precio del
+  // pack (p.ej. el turno "completed" que lo cargaba): sincronizar para que la
+  // plata se re-derive sobre los turnos que quedan vivos (ver
+  // `syncPackPriceCarrier`). Si no se hiciera esto, un pack ya completado
+  // cuyo portador se elimina se queda con TODOS sus turnos en $0 y nada lo
+  // vuelve a sincronizar → la plata del pack desaparece de estadísticas.
+  if (appt?.pack_purchase_id) {
+    await syncPackPriceCarrier(admin, appt.pack_purchase_id)
   }
 
   revalidatePath("/admin")
