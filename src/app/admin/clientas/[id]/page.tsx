@@ -5,6 +5,8 @@ import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
+import PackSessions, { type PackPurchaseView } from "./pack-sessions"
+import { fetchBusinessHours } from "@/app/reserva/queries"
 
 export const dynamic = "force-dynamic"
 
@@ -81,6 +83,54 @@ export default async function AdminClientDetailPage({
     .order("created_at", { ascending: false })
   const purchases = (purchasesData ?? []) as PurchaseRow[]
 
+  const businessHours = await fetchBusinessHours()
+
+  const purchaseIds = purchases.map((p) => p.id)
+  const { data: packApptsData } = purchaseIds.length
+    ? await admin
+        .from("appointments")
+        .select("id, starts_at, status, duration_min, pack_purchase_id")
+        .in("pack_purchase_id", purchaseIds)
+        .neq("status", "cancelled")
+        .order("starts_at", { ascending: true })
+    : { data: [] as { id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string }[] }
+  const packAppts = (packApptsData ?? []) as {
+    id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string
+  }[]
+
+  // interval_days + duración del servicio de cada pack comprado
+  const { data: packMetaData } = await admin
+    .from("pack_purchases")
+    .select("id, pack:packs(interval_days, service:services(duration_min))")
+    .in("id", purchaseIds.length ? purchaseIds : ["00000000-0000-0000-0000-000000000000"])
+  const packMeta = new Map(
+    ((packMetaData ?? []) as unknown as {
+      id: string
+      pack: { interval_days: number | null; service: { duration_min: number } | null } | null
+    }[]).map((m) => [m.id, m])
+  )
+
+  const purchaseViews: PackPurchaseView[] = purchases.map((p) => {
+    const sessions = packAppts
+      .filter((a) => a.pack_purchase_id === p.id)
+      .map((a) => ({ id: a.id, startsAt: a.starts_at, status: a.status }))
+    const meta = packMeta.get(p.id)
+    return {
+      id: p.id,
+      packName: p.pack_name,
+      serviceName: p.service_name,
+      sessionsTotal: p.sessions_total,
+      sessionsUsed: p.sessions_used,
+      durationMin:
+        packAppts.find((a) => a.pack_purchase_id === p.id)?.duration_min ??
+        meta?.pack?.service?.duration_min ??
+        0,
+      intervalDays: meta?.pack?.interval_days ?? null,
+      sessions,
+      lastStartsAt: sessions.length ? sessions[sessions.length - 1].startsAt : null,
+    }
+  })
+
   const { data: activePacksData } = await admin
     .from("packs")
     .select("id, name, sessions, total_price_cents")
@@ -154,19 +204,25 @@ export default async function AdminClientDetailPage({
             const remaining = p.sessions_total - p.sessions_used
             const done = remaining <= 0
             return (
-              <div key={p.id} className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
-                <div>
-                  <div className="adm-name">{p.pack_name}</div>
-                  <div className="adm-sub">{p.service_name}</div>
+              <div key={p.id}>
+                <div className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto" }}>
+                  <div>
+                    <div className="adm-name">{p.pack_name}</div>
+                    <div className="adm-sub">{p.service_name}</div>
+                  </div>
+                  <div style={{ fontSize: 13, textAlign: "right" }}>
+                    usó {p.sessions_used} / quedan {Math.max(0, remaining)}
+                  </div>
+                  <div>
+                    <span className={`adm-pill ${done ? "adm-pill--inactive" : "adm-pill--active"}`}>
+                      {done ? "Completado" : "Activo"}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, textAlign: "right" }}>
-                  usó {p.sessions_used} / quedan {Math.max(0, remaining)}
-                </div>
-                <div>
-                  <span className={`adm-pill ${done ? "adm-pill--inactive" : "adm-pill--active"}`}>
-                    {done ? "Completado" : "Activo"}
-                  </span>
-                </div>
+                <PackSessions
+                  purchase={purchaseViews.find((v) => v.id === p.id)!}
+                  businessHours={businessHours}
+                />
               </div>
             )
           })

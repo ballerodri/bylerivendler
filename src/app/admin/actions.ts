@@ -9,6 +9,8 @@ import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
+import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { fetchDayAvailability } from "@/app/reserva/actions"
 
 const StatusSchema = z.enum([
   "pending",
@@ -1270,4 +1272,140 @@ async function requireAdmin_action() {
   const { data: { user } } = await ssr.auth.getUser()
   if (!user) throw new Error("Sin sesión")
   await requireAdmin(user.id)
+}
+
+// ─── Sesiones de un pack ──────────────────────────────────────────────────────
+
+/**
+ * Agenda UNA sesión pendiente de un pack ya comprado. El turno va en 0 (el pack
+ * ya está pagado). El intervalo del pack se respeta salvo que se pida saltearlo.
+ */
+export async function schedulePackSession(
+  packPurchaseId: string,
+  startsAtIso: string,
+  opts?: { allowIntervalOverride?: boolean }
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pp } = await admin
+    .from("pack_purchases")
+    .select("id, client_id, pack_id, service_id, sessions_total")
+    .eq("id", packPurchaseId)
+    .maybeSingle()
+  if (!pp) return { ok: false, error: "No encontramos ese pack." }
+
+  const { data: pack } = await admin
+    .from("packs")
+    .select("interval_days, service:services(duration_min)")
+    .eq("id", pp.pack_id)
+    .maybeSingle()
+  const intervalDays = (pack?.interval_days as number | null) ?? null
+  const svcDuration = ((pack?.service as unknown as { duration_min: number } | null)?.duration_min) ?? 0
+
+  // Turnos ya agendados de este pack (no cancelados), en orden.
+  const { data: existing } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min")
+    .eq("pack_purchase_id", packPurchaseId)
+    .neq("status", "cancelled")
+    .order("starts_at", { ascending: true })
+  const rows = (existing ?? []) as { id: string; starts_at: string; duration_min: number }[]
+
+  if (rows.length >= pp.sessions_total)
+    return { ok: false, error: "Este pack ya tiene todas sus sesiones agendadas." }
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
+
+  // Duración: la de las sesiones ya creadas (respeta las zonas del pack); si no
+  // hay ninguna, la del servicio.
+  const durationMin = rows[0]?.duration_min ?? svcDuration
+  if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
+
+  // Intervalo contra la sesión inmediatamente anterior (salvo override).
+  if (!opts?.allowIntervalOverride && intervalDays && rows.length) {
+    const previous = rows
+      .map((r) => new Date(r.starts_at))
+      .filter((d) => d.getTime() < startsAt.getTime())
+      .sort((a, b) => b.getTime() - a.getTime())[0]
+    if (previous && startsAt.getTime() < minStartForNextSession(previous, intervalDays).getTime())
+      return { ok: false, error: `Entre sesiones tienen que pasar al menos ${intervalDays} días.` }
+  }
+
+  // Disponibilidad real.
+  const { dateStr, timeStr } = arPartsFromUtc(startsAt)
+  const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
+  if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+  const endsAt = new Date(startsAt.getTime() + durationMin * 60_000)
+
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: pp.client_id,
+      staff_id: null,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      duration_min: durationMin,
+      total_cents: 0,          // el pack ya está pagado
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      pack_purchase_id: packPurchaseId,
+      notes_internal: `Pack: sesión ${rows.length + 1} de ${pp.sessions_total}`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos crear la sesión: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert({
+    appointment_id: appt.id,
+    service_id: pp.service_id,
+    duration_min: durationMin,
+    price_cents: 0,
+    staff_id: null,
+    starts_at: startsAt.toISOString(),
+  })
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
+  }
+
+  revalidatePath(`/admin/clientas/${pp.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
+ * Confirma de una vez TODAS las sesiones pendientes de un pack (se usa después
+ * de verificar que la seña está pagada). No toca canceladas ni completadas.
+ */
+export async function confirmPackSessions(
+  packPurchaseId: string
+): Promise<{ ok: boolean; error?: string; confirmed?: number }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pending } = await admin
+    .from("appointments")
+    .select("id, client_id")
+    .eq("pack_purchase_id", packPurchaseId)
+    .eq("status", "pending")
+  const rows = (pending ?? []) as { id: string; client_id: string }[]
+  if (!rows.length) return { ok: true, confirmed: 0 }
+
+  const { error } = await admin
+    .from("appointments")
+    .update({ status: "confirmed" })
+    .in("id", rows.map((r) => r.id))
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath(`/admin/clientas/${rows[0].client_id}`)
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  return { ok: true, confirmed: rows.length }
 }
