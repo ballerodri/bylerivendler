@@ -97,14 +97,27 @@ export function Screen1Services({
   const selectedPack = state.pack ?? null
 
   // Nota: cada handler que cambia qué se está comprando limpia `packSlots`
-  // (las fechas de sesión ya elegidas). Si no se limpiara, un pack viejo con
-  // más sesiones (o zonas, que cambian la duración) dejaría fechas "fantasma"
-  // que el paso de fecha intenta reusar y el servidor termina rechazando sin
-  // que la clienta pueda corregirlo (ver Screen2DateTime).
+  // (las fechas de sesión ya elegidas) Y, además, `serviceOrder`/`resolvedStaff`
+  // (el profesional/orden resuelto para servicios sueltos) y `selectedDate`/
+  // `selectedTime` (la fecha/hora ya elegida). Si no se limpiaran, un pack
+  // viejo con más sesiones (o zonas, que cambian la duración) dejaría fechas
+  // "fantasma" que el paso de fecha intenta reusar y el servidor termina
+  // rechazando sin que la clienta pueda corregirlo (ver Screen2DateTime); y un
+  // `serviceOrder`/`resolvedStaff` resuelto para una compra anterior (p.ej.
+  // servicios sueltos) podría colarse en la compra nueva (p.ej. un pack) y
+  // asignarle un profesional que la clienta nunca eligió para eso.
+  const clearedResolution = {
+    packSlots: undefined,
+    serviceOrder: undefined,
+    resolvedStaff: undefined,
+    selectedDate: undefined,
+    selectedTime: null,
+  } as const
+
   const switchTab = (tab: string) => {
     if (tab !== COMBOS_TAB && tab !== PACKS_TAB && (selectedCombo || selectedPack)) {
       // Al cambiar a servicios individuales, limpiamos el combo y el pack
-      setState({ ...state, combo: null, pack: null, services: [], activeCat: tab, packSlots: undefined })
+      setState({ ...state, combo: null, pack: null, services: [], activeCat: tab, ...clearedResolution })
     } else {
       setActiveCat(tab)
     }
@@ -113,19 +126,19 @@ export function Screen1Services({
 
   const toggleCombo = (c: Combo) => {
     if (selectedCombo?.id === c.id) {
-      setState({ ...state, combo: null, services: [], packSlots: undefined })
+      setState({ ...state, combo: null, services: [], ...clearedResolution })
     } else {
       // Elegir un combo limpia el pack (excluyente)
-      setState({ ...state, combo: c, services: c.services, pack: null, packSlots: undefined })
+      setState({ ...state, combo: c, services: c.services, pack: null, ...clearedResolution })
     }
   }
 
   const togglePack = (p: ReservaPack) => {
     if (selectedPack?.pack.id === p.id) {
-      setState({ ...state, pack: null, packSlots: undefined })
+      setState({ ...state, pack: null, ...clearedResolution })
     } else {
       // Elegir un pack limpia servicios sueltos y combo (excluyente)
-      setState({ ...state, pack: { pack: p, zoneIds: [] }, services: [], combo: null, packSlots: undefined })
+      setState({ ...state, pack: { pack: p, zoneIds: [] }, services: [], combo: null, ...clearedResolution })
     }
   }
 
@@ -135,13 +148,13 @@ export function Screen1Services({
     const next = cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
     // Cambiar las zonas cambia la duración de la sesión (pricingMode
     // "per_zone"): las fechas ya elegidas podrían quedar superpuestas.
-    setState({ ...state, pack: { ...selectedPack, zoneIds: next }, packSlots: undefined })
+    setState({ ...state, pack: { ...selectedPack, zoneIds: next }, ...clearedResolution })
   }
 
   const toggle = (svc: Service) => {
     const exists = selected.find((s) => s.id === svc.id)
     const next = exists ? selected.filter((s) => s.id !== svc.id) : [...selected, svc]
-    setState({ ...state, combo: null, pack: null, services: next, activeCat, packSlots: undefined })
+    setState({ ...state, combo: null, pack: null, services: next, activeCat, ...clearedResolution })
   }
 
   // serviceId → zoneId[] elegidas (solo para servicios pricingMode === "per_zone")
@@ -1638,10 +1651,14 @@ export function Screen5Confirm({
   // Para packs, la fecha se eligió sesión por sesión (`packSlots`); acá
   // mostramos la de la 1ª sesión. `state.selectedDate/selectedTime` no se
   // usan en el flujo de pack (ver Screen2DateTime).
-  // Defensa en profundidad, igual que en Screen2DateTime: nunca mostrar más
-  // sesiones que las que el pack actual tiene (ver `cleanPackSlots`).
-  const packSlotsForDisplay = pack ? (state.packSlots ?? []).slice(0, pack.pack.sessions) : []
-  const packFirstSlotAr = pack && state.packSlots?.[0] ? arPartsFromUtc(new Date(state.packSlots[0])) : null
+  // Defensa en profundidad, igual que en Screen2DateTime: aplicamos la MISMA
+  // limpieza (`cleanPackSlots`) acá, no sólo un slice — si la clienta dejó el
+  // flujo parado en esta pantalla, vuelve directo a Screen5Confirm (se
+  // restaura el paso persistido) y el paso de fecha nunca llega a montarse,
+  // así que su efecto de depuración tampoco corre. Sin esto se le podrían
+  // mostrar/enviar sesiones vencidas o de más.
+  const packSlotsForDisplay = pack ? cleanPackSlots(state.packSlots ?? [], pack.pack.sessions) : []
+  const packFirstSlotAr = packSlotsForDisplay[0] ? arPartsFromUtc(new Date(packSlotsForDisplay[0])) : null
   const dateObj = packFirstSlotAr
     ? parseYmd(packFirstSlotAr.dateStr)
     : (state.selectedDate ? parseYmd(state.selectedDate) : null)
@@ -1672,7 +1689,10 @@ export function Screen5Confirm({
   const pay = async () => {
     // El pack elige sus fechas en `packSlots` (Screen2DateTime), no en
     // `selectedDate/selectedTime` — sólo el flujo sin pack usa esos dos.
-    const packSlotsPicked = pack ? (state.packSlots ?? []) : []
+    // Depurado con `cleanPackSlots` (mismo motivo que `packSlotsForDisplay`
+    // arriba): esta pantalla puede ser la primera en montar tras restaurar el
+    // estado persistido, así que no podemos asumir que ya vino limpio.
+    const packSlotsPicked = pack ? cleanPackSlots(state.packSlots ?? [], pack.pack.sessions) : []
     const missingDate = pack ? packSlotsPicked.length === 0 : (!state.selectedDate || !state.selectedTime)
     if (!state.form || missingDate) {
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
@@ -1695,14 +1715,19 @@ export function Screen5Confirm({
       serviceIds: services.map((s) => s.id),
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
-      serviceOrder: state.serviceOrder,
-      resolvedStaff: state.resolvedStaff,
+      // El pack nunca resuelve `serviceOrder`/`resolvedStaff` (eso lo escribe
+      // sólo `selectSeqSlot`, en el flujo de servicios sueltos) — si un pack
+      // quedó seleccionado después de haber resuelto un turno suelto, esos
+      // campos podrían traer un profesional que la clienta nunca eligió para
+      // el pack. Belt-and-braces: nunca los mandamos cuando hay pack.
+      serviceOrder: pack ? undefined : state.serviceOrder,
+      resolvedStaff: pack ? undefined : state.resolvedStaff,
       redeemWithPoints: redeeming,
       savedClientId: state.savedClientId,
       comboId: state.combo?.id,
       packId: state.pack?.pack.id,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
-      packSlots: state.pack ? (state.packSlots ?? []) : undefined,
+      packSlots: pack ? packSlotsPicked : undefined,
       zoneSelections: Object.fromEntries(
         services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
       ),
@@ -1787,7 +1812,7 @@ export function Screen5Confirm({
                     <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
                       <strong>Sesión {i + 1}</strong>
                       <small>
-                        {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs
+                        {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(totalMin)}
                       </small>
                     </div>
                   )
