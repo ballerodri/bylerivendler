@@ -3,6 +3,8 @@
  * testearla y usar la MISMA regla en la pantalla y en el servidor.
  */
 
+import { amountDueNow, type PayChoice } from "./payments"
+
 const DAY_MS = 24 * 60 * 60 * 1000
 
 // Argentina es UTC-3 fijo (sin horario de verano desde 2008). Espeja el
@@ -54,22 +56,27 @@ export type PackSessionPrice = { totalCents: number; depositCents: number; depos
 
 /**
  * Reparte el precio del pack entre sus turnos: la 1ª sesión lleva el precio
- * completo (con seña del 30%) y las demás van en 0 (ya vienen pagadas por el
- * pack). Así el pack se cuenta UNA sola vez en facturación/estadísticas.
+ * completo y las demás van en 0 (ya vienen pagadas por el pack). Así el pack se
+ * cuenta UNA sola vez en facturación/estadísticas.
  *
- * ⚠️ IMPORTANTE: se llama UNA sola vez por compra de pack, para el lote de
- * sesiones que se crea en el momento de la compra (el índice 0 es el turno
- * "portador" del precio completo). Una acción futura que agende las sesiones
- * RESTANTES de un pack ya comprado NO debe llamar a esta función pasándole
- * esas sesiones: su índice 0 pondría el precio completo del pack en una
- * sesión posterior, cobrando el pack dos veces.
+ * `payChoice` define cuánto se le pide pagar AHORA por la 1ª sesión: la seña
+ * (30%) o el total del pack.
+ *
+ * ⚠️ LLAMAR UNA SOLA VEZ POR COMPRA, al crear el pack. Una acción que agende las
+ * sesiones RESTANTES de un pack ya existente NO debe llamarla: el índice 0
+ * pondría el precio completo del pack en una sesión posterior y lo cobraría dos
+ * veces.
  */
-export function packSessionPrices(totalPriceCents: number, count: number): PackSessionPrice[] {
+export function packSessionPrices(
+  totalPriceCents: number,
+  count: number,
+  payChoice: PayChoice = "deposit"
+): PackSessionPrice[] {
   return Array.from({ length: count }, (_, i) =>
     i === 0
       ? {
           totalCents: totalPriceCents,
-          depositCents: Math.round(totalPriceCents * 0.3),
+          depositCents: amountDueNow(totalPriceCents, payChoice),
           depositPaid: false,
         }
       : { totalCents: 0, depositCents: 0, depositPaid: true }

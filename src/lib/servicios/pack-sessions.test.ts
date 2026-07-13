@@ -100,6 +100,16 @@ describe("packSessionPrices", () => {
     const total = packSessionPrices(17_000_000, 4).reduce((a, p) => a + p.totalCents, 0)
     expect(total).toBe(17_000_000)
   })
+
+  it("si eligió pagar el TOTAL, la 1ª sesión pide el precio completo del pack", () => {
+    const r = packSessionPrices(17_000_000, 3, "full")
+    expect(r[0]).toEqual({ totalCents: 17_000_000, depositCents: 17_000_000, depositPaid: false })
+    expect(r[1]).toEqual({ totalCents: 0, depositCents: 0, depositPaid: true })
+  })
+
+  it("por defecto sigue siendo la seña del 30% (no rompe lo existente)", () => {
+    expect(packSessionPrices(17_000_000, 1)[0].depositCents).toBe(5_100_000)
+  })
 })
 
 describe("arPartsFromUtc", () => {

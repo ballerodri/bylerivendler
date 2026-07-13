@@ -10,6 +10,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -25,6 +26,7 @@ const BookingInput = z.object({
   packId: z.string().uuid().optional(),
   packZoneIds: z.array(z.string().uuid()).optional(),
   packSlots: z.array(z.string().datetime()).optional(),
+  payChoice: z.enum(["deposit", "full"]).optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
@@ -147,7 +149,9 @@ export async function createBooking(
     if (combo) totalCents = combo.total_price_cents
   }
 
-  const depositCents = Math.round(totalCents * 0.3)
+  // Lo que se le pide pagar AHORA: la seña (30%) o el total, según eligió.
+  const payChoice: PayChoice = input.payChoice ?? "deposit"
+  const depositCents = amountDueNow(totalCents, payChoice)
   const totalPointsCost = services.reduce(
     (a, s) => a + (s.loyalty_enabled ? (s.points_cost ?? 0) : 0),
     0
@@ -314,7 +318,7 @@ export async function createBooking(
     if (purErr || !purchase) return { ok: false, error: `No pudimos registrar el pack: ${purErr?.message}` }
 
     // ── Un turno por sesión elegida ───────────────────────────────────────────
-    const prices = packSessionPrices(pack.total_price_cents, slotDates.length)
+    const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
     const createdIds: string[] = []
 
     for (let i = 0; i < slotDates.length; i++) {
@@ -334,6 +338,7 @@ export async function createBooking(
           total_cents: price.totalCents,
           deposit_cents: price.depositCents,
           deposit_paid: price.depositPaid,
+          paid_cents: 0,
           status: "pending",
           source: "web",
           pack_purchase_id: purchase.id,
@@ -452,6 +457,7 @@ export async function createBooking(
       total_cents: redeem ? 0 : totalCents,
       deposit_cents: redeem ? 0 : depositCents,
       deposit_paid: redeem,
+      paid_cents: 0,
       status: redeem ? "confirmed" : "pending",
       source: "web",
       notes_internal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
