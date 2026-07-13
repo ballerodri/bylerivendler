@@ -47,91 +47,6 @@ function isAliveStatus(status: string): boolean {
   return status !== "cancelled" && status !== "no_show"
 }
 
-/**
- * Garantiza que el precio del pack esté puesto en EXACTAMENTE un turno VIVO
- * (ver `isAliveStatus`). Se llama después de cualquier cambio de estado que
- * pueda matar o resucitar un turno de un pack (cancelar, no_show, reactivar,
- * eliminar) y también al agendar una sesión nueva.
- *
- * El blanqueo de turnos MUERTOS que todavía llevaran precio (`zeroDeadCarriers`)
- * corre en TODAS las ramas, no sólo en la 2: un turno muerto nunca debe
- * conservar el precio, porque un "Reactivar" posterior lo resucitaría como
- * SEGUNDO portador (plata duplicada + segunda Factura C a ARCA). No hay
- * riesgo de perder la plata: el precio siempre se re-deriva de
- * `packs.total_price_cents`, nunca se acarrea en una variable entre filas.
- *
- * Reglas (en este orden):
- *  1. Si algún turno VIVO ya tiene total_cents > 0 → no se lo toca (nunca se
- *     mueve un precio ya bien puesto — en particular nunca se le saca el
- *     precio a un turno "completed", cuya plata ya está contabilizada), pero
- *     igual se blanquean los muertos.
- *  2. Si no, y hay al menos un turno vivo → el VIVO más antiguo (por
- *     starts_at) pasa a ser el portador (turno + su appointment_services).
- *     Si la promoción falla, NO se blanquean los muertos (la plata todavía
- *     vive ahí; blanquearlos la haría desaparecer del todo).
- *  3. Si no hay NINGÚN turno vivo → no hay a quién pasarle el precio todavía
- *     (la próxima sesión que se agende lo va a recoger, ver
- *     `schedulePackSession`), pero igual se blanquean los muertos.
- */
-async function syncPackPriceCarrier(
-  admin: ReturnType<typeof adminClient>,
-  packPurchaseId: string
-): Promise<void> {
-  const { data: pp } = await admin
-    .from("pack_purchases")
-    .select("pack_id")
-    .eq("id", packPurchaseId)
-    .maybeSingle()
-  if (!pp) return
-
-  const { data: pack } = await admin
-    .from("packs")
-    .select("total_price_cents")
-    .eq("id", pp.pack_id)
-    .maybeSingle()
-  const packPriceCents = pack?.total_price_cents ?? 0
-
-  const { data: apptsData } = await admin
-    .from("appointments")
-    .select("id, status, total_cents, starts_at")
-    .eq("pack_purchase_id", packPurchaseId)
-  const appts = (apptsData ?? []) as { id: string; status: string; total_cents: number; starts_at: string }[]
-
-  const alive = appts.filter((a) => isAliveStatus(a.status))
-
-  const zeroDeadCarriers = async () => {
-    for (const d of appts.filter((a) => !isAliveStatus(a.status) && a.total_cents > 0)) {
-      await admin.from("appointments").update({ total_cents: 0 }).eq("id", d.id)
-      await admin.from("appointment_services").update({ price_cents: 0 }).eq("appointment_id", d.id)
-    }
-  }
-
-  if (alive.some((a) => a.total_cents > 0)) {
-    await zeroDeadCarriers() // regla 1
-    return
-  }
-
-  if (!alive.length) {
-    await zeroDeadCarriers() // regla 3
-    return
-  }
-
-  // regla 2: promover al vivo más antiguo y blanquear muertos con precio.
-  const carrier = [...alive].sort(
-    (a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime()
-  )[0]
-  const { error: promoteErr } = await admin
-    .from("appointments")
-    .update({ total_cents: packPriceCents })
-    .eq("id", carrier.id)
-  if (promoteErr) return // la plata no quedó en un vivo: no blanquear los muertos
-  await admin
-    .from("appointment_services")
-    .update({ price_cents: packPriceCents })
-    .eq("appointment_id", carrier.id)
-  await zeroDeadCarriers()
-}
-
 export async function updateAppointmentStatus(
   appointmentId: string,
   status: string,
@@ -234,18 +149,11 @@ export async function updateAppointmentStatus(
   const enteringCompleted = parsed.data === "completed" && prev?.status !== "completed"
   const leavingCompleted = prev?.status === "completed" && parsed.data !== "completed"
 
-  // Pack al que quedó ligado este turno al terminar esta llamada (para
-  // sincronizar el portador del precio más abajo). Normalmente es el que ya
-  // traía (`prev.pack_purchase_id`); si recién se ligó acá abajo (turno
-  // suelto que eligió un pack al completarse), se actualiza también.
-  let linkedPackId: string | null = prev?.pack_purchase_id ?? null
-
   if (enteringCompleted) {
     // Un turno que YA nace de un pack (sesión pre-agendada) descuenta SOLO.
     // Un turno suelto descuenta sólo si quien llama eligió un pack a mano.
     const linkedId = prev?.pack_purchase_id ?? packPurchaseId ?? null
     if (linkedId) {
-      linkedPackId = linkedId
       const { data: pp } = await admin
         .from("pack_purchases")
         .select("sessions_total, sessions_used")
@@ -283,13 +191,6 @@ export async function updateAppointmentStatus(
     // esté completado o no. Si lo borráramos, la sesión desaparecería de la
     // lista del pack y "sesiones por agendar" (total − ligadas) subiría,
     // permitiendo agendar de más sobre lo pagado.
-  }
-
-  // Cancelar, marcar no_show o reactivar puede matar o resucitar el turno
-  // que lleva la plata del pack: sincronizar el portador después de aplicar
-  // el cambio de estado (ver `syncPackPriceCarrier`).
-  if (linkedPackId) {
-    await syncPackPriceCarrier(admin, linkedPackId)
   }
 
   revalidatePath("/admin")
@@ -341,16 +242,6 @@ export async function deleteAppointment(
         .update({ sessions_used: pp.sessions_used - 1 })
         .eq("id", appt.pack_purchase_id)
     }
-  }
-
-  // Borrar el turno puede haberse llevado puesto al portador del precio del
-  // pack (p.ej. el turno "completed" que lo cargaba): sincronizar para que la
-  // plata se re-derive sobre los turnos que quedan vivos (ver
-  // `syncPackPriceCarrier`). Si no se hiciera esto, un pack ya completado
-  // cuyo portador se elimina se queda con TODOS sus turnos en $0 y nada lo
-  // vuelve a sincronizar → la plata del pack desaparece de estadísticas.
-  if (appt?.pack_purchase_id) {
-    await syncPackPriceCarrier(admin, appt.pack_purchase_id)
   }
 
   revalidatePath("/admin")
@@ -1449,26 +1340,22 @@ export async function schedulePackSession(
 
   const { data: pack } = await admin
     .from("packs")
-    .select("interval_days, total_price_cents, service:services(duration_min, pricing_mode)")
+    .select("interval_days, service:services(duration_min, pricing_mode)")
     .eq("id", pp.pack_id)
     .maybeSingle()
   const intervalDays = (pack?.interval_days as number | null) ?? null
-  const totalPriceCents = pack?.total_price_cents ?? 0
   const svc = pack?.service as unknown as { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
   const svcDuration = svc?.duration_min ?? 0
   const pricingMode = svc?.pricing_mode ?? "fixed"
 
   // Turnos de este pack en CUALQUIER estado (incluidos cancelados), con su
-  // instantánea de zonas y su precio. De acá salen tres cosas:
-  //  - la duración real de una sesión (Finding 1): una sesión cancelada
-  //    igual registró bien cuánto dura, así que sirve como referencia;
-  //  - si el pack YA tiene su precio puesto en algún turno (Finding 2):
-  //    cancelar un turno no le borra el total_cents, así que el precio
-  //    sigue "ocupado" ahí y no se vuelve a poner en otro;
-  //  - la instantánea de zonas a repetir en la nueva sesión (Finding 4).
+  // instantánea de zonas. De acá salen dos cosas:
+  //  - la duración real de una sesión: una sesión cancelada igual registró
+  //    bien cuánto dura, así que sirve como referencia;
+  //  - la instantánea de zonas a repetir en la nueva sesión.
   const { data: allExisting } = await admin
     .from("appointments")
-    .select("id, starts_at, duration_min, status, total_cents, appointment_services(zones)")
+    .select("id, starts_at, duration_min, status, appointment_services(zones)")
     .eq("pack_purchase_id", packPurchaseId)
     .order("starts_at", { ascending: true })
   type ExistingRow = {
@@ -1476,7 +1363,6 @@ export async function schedulePackSession(
     starts_at: string
     duration_min: number
     status: string
-    total_cents: number
     appointment_services: { zones: ZoneSnapshot[] | null }[]
   }
   const allRows = (allExisting ?? []) as unknown as ExistingRow[]
@@ -1562,19 +1448,13 @@ export async function schedulePackSession(
   const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
   if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
 
-  // El precio del pack aparece UNA sola vez entre todos sus turnos VIVOS: si
-  // ninguno de los turnos VIVOS lo tiene todavía (venta en persona sin turno
-  // "portador" aún, o el portador se canceló y nadie lo reemplazó todavía),
-  // esta sesión lo lleva; si ya está en otro turno vivo (venta online), va
-  // en 0 como siempre. Ojo: un turno CANCELADO puede seguir teniendo
-  // total_cents > 0 (no se le borra al cancelar) — por eso filtramos SÓLO
-  // los vivos acá, si no la plata quedaría "atrapada" en un turno que
-  // estadísticas ya no cuenta. NUNCA se usa packSessionPrices() acá: esa
-  // función reparte el precio de un LOTE nuevo (índice 0 = portador) y
-  // llamarla para agendar sesiones sueltas pondría el precio completo de
-  // nuevo, duplicándolo.
-  const priceAlreadyCarried = aliveRows.some((r) => r.total_cents > 0)
-  const sessionTotalCents = priceAlreadyCarried ? 0 : totalPriceCents
+  // Esta sesión es SIEMPRE $0: el pack ya está pagado por completo desde el
+  // momento de la compra (online, en el primer turno que crea `createBooking`
+  // vía `packSessionPrices`; en persona, en la Factura C que emite
+  // `venderPack`, sin turno asociado). Una sesión agendada después de la
+  // compra NUNCA es la portadora del precio: si lo fuera, completarla
+  // mostraría el botón "Facturar" y generaría una segunda Factura C
+  // irreversible para el mismo pack.
   const zonesSnapshot = reference?.appointment_services?.[0]?.zones ?? null
 
   const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
@@ -1589,7 +1469,7 @@ export async function schedulePackSession(
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
       duration_min: durationMin,
-      total_cents: sessionTotalCents,
+      total_cents: 0,
       deposit_cents: 0,
       deposit_paid: true,     // el pack ya está pagado (online o en persona)
       status: "pending",
@@ -1605,7 +1485,7 @@ export async function schedulePackSession(
     appointment_id: appt.id,
     service_id: pp.service_id,
     duration_min: durationMin,
-    price_cents: sessionTotalCents,
+    price_cents: 0,
     zones: zonesSnapshot,
     staff_id: null,
     starts_at: startsAt.toISOString(),
@@ -1614,11 +1494,6 @@ export async function schedulePackSession(
     await admin.from("appointments").delete().eq("id", appt.id)
     return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
   }
-
-  // Blanquea cualquier turno MUERTO que todavía cargara el precio (ver
-  // `syncPackPriceCarrier`): con la sesión recién creada ya viva, no hace
-  // falta promover a nadie más, pero sí conviene limpiar restos.
-  await syncPackPriceCarrier(admin, packPurchaseId)
 
   revalidatePath(`/admin/clientas/${pp.client_id}`)
   revalidatePath("/admin/turnos")

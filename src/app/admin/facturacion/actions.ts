@@ -68,7 +68,7 @@ export async function emitirFacturaTurno(
   const { data: appt } = await admin
     .from("appointments")
     .select(`
-      id, total_cents, client:clients(id, first_name, last_name, email, dni),
+      id, total_cents, pack_purchase_id, client:clients(id, first_name, last_name, email, dni),
       appointment_services(service:services(name))
     `)
     .eq("id", appointmentId)
@@ -79,8 +79,9 @@ export async function emitirFacturaTurno(
   if (appt.total_cents <= 0) {
     return {
       ok: false,
-      error:
-        "Este turno es de $0 (es una sesión de un pack, ya cubierta por la factura del pack). No se puede emitir una factura por $0.",
+      error: appt.pack_purchase_id
+        ? "Este turno es de $0 (es una sesión de un pack, ya cubierta por la factura del pack). No se puede emitir una factura por $0."
+        : "Este turno es de $0. No se puede emitir una factura por $0.",
     }
   }
 
