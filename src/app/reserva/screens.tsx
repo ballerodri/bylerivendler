@@ -25,6 +25,7 @@ import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { totalDueNowSeparate, validateSeparateSlots } from "@/lib/servicios/multi-booking"
+import { allowedStaffFor, type StaffServiceMap } from "@/lib/servicios/staff-services"
 
 type Variant = "mobile" | "desktop"
 
@@ -557,7 +558,7 @@ export function Screen1Services({
 }
 
 // ---------- Screen 2: Date & Time ----------
-export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals, businessHours }: ScreenProps & { professionals: Professional[]; businessHours: import("./data").BusinessHour[] }) {
+export function Screen2DateTime({ state, setState, onNext, onBack, onClose, variant, stepNumber, totalSteps, professionals, staffServices, businessHours }: ScreenProps & { professionals: Professional[]; staffServices: StaffServiceMap; businessHours: import("./data").BusinessHour[] }) {
   // `today` snapped to midnight so we compare just dates, not times.
   const [today] = useState(() => {
     const d = new Date()
@@ -975,7 +976,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
               <div key={svc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                 <span style={{ fontSize: 13, color: "var(--ink-mute)", flex: 1 }}>{svc.name}</span>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  {professionals.map((p) => (
+                  {professionals
+                    .filter((p) => p.id === "auto" || allowedStaffFor(svc.id, staffServices).includes(p.id))
+                    .map((p) => (
                     <button
                       key={p.id}
                       onClick={() => updateServiceStaff(svc.id, p.id)}
@@ -997,25 +1000,27 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         </div>
       ) : (
         // Single picker (original)
-        professionals.map((p) => {
-          const current = serviceStaff[state.services[0]?.id ?? ""] ?? "auto"
-          return (
-            <button
-              key={p.id}
-              className={`pro-row ${current === p.id ? "is-selected" : ""}`}
-              onClick={() => state.services[0] && updateServiceStaff(state.services[0].id, p.id)}
-            >
-              <div className="pro-avatar">{p.initials}</div>
-              <div>
-                <div className="pro-name">{p.name}</div>
-                <div className="pro-role">{p.role}</div>
-              </div>
-              <div className="pro-spacer" />
-              {p.id === "auto" && current !== "auto" && <span className="pro-hint">Recomendado</span>}
-              {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
-            </button>
-          )
-        })
+        professionals
+          .filter((p) => p.id === "auto" || allowedStaffFor(state.services[0]?.id ?? "", staffServices).includes(p.id))
+          .map((p) => {
+            const current = serviceStaff[state.services[0]?.id ?? ""] ?? "auto"
+            return (
+              <button
+                key={p.id}
+                className={`pro-row ${current === p.id ? "is-selected" : ""}`}
+                onClick={() => state.services[0] && updateServiceStaff(state.services[0].id, p.id)}
+              >
+                <div className="pro-avatar">{p.initials}</div>
+                <div>
+                  <div className="pro-name">{p.name}</div>
+                  <div className="pro-role">{p.role}</div>
+                </div>
+                <div className="pro-spacer" />
+                {p.id === "auto" && current !== "auto" && <span className="pro-hint">Recomendado</span>}
+                {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
+              </button>
+            )
+          })
       )}
     </div>
   )
@@ -1172,7 +1177,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                         hour: "2-digit", minute: "2-digit", hour12: false,
                         timeZone: "America/Argentina/Buenos_Aires",
                       })
-                    : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
+                    : i === 0
+                      ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                      : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
                 </span>
                 <span style={{ display: "flex", gap: 8 }}>
                   <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
