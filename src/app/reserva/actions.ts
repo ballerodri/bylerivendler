@@ -1233,10 +1233,16 @@ export async function fetchDayAvailability(
         // `staff_id: NULL`), la regla ya no se está exigiendo acá — el turno
         // existe igual, así que cualquier activa puede tomarlo. Sin este
         // fallback, `candidates` queda vacío y ningún día ofrece horarios.
+        // El fallback se dispara si el roster no tiene NINGUNA profesional
+        // ACTIVA — no sólo si está vacío: un servicio cuya única profesional se
+        // dio de baja dejaría `candidates` vacío y no ofrecería nunca un
+        // horario. (Ojo: NO se puede condicionar a `candidates.length === 0`,
+        // porque eso también taparía el caso legítimo "están todas ocupadas".)
+        const allowedRoster = allowedStaffFor(serviceId, staffMap)
         const allowedBase =
-          skipStaffServiceCheck && !allowedStaffFor(serviceId, staffMap).length
+          skipStaffServiceCheck && !allowedRoster.some((p) => activePros.includes(p))
             ? activePros
-            : allowedStaffFor(serviceId, staffMap)
+            : allowedRoster
         const candidates = allowedBase.filter(
           (pid) =>
             activePros.includes(pid) &&
@@ -1288,15 +1294,23 @@ export async function fetchDayAvailability(
         // `.includes(proHint)` la rechazaría siempre — justo lo que el
         // escape hatch existe para permitir. Ahí sí es la única candidata
         // real: se mantiene la pregunta de siempre.
-        if (skipStaffServiceCheck && !allowedStaffFor(serviceId, staffMap).includes(proHint)) {
-          return assignableStaff([proHint], overlappingLegs, staffMap, activePros).length > 0
-        }
         const candidates = allowedStaffFor(serviceId, staffMap).filter(
           (pid) =>
             activePros.includes(pid) &&
             proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
             !overlappingLegs.some((l) => l.staffId === pid)
         )
+        // La guarda se hace sobre las candidatas REALES, no sobre el roster:
+        // proHint puede faltar por estar fuera de `staff_services` O por estar
+        // DADA DE BAJA. Si preguntáramos sólo por el roster, una profesional
+        // dada de baja dejaría a sus clientas sin poder reagendar nunca más
+        // ("no hay horarios", todos los días, sin explicación).
+        // Acá ya sabemos que proHint trabaja a esa hora y no tiene un turno
+        // propio encima (se chequeó arriba), así que si igual no está entre las
+        // candidatas es por una de esas dos razones: es la única candidata real.
+        if (skipStaffServiceCheck && !candidates.includes(proHint)) {
+          return assignableStaff([proHint], overlappingLegs, staffMap, activePros).length > 0
+        }
         return assignableStaff(candidates, overlappingLegs, staffMap, activePros).includes(proHint)
       }
       return !(appointments ?? []).some((appt) => {
