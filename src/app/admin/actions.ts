@@ -1748,7 +1748,7 @@ export async function reasignarProfesional(
     ?? (leg.appointment as unknown as { starts_at: string }).starts_at
   const legDuration = (leg.duration_min as number | null)
     ?? (leg.appointment as unknown as { duration_min: number }).duration_min
-  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(legStartIso))
+  const { dateStr, timeStr } = arPartsFromUtc(new Date(legStartIso))
 
   // ¿Trabaja a esa hora? ¿Está libre? Se reusa el buscador con esa profesional
   // como hint explícito, saltando la puerta `staff_services` (escape del admin)
@@ -1778,10 +1778,15 @@ export async function reasignarProfesional(
   const firstLeg = (legs ?? [])
     .filter((l) => l.staff_id)
     .sort((a, b) => new Date(a.starts_at as string).getTime() - new Date(b.starts_at as string).getTime())[0]
-  await admin
+  // Si esta escritura falla, la pata (que es la fuente autoritativa por
+  // servicio) ya quedó bien, pero la cabecera denormalizada quedaría vieja.
+  // Se avisa para no dejar una inconsistencia silenciosa.
+  const { error: headErr } = await admin
     .from("appointments")
     .update({ staff_id: firstLeg?.staff_id ?? staffId })
     .eq("id", appointmentId)
+  if (headErr)
+    return { ok: false, error: "Se cambió el servicio pero no pudimos actualizar el turno. Refrescá para ver el estado." }
 
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
