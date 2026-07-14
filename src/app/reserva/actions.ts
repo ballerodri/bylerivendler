@@ -1549,7 +1549,7 @@ export async function fetchDayAvailability(
  * Desempate: la que tenga menos turnos ESE día. `preferredStaffId` (la elegida
  * en una sesión anterior del mismo pack) se prefiere si sigue disponible.
  */
-async function chooseStaffForSlot(
+export async function chooseStaffForSlot(
   supabase: ReturnType<typeof adminClient>,
   args: {
     dateStr: string

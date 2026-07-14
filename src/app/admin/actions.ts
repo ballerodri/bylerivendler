@@ -11,7 +11,7 @@ import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
-import { fetchDayAvailability } from "@/app/reserva/actions"
+import { fetchDayAvailability, chooseStaffForSlot } from "@/app/reserva/actions"
 
 const StatusSchema = z.enum([
   "pending",
@@ -1617,6 +1617,14 @@ export async function schedulePackSession(
   const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
   if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
 
+  // Resolver una profesional concreta para la sesión (antes quedaba en NULL).
+  const chosenStaffId = await chooseStaffForSlot(admin, {
+    dateStr,
+    timeStr,
+    durationMin,
+    serviceId: pp.service_id,
+  })
+
   // Esta sesión es SIEMPRE $0: el pack ya está pagado por completo desde el
   // momento de la compra (online, en el primer turno que crea `createBooking`
   // vía `packSessionPrices`; en persona, en la Factura C que emite
@@ -1633,7 +1641,7 @@ export async function schedulePackSession(
     .from("appointments")
     .insert({
       client_id: pp.client_id,
-      staff_id: null,
+      staff_id: chosenStaffId,
       room_id: room?.id ?? null,
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
@@ -1656,7 +1664,7 @@ export async function schedulePackSession(
     duration_min: durationMin,
     price_cents: 0,
     zones: zonesSnapshot,
-    staff_id: null,
+    staff_id: chosenStaffId,
     starts_at: startsAt.toISOString(),
   })
   if (linkErr) {
