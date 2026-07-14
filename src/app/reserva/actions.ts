@@ -10,6 +10,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import type { PlannedAppointment } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
@@ -155,6 +156,167 @@ async function rollbackAll(
   }
 
   return { ok: false, error: fallbackError }
+}
+
+/** El plan de turnos de un pack: lo que habría que crear, todavía sin crear nada. */
+type PackPlan = {
+  pack: { id: string; name: string; sessions: number; totalPriceCents: number }
+  serviceId: string
+  serviceName: string
+  slotDates: Date[]
+  appointments: PlannedAppointment[]
+}
+
+/**
+ * Resuelve un pack y arma el plan de sus turnos: el pack y su servicio, las
+ * zonas y duración de la 1ª sesión, valida las fechas elegidas y revalida CADA
+ * una contra la disponibilidad real. **No escribe nada** — `createBooking` es
+ * quien, con este plan, crea la `pack_purchase` y los turnos.
+ */
+async function planPack(
+  supabase: ReturnType<typeof adminClient>,
+  input: CreateBookingInput,
+  payChoice: PayChoice
+): Promise<{ ok: true; plan: PackPlan } | { ok: false; error: string }> {
+  const { data: pack } = await supabase
+    .from("packs")
+    .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
+    .eq("id", input.packId)
+    .eq("active", true)
+    .eq("visible_reserva", true)
+    .maybeSingle()
+  if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
+  const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
+  if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
+
+  // Quién hace el servicio del pack (`staff_services`). Mismo criterio
+  // fail-closed que el turno normal (más abajo): un servicio sin ninguna
+  // profesional asignada no se puede reservar online.
+  const { data: packLinkRows, error: packLinkErr } = await supabase
+    .from("staff_services")
+    .select("staff_id")
+    .eq("service_id", svc.id)
+  if (packLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+  const packStaffMap: StaffServiceMap = {
+    [svc.id]: (packLinkRows ?? []).map((r) => r.staff_id as string),
+  }
+  if (!serviceIsBookable(svc.id, packStaffMap))
+    return { ok: false, error: `"${svc.name}" no está disponible para reservar online por ahora.` }
+
+  // Duración de la 1ª sesión + snapshot de zonas
+  let firstDuration = svc.duration_min
+  let zonesSnapshot: ZoneSnapshot[] | null = null
+  if (svc.pricing_mode === "per_zone") {
+    const { data: zoneRows } = await supabase
+      .from("service_zones")
+      .select("id, name, duration_min, price_cents")
+      .eq("service_id", svc.id)
+      .eq("active", true)
+    const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null }))
+    const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
+    if (!selected || selected.length !== (pack.zones_count ?? 0))
+      return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
+    const p = computeZonePricing(selected, svc.price_cents)
+    firstDuration = p.durationMin
+    zonesSnapshot = p.zones
+  }
+
+  // ── Fechas de las sesiones ────────────────────────────────────────────────
+  const rawSlots = (input.packSlots?.length ? input.packSlots : [input.startsAt])
+  const slotDates = rawSlots.map((s) => new Date(s))
+  if (slotDates.some((d) => isNaN(d.getTime())))
+    return { ok: false, error: "Alguna fecha del pack es inválida." }
+
+  const nowMs = Date.now()
+  const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
+  if (pastIdx !== -1)
+    return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+
+  const rules = validatePackSlots(slotDates, {
+    sessionsTotal: pack.sessions,
+    intervalDays: pack.interval_days ?? null,
+  })
+  if (!rules.ok) return { ok: false, error: rules.error }
+
+  // La profesional del pack sale de SU propio campo. `proHint` se conserva
+  // como fallback para las reservas viejas (una pestaña abierta de antes del
+  // deploy manda `proHint` y no `packStaff`).
+  const packHint = input.packStaff ?? (input.proHint !== "auto" ? input.proHint : "auto")
+  const packStaffId = packHint !== "auto" ? packHint : null
+  const packProHint = packStaffId ?? "auto"
+
+  // La profesional pedida para el pack (si pidió una puntual) tiene que
+  // hacer el servicio del pack.
+  if (packStaffId && !canStaffDoService(packStaffId, svc.id, packStaffMap))
+    return { ok: false, error: `Esa profesional no realiza "${svc.name}". Elegí el horario de nuevo.` }
+
+  // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
+  const { data: bhRows } = await supabase
+    .from("business_hours")
+    .select("day_of_week, is_open, slots")
+  const bhByDow = new Map(
+    ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+      .map((h) => [h.day_of_week, h])
+  )
+
+  for (let i = 0; i < slotDates.length; i++) {
+    // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
+    // recién más abajo), así que fetchDayAvailability no las puede ver entre
+    // sí. Sin una regla de intervalo (interval_days null) dos sesiones
+    // podrían quedar más cerca que la duración de la sesión y superponerse:
+    // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
+    if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
+      return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
+
+    const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
+    const bh = bhByDow.get(dayOfWeek)
+    if (!bh?.is_open || !bh.slots.includes(timeStr))
+      return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
+    const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], { serviceId: svc.id })
+    if (!free.includes(timeStr))
+      return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
+  }
+
+  const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
+
+  const appointments: PlannedAppointment[] = slotDates.map((d, i) => ({
+    label: `Sesión ${i + 1} del pack`,
+    startsAtMs: d.getTime(),
+    durationMin: firstDuration,
+    staffId: packStaffId,
+    totalCents: prices[i].totalCents,
+    depositCents: prices[i].depositCents,
+    depositPaid: prices[i].depositPaid,
+    notesInternal: `Pack: ${pack.name} (sesión ${i + 1} de ${pack.sessions})`,
+    isPackSession: true,
+    legs: [
+      {
+        serviceId: svc.id,
+        name: svc.name,
+        durationMin: firstDuration,
+        priceCents: prices[i].totalCents,
+        zones: zonesSnapshot,
+        staffId: packStaffId,
+        startsAtMs: d.getTime(),
+      },
+    ],
+  }))
+
+  return {
+    ok: true,
+    plan: {
+      pack: {
+        id: pack.id,
+        name: pack.name,
+        sessions: pack.sessions,
+        totalPriceCents: pack.total_price_cents,
+      },
+      serviceId: svc.id,
+      serviceName: svc.name,
+      slotDates,
+      appointments,
+    },
+  }
 }
 
 
@@ -322,117 +484,24 @@ export async function createBooking(
 
   // ── Reserva de un PACK (excluyente): crea la compra + primer turno portador ──
   if (input.packId) {
-    const { data: pack } = await supabase
-      .from("packs")
-      .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
-      .eq("id", input.packId)
-      .eq("active", true)
-      .eq("visible_reserva", true)
-      .maybeSingle()
-    if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
-    const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
-    if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
+    const planned = await planPack(supabase, input, payChoice)
+    if (!planned.ok) return { ok: false, error: planned.error }
+    const { plan } = planned
 
-    // Quién hace el servicio del pack (`staff_services`). Mismo criterio
-    // fail-closed que el turno normal (más abajo): un servicio sin ninguna
-    // profesional asignada no se puede reservar online.
-    const { data: packLinkRows, error: packLinkErr } = await supabase
-      .from("staff_services")
-      .select("staff_id")
-      .eq("service_id", svc.id)
-    if (packLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
-    const packStaffMap: StaffServiceMap = {
-      [svc.id]: (packLinkRows ?? []).map((r) => r.staff_id as string),
-    }
-    if (!serviceIsBookable(svc.id, packStaffMap))
-      return { ok: false, error: `"${svc.name}" no está disponible para reservar online por ahora.` }
-
-    // Duración de la 1ª sesión + snapshot de zonas
-    let firstDuration = svc.duration_min
-    let zonesSnapshot: ZoneSnapshot[] | null = null
-    if (svc.pricing_mode === "per_zone") {
-      const { data: zoneRows } = await supabase
-        .from("service_zones")
-        .select("id, name, duration_min, price_cents")
-        .eq("service_id", svc.id)
-        .eq("active", true)
-      const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null }))
-      const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
-      if (!selected || selected.length !== (pack.zones_count ?? 0))
-        return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
-      const p = computeZonePricing(selected, svc.price_cents)
-      firstDuration = p.durationMin
-      zonesSnapshot = p.zones
-    }
-
-    // ── Fechas de las sesiones ────────────────────────────────────────────────
-    const rawSlots = (input.packSlots?.length ? input.packSlots : [input.startsAt])
-    const slotDates = rawSlots.map((s) => new Date(s))
-    if (slotDates.some((d) => isNaN(d.getTime())))
-      return { ok: false, error: "Alguna fecha del pack es inválida." }
-
-    const nowMs = Date.now()
-    const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
-    if (pastIdx !== -1)
-      return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
-
-    const rules = validatePackSlots(slotDates, {
-      sessionsTotal: pack.sessions,
-      intervalDays: pack.interval_days ?? null,
-    })
-    if (!rules.ok) return { ok: false, error: rules.error }
-
-    // Sala + staff (mismo criterio que el turno normal)
+    // Sala (mismo criterio que el turno normal). El staff del pack ya viene
+    // resuelto en el plan (`plan.appointments[i].staffId`).
     const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
-    // La profesional del pack sale de SU propio campo. `proHint` se conserva
-    // como fallback para las reservas viejas (una pestaña abierta de antes del
-    // deploy manda `proHint` y no `packStaff`).
-    const packHint = input.packStaff ?? (input.proHint !== "auto" ? input.proHint : "auto")
-    const packStaffId = packHint !== "auto" ? packHint : null
-    const packProHint = packStaffId ?? "auto"
-
-    // La profesional pedida para el pack (si pidió una puntual) tiene que
-    // hacer el servicio del pack.
-    if (packStaffId && !canStaffDoService(packStaffId, svc.id, packStaffMap))
-      return { ok: false, error: `Esa profesional no realiza "${svc.name}". Elegí el horario de nuevo.` }
-
-    // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
-    const { data: bhRows } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
-    )
-
-    for (let i = 0; i < slotDates.length; i++) {
-      // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
-      // recién más abajo), así que fetchDayAvailability no las puede ver entre
-      // sí. Sin una regla de intervalo (interval_days null) dos sesiones
-      // podrían quedar más cerca que la duración de la sesión y superponerse:
-      // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
-      if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
-        return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
-
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
-      const bh = bhByDow.get(dayOfWeek)
-      if (!bh?.is_open || !bh.slots.includes(timeStr))
-        return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
-      const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], { serviceId: svc.id })
-      if (!free.includes(timeStr))
-        return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
-    }
 
     // ── Crear la compra del pack ──────────────────────────────────────────────
     const { data: purchase, error: purErr } = await supabase
       .from("pack_purchases")
       .insert({
         client_id: clientId,
-        pack_id: pack.id,
-        pack_name: pack.name,
-        service_id: svc.id,
-        service_name: svc.name,
-        sessions_total: pack.sessions,
+        pack_id: plan.pack.id,
+        pack_name: plan.pack.name,
+        service_id: plan.serviceId,
+        service_name: plan.serviceName,
+        sessions_total: plan.pack.sessions,
         sessions_used: 0,
       })
       .select("id")
@@ -440,31 +509,31 @@ export async function createBooking(
     if (purErr || !purchase) return { ok: false, error: `No pudimos registrar el pack: ${purErr?.message}` }
 
     // ── Un turno por sesión elegida ───────────────────────────────────────────
-    const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
     const createdIds: string[] = []
 
-    for (let i = 0; i < slotDates.length; i++) {
-      const startsAt = slotDates[i]
-      const endsAt = new Date(startsAt.getTime() + firstDuration * 60_000)
-      const price = prices[i]
+    for (let i = 0; i < plan.appointments.length; i++) {
+      const item = plan.appointments[i]
+      const leg = item.legs[0]
+      const startsAt = new Date(item.startsAtMs)
+      const endsAt = new Date(startsAt.getTime() + item.durationMin * 60_000)
 
       const { data: appt, error: apptErr } = await supabase
         .from("appointments")
         .insert({
           client_id: clientId,
-          staff_id: packStaffId,
+          staff_id: item.staffId,
           room_id: packRoom?.id ?? null,
           starts_at: startsAt.toISOString(),
           ends_at: endsAt.toISOString(),
-          duration_min: firstDuration,
-          total_cents: price.totalCents,
-          deposit_cents: price.depositCents,
-          deposit_paid: price.depositPaid,
+          duration_min: item.durationMin,
+          total_cents: item.totalCents,
+          deposit_cents: item.depositCents,
+          deposit_paid: item.depositPaid,
           paid_cents: 0,
           status: "pending",
           source: "web",
           pack_purchase_id: purchase.id,
-          notes_internal: `Pack: ${pack.name} (sesión ${i + 1} de ${pack.sessions})`,
+          notes_internal: item.notesInternal,
         })
         .select("id")
         .single()
@@ -483,11 +552,11 @@ export async function createBooking(
 
       const { error: linkErr } = await supabase.from("appointment_services").insert({
         appointment_id: appt.id,
-        service_id: svc.id,
-        duration_min: firstDuration,
-        price_cents: price.totalCents,
-        zones: zonesSnapshot,
-        staff_id: packStaffId,
+        service_id: leg.serviceId,
+        duration_min: leg.durationMin,
+        price_cents: leg.priceCents,
+        zones: leg.zones,
+        staff_id: leg.staffId,
         starts_at: startsAt.toISOString(),
       })
       if (linkErr) {
@@ -506,10 +575,10 @@ export async function createBooking(
       await sendPackConfirmation({
         to: email,
         firstName: input.client.firstName.trim(),
-        packName: pack.name,
-        sessionsTotal: pack.sessions,
-        startsAtList: slotDates,
-        totalCents: pack.total_price_cents,
+        packName: plan.pack.name,
+        sessionsTotal: plan.pack.sessions,
+        startsAtList: plan.slotDates,
+        totalCents: plan.pack.totalPriceCents,
       })
     } catch {}
 
@@ -517,11 +586,11 @@ export async function createBooking(
       await notifyNewBooking(supabase, {
         clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
         clientPhone: input.client.phone,
-        servicesNames: [`${pack.name} (pack · ${slotDates.length} de ${pack.sessions} sesiones agendadas)`],
-        startsAt: slotDates[0],
-        durationMin: firstDuration,
-        totalCents: pack.total_price_cents,
-        assignedStaffIds: [packStaffId],
+        servicesNames: [`${plan.pack.name} (pack · ${plan.slotDates.length} de ${plan.pack.sessions} sesiones agendadas)`],
+        startsAt: plan.slotDates[0],
+        durationMin: plan.appointments[0].durationMin,
+        totalCents: plan.pack.totalPriceCents,
+        assignedStaffIds: [plan.appointments[0].staffId],
       })
     } catch {
       // no bloqueante: el pack y sus turnos ya están confirmados.
