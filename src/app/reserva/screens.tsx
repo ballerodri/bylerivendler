@@ -2047,6 +2047,7 @@ export function Screen5Confirm({
       savedClientId: state.savedClientId,
       comboId: state.combo?.id,
       packId: state.pack?.pack.id,
+      packStaff: pack ? ((state.pro || "auto") as "auto" | string) : undefined,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
       packSlots: pack ? packSlotsPicked : undefined,
       zoneSelections: Object.fromEntries(

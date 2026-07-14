@@ -35,6 +35,10 @@ const BookingInput = z.object({
   packId: z.string().uuid().optional(),
   packZoneIds: z.array(z.string().uuid()).optional(),
   packSlots: z.array(z.string().datetime()).optional(),
+  // La profesional del pack ("auto" o un staffId). ES SUYA: no se deriva de
+  // `resolvedStaff`, que pertenece a los servicios sueltos (en una compra
+  // mezclada el pack terminaría con la profesional de otro servicio).
+  packStaff: z.union([z.literal("auto"), z.string().uuid()]).optional(),
   payChoice: z.enum(["deposit", "full"]).optional(),
   // Modo "separados": una fecha por servicio (serviceId → ISO). Si no viene,
   // la reserva es la de siempre: UN turno con los servicios encadenados.
@@ -380,9 +384,11 @@ export async function createBooking(
 
     // Sala + staff (mismo criterio que el turno normal)
     const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
-    const packStaffId = input.resolvedStaff
-      ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
-      : (input.proHint !== "auto" ? input.proHint : null)
+    // La profesional del pack sale de SU propio campo. `proHint` se conserva
+    // como fallback para las reservas viejas (una pestaña abierta de antes del
+    // deploy manda `proHint` y no `packStaff`).
+    const packHint = input.packStaff ?? (input.proHint !== "auto" ? input.proHint : "auto")
+    const packStaffId = packHint !== "auto" ? packHint : null
     const packProHint = packStaffId ?? "auto"
 
     // La profesional pedida para el pack (si pidió una puntual) tiene que
