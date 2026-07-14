@@ -603,6 +603,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const [pickingIdx, setPickingIdx] = useState<number | null>(null)
   // Modo separados: qué servicio se está fechando ahora (null = mostrando la lista)
   const [pickingServiceId, setPickingServiceId] = useState<string | null>(null)
+  // "Ahora", congelado al montar: llamar a Date.now() en el render es impuro (el
+  // resultado cambiaría entre renders). El chequeo autoritativo de fecha pasada
+  // corre igual en pay() (evento) y en el servidor.
+  const [mountedAtMs] = useState(() => Date.now())
 
   const zoneSel = state.zoneSelections ?? {}
 
@@ -1296,7 +1300,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         priceCents: Math.round(effectiveService(s, zoneSel).price * 100),
       }))
     const overlap =
-      chosen.length >= 2 ? validateSeparateSlots(chosen, Date.now()) : ({ ok: true } as const)
+      chosen.length >= 2 ? validateSeparateSlots(chosen, mountedAtMs) : ({ ok: true } as const)
     const allPicked = state.services.every((s) => serviceSlots[s.id])
     const canContinue = allPicked && overlap.ok
 
