@@ -24,6 +24,7 @@ import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
+import { totalDueNowSeparate, validateSeparateSlots } from "@/lib/servicios/multi-booking"
 
 type Variant = "mobile" | "desktop"
 
@@ -70,6 +71,15 @@ function effectiveService(
   }
 }
 
+// Modo separados: formatea la fecha/hora elegida de un servicio, en hora AR.
+function fmtSlotAR(iso: string): string {
+  return new Date(iso).toLocaleString("es-AR", {
+    weekday: "short", day: "2-digit", month: "short",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+    timeZone: "America/Argentina/Buenos_Aires",
+  })
+}
+
 // ---------- Screen 1: Services ----------
 const COMBOS_TAB = "__combos__"
 const PACKS_TAB = "__packs__"
@@ -109,6 +119,8 @@ export function Screen1Services({
   // asignarle un profesional que la clienta nunca eligió para eso.
   const clearedResolution = {
     packSlots: undefined,
+    serviceSlots: undefined,
+    bookingMode: undefined,
     serviceOrder: undefined,
     resolvedStaff: undefined,
     selectedDate: undefined,
@@ -165,7 +177,19 @@ export function Screen1Services({
     const next = single
       ? [zoneId] // producto: una sola opción, reemplaza la anterior
       : cur.includes(zoneId) ? cur.filter((z) => z !== zoneId) : [...cur, zoneId]
-    setState({ ...state, zoneSelections: { ...zoneSel, [serviceId]: next } })
+    // La duración (y precio) de ESTE servicio cambió (pricingMode "per_zone"):
+    // la fecha que se había elegido para él en modo "separados" se eligió
+    // para otra duración y ya no vale. Las fechas de los OTROS servicios
+    // siguen siendo válidas, así que no tocamos todo `clearedResolution`
+    // (eso también borraría selectedDate/selectedTime del modo "juntos", que
+    // hoy se autocorrige solo vía el efecto de `assignmentKey`).
+    const slots = { ...(state.serviceSlots ?? {}) }
+    delete slots[serviceId]
+    setState({
+      ...state,
+      zoneSelections: { ...zoneSel, [serviceId]: next },
+      serviceSlots: Object.keys(slots).length ? slots : undefined,
+    })
   }
 
   const effective = (s: Service) => effectiveService(s, zoneSel)
@@ -553,14 +577,22 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const serviceStaff: Record<string, string> =
     state.serviceStaff ?? Object.fromEntries(state.services.map((s) => [s.id, "auto"]))
 
-  const updateServiceStaff = (serviceId: string, staffId: string) =>
+  const updateServiceStaff = (serviceId: string, staffId: string) => {
+    // El profesional de ESTE servicio cambió: la fecha que se había elegido
+    // para él en modo "separados" se ofreció según la disponibilidad de OTRO
+    // profesional y puede no valer para el nuevo. Las de los demás servicios
+    // siguen siendo válidas.
+    const slots = { ...(state.serviceSlots ?? {}) }
+    delete slots[serviceId]
     setState({
       ...state,
       serviceStaff: { ...serviceStaff, [serviceId]: staffId },
       selectedTime: null,
       serviceOrder: undefined,
       resolvedStaff: undefined,
+      serviceSlots: Object.keys(slots).length ? slots : undefined,
     })
+  }
 
   // Sequential availability result
   const [seqResult, setSeqResult] = useState<import("./actions").SequentialAvailabilityResult | null>(null)
@@ -569,12 +601,25 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   const [waitlistDone, setWaitlistDone] = useState(false)
   // Pack: qué sesión se está eligiendo ahora mismo (null = mostrando la lista)
   const [pickingIdx, setPickingIdx] = useState<number | null>(null)
+  // Modo separados: qué servicio se está fechando ahora (null = mostrando la lista)
+  const [pickingServiceId, setPickingServiceId] = useState<string | null>(null)
+  // "Ahora", congelado al montar: llamar a Date.now() en el render es impuro (el
+  // resultado cambiaría entre renders). El chequeo autoritativo de fecha pasada
+  // corre igual en pay() (evento) y en el servidor.
+  const [mountedAtMs] = useState(() => Date.now())
 
   const zoneSel = state.zoneSelections ?? {}
 
   // Pack seleccionado (excluyente con servicios/combo): la disponibilidad se
   // consulta con el servicio del pack y la duración calculada por zonas.
   const selectedPack = state.pack ?? null
+
+  // Elegir "separados" sólo tiene sentido con 2+ servicios sueltos: un combo es
+  // un turno por definición, y un pack ya tiene su propia pantalla de fechas.
+  const canSeparate = !selectedPack && !state.combo && state.services.length >= 2
+  const bookingMode = canSeparate ? (state.bookingMode ?? "juntos") : "juntos"
+  const serviceSlots = state.serviceSlots ?? {}
+
   const packDurationMin = selectedPack
     ? (selectedPack.pack.pricingMode === "per_zone"
         ? selectedPack.pack.zones.filter((z) => selectedPack.zoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
@@ -862,6 +907,60 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
+  const setMode = (m: "juntos" | "separados") => {
+    // Al cambiar de modo, lo elegido en el otro modo deja de valer. Incluye
+    // `serviceStaff`: si el modo anterior auto-resolvió un profesional
+    // (ver `selectSeqSlot`), eso fue el algoritmo, no una preferencia de la
+    // clienta, y no debe seguir acotando la disponibilidad en el modo nuevo.
+    setState({
+      ...state,
+      bookingMode: m,
+      serviceSlots: undefined,
+      serviceOrder: undefined,
+      resolvedStaff: undefined,
+      serviceStaff: undefined,
+      selectedDate: undefined,
+      selectedTime: null,
+    })
+    setPickingServiceId(null)
+  }
+
+  const ModeChooser = () =>
+    !canSeparate ? null : (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "0 0 20px" }}>
+        <strong style={{ fontFamily: "var(--serif)", fontSize: 15 }}>
+          Elegiste {state.services.length} servicios. ¿Cómo los querés?
+        </strong>
+        {([
+          { v: "juntos" as const, label: "El mismo día, uno después del otro", note: "Venís una sola vez" },
+          { v: "separados" as const, label: "Cada uno en su fecha y horario", note: "Elegís cuándo va cada uno" },
+        ]).map((o) => (
+          <label
+            key={o.v}
+            style={{
+              display: "flex", alignItems: "center", gap: 10, cursor: "pointer",
+              padding: "12px 14px", borderRadius: 12, fontSize: 13,
+              border: `1px solid ${bookingMode === o.v ? "var(--nude)" : "var(--line)"}`,
+              background: bookingMode === o.v ? "var(--rose-wash)" : "transparent",
+            }}
+          >
+            <input
+              type="radio"
+              name="bookingMode"
+              checked={bookingMode === o.v}
+              onChange={() => setMode(o.v)}
+              style={{ width: 16, height: 16, accentColor: "#b68a5f" }}
+            />
+            <span style={{ flex: 1 }}>
+              <strong>{o.label}</strong>
+              <br />
+              <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    )
+
   const ProPicker = () => (
     <div style={{ marginTop: 24 }}>
       <p className="eyebrow">
@@ -1134,6 +1233,156 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
+  // ── Separados: cada servicio con SU fecha ─────────────────────────────────
+  if (bookingMode === "separados") {
+    const picking = pickingServiceId
+      ? state.services.find((s) => s.id === pickingServiceId) ?? null
+      : null
+
+    if (picking) {
+      const eff = effectiveService(picking, zoneSel)
+      const backToList = () => setPickingServiceId(null)
+
+      const PickerBody = () => (
+        <>
+          <h1 className="headline">{picking.name}</h1>
+          <p className="lede">Elegí cuándo querés este servicio.</p>
+          <PackSessionPicker
+            businessHours={businessHours}
+            durationMin={eff.duration}
+            proHint={serviceStaff[picking.id] ?? "auto"}
+            minDate={null}
+            onPick={(iso) => {
+              setState({ ...state, serviceSlots: { ...serviceSlots, [picking.id]: iso } })
+              setPickingServiceId(null)
+            }}
+            onCancel={backToList}
+          />
+        </>
+      )
+      const PickerFooterCTA = () => (
+        <div className="footer">
+          <div className="footer__row">
+            <button className="btn--back" onClick={backToList}>
+              ← Atrás
+            </button>
+          </div>
+        </div>
+      )
+
+      if (variant === "desktop") {
+        return (
+          <div className="dmain">
+            <div className="dmain__inner">{PickerBody()}</div>
+            {PickerFooterCTA()}
+          </div>
+        )
+      }
+
+      return (
+        <div className="screen">
+          <TopBar onBack={backToList} onClose={onClose} />
+          <Progress step={stepNumber} total={totalSteps} />
+          <div className="screen__body">{PickerBody()}</div>
+          {PickerFooterCTA()}
+        </div>
+      )
+    }
+
+    // Las fechas elegidas, validadas con la MISMA regla que el servidor.
+    const chosen = state.services
+      .filter((s) => serviceSlots[s.id])
+      .map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(serviceSlots[s.id]).getTime(),
+        durationMin: effectiveService(s, zoneSel).duration,
+        priceCents: Math.round(effectiveService(s, zoneSel).price * 100),
+      }))
+    const overlap =
+      chosen.length >= 2 ? validateSeparateSlots(chosen, mountedAtMs) : ({ ok: true } as const)
+    const allPicked = state.services.every((s) => serviceSlots[s.id])
+    const canContinue = allPicked && overlap.ok
+
+    const SepBody = () => (
+      <>
+        <h1 className="headline">Tus <em>turnos</em></h1>
+        <p className="lede">Elegí la fecha de cada servicio.</p>
+
+        {ModeChooser()}
+        {ProPicker()}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
+          {state.services.map((s) => {
+            const iso = serviceSlots[s.id]
+            const eff = effectiveService(s, zoneSel)
+            return (
+              <div
+                key={s.id}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+                  borderRadius: 10,
+                }}
+              >
+                <span style={{ fontSize: 13 }}>
+                  <strong>{s.name}</strong> · {eff.duration} min
+                  <br />
+                  {iso ? (
+                    fmtSlotAR(iso)
+                  ) : (
+                    <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                  )}
+                </span>
+                <button className="btn" onClick={() => setPickingServiceId(s.id)}>
+                  {iso ? "Cambiar" : "Elegir fecha"}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+
+        {!overlap.ok && (
+          <p style={{ fontSize: 12, color: "#8c463c", margin: "0 0 8px" }}>{overlap.error}</p>
+        )}
+      </>
+    )
+
+    const SepFooterCTA = () => (
+      <div className="footer">
+        <div className="footer__row">
+          <button className="btn--back" onClick={onBack}>
+            ← Atrás
+          </button>
+          <button className="btn btn--primary" disabled={!canContinue} onClick={onNext}>
+            {!allPicked ? "Elegí la fecha de cada servicio" : "Continuar"}
+            <span className="btn__arrow">
+              <Icon.Arrow />
+            </span>
+          </button>
+        </div>
+      </div>
+    )
+
+    if (variant === "desktop") {
+      return (
+        <div className="dmain">
+          <div className="dmain__inner">{SepBody()}</div>
+          {SepFooterCTA()}
+        </div>
+      )
+    }
+
+    return (
+      <div className="screen">
+        <TopBar onBack={onBack} onClose={onClose} />
+        <Progress step={stepNumber} total={totalSteps} />
+        <div className="screen__body">{SepBody()}</div>
+        {SepFooterCTA()}
+      </div>
+    )
+  }
+
   if (variant === "desktop") {
     return (
       <div className="dmain">
@@ -1145,6 +1394,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           <p className="lede">
             Horario de Buenos Aires (GMT-3). Los días con punto dorado son hoy.
           </p>
+          {ModeChooser()}
           <div className="dcol-2">
             {Cal()}
             <div>
@@ -1171,6 +1421,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           Horario de Buenos Aires. Los días con turnos disponibles son
           seleccionables.
         </p>
+        {ModeChooser()}
         {Cal()}
         {Slots()}
         {ProPicker()}
@@ -1643,12 +1894,25 @@ export function Screen5Confirm({
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const payChoice: PayChoice = state.payChoice ?? "deposit"
+  const separados =
+    !pack && !combo && services.length >= 2 && (state.bookingMode ?? "juntos") === "separados"
+
   // Se calcula en CENTAVOS, igual que el servidor, para que no haya diferencias
   // de redondeo entre lo que ve la clienta y lo que se guarda.
   const totalCents = Math.round(total * 100)
-  const depositCents = redeeming ? 0 : amountDueNow(totalCents, payChoice)
+  // En "separados" cada turno lleva su propia seña: lo que transfiere es la
+  // SUMA de esas señas, no el 30% del total (cada turno redondea la suya).
+  const depositCents = redeeming
+    ? 0
+    : separados
+      ? totalDueNowSeparate(services.map((s) => Math.round(effective(s).price * 100)), payChoice)
+      : amountDueNow(totalCents, payChoice)
   const deposit = depositCents / 100
   const remaining = redeeming ? 0 : total - deposit
+  const dueNowFor = (c: PayChoice) =>
+    separados
+      ? totalDueNowSeparate(services.map((s) => Math.round(effective(s).price * 100)), c)
+      : amountDueNow(totalCents, c)
 
   const setPayChoice = (c: PayChoice) => setState({ ...state, payChoice: c })
 
@@ -1701,13 +1965,45 @@ export function Screen5Confirm({
     // arriba): esta pantalla puede ser la primera en montar tras restaurar el
     // estado persistido, así que no podemos asumir que ya vino limpio.
     const packSlotsPicked = pack ? cleanPackSlots(state.packSlots ?? [], pack.pack.sessions) : []
-    const missingDate = pack ? packSlotsPicked.length === 0 : (!state.selectedDate || !state.selectedTime)
+    const missingDate = pack
+      ? packSlotsPicked.length === 0
+      : separados
+        ? !services.every((s) => state.serviceSlots?.[s.id])
+        : (!state.selectedDate || !state.selectedTime)
     if (!state.form || missingDate) {
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
       return
     }
 
-    const startsAt = pack ? new Date(packSlotsPicked[0]) : combineDateTime(state.selectedDate!, state.selectedTime!)
+    // Re-validar las fechas con la MISMA regla que usa el servidor (futuras y
+    // sin superposición): el estado puede venir de localStorage y traer
+    // fechas que ya pasaron, o que ahora se solapan (p.ej. cambió la duración
+    // por una zona elegida distinta). El servidor lo rechaza igual, pero acá
+    // se lo decimos ANTES de mostrar el spinner de "Confirmando…".
+    if (separados) {
+      const items = services.map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(state.serviceSlots![s.id]).getTime(),
+        durationMin: effective(s).duration,
+        priceCents: Math.round(effective(s).price * 100),
+      }))
+      const check = validateSeparateSlots(items, Date.now())
+      if (!check.ok) {
+        setError(check.error)
+        return
+      }
+    }
+
+    // En separados el servidor usa serviceSlots; startsAt va igual porque el
+    // schema lo exige: mandamos el más temprano de los elegidos.
+    const startsAt = pack
+      ? new Date(packSlotsPicked[0])
+      : separados
+        ? new Date(
+            Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime()))
+          )
+        : combineDateTime(state.selectedDate!, state.selectedTime!)
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón
@@ -1723,13 +2019,20 @@ export function Screen5Confirm({
       serviceIds: services.map((s) => s.id),
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
-      // El pack nunca resuelve `serviceOrder`/`resolvedStaff` (eso lo escribe
-      // sólo `selectSeqSlot`, en el flujo de servicios sueltos) — si un pack
-      // quedó seleccionado después de haber resuelto un turno suelto, esos
-      // campos podrían traer un profesional que la clienta nunca eligió para
-      // el pack. Belt-and-braces: nunca los mandamos cuando hay pack.
-      serviceOrder: pack ? undefined : state.serviceOrder,
-      resolvedStaff: pack ? undefined : state.resolvedStaff,
+      // `serviceOrder`/`resolvedStaff` son conceptos de "juntos" (el orden y
+      // profesional que el algoritmo resolvió para encadenar servicios en UN
+      // turno, ver `selectSeqSlot`) — ni el pack ni "separados" los usan.
+      // El pack nunca los resuelve: si quedó seleccionado después de haber
+      // resuelto un turno suelto "juntos", esos campos podrían traer un
+      // profesional que la clienta nunca eligió para el pack. Y en
+      // "separados" cada servicio tiene SU fecha/profesional propios en
+      // `serviceSlots`/`serviceStaff`; mandar un `serviceOrder`/`resolvedStaff`
+      // viejo (de un "juntos" anterior) no aplica y podría confundir al
+      // servidor. Belt-and-braces: nunca los mandamos cuando hay pack o separados.
+      serviceOrder: pack || separados ? undefined : state.serviceOrder,
+      resolvedStaff: pack || separados ? undefined : state.resolvedStaff,
+      serviceSlots: separados ? state.serviceSlots : undefined,
+      serviceStaff: separados ? state.serviceStaff : undefined,
       redeemWithPoints: redeeming,
       payChoice,
       savedClientId: state.savedClientId,
@@ -1757,7 +2060,8 @@ export function Screen5Confirm({
         localStorage.removeItem("blv_booking")
         localStorage.removeItem("blv_step")
       } catch {}
-      window.location.href = `/reserva/exito?id=${result.appointmentId}`
+      const ids = result.appointmentIds ?? [result.appointmentId]
+      window.location.href = `/reserva/exito?id=${ids.join(",")}`
     } else {
       setPaying(false)
       setError(result.error)
@@ -1811,7 +2115,7 @@ export function Screen5Confirm({
         </div>
         <div className="summary__row">
           <span className="summary__label">Cuándo</span>
-          <div className="summary__value">
+          <div className="summary__value" style={separados ? { flex: 1, marginLeft: 16 } : undefined}>
             {pack ? (
               <div>
                 {packSlotsForDisplay.map((iso, i) => {
@@ -1833,6 +2137,16 @@ export function Screen5Confirm({
                   </small>
                 )}
               </div>
+            ) : separados ? (
+              services.map((s) => {
+                const iso = state.serviceSlots?.[s.id]
+                return (
+                  <div key={s.id} className="breakdown__row">
+                    <span>{s.name}</span>
+                    <span>{iso ? fmtSlotAR(iso) : "—"}</span>
+                  </div>
+                )
+              })
             ) : (
               <>
                 {dow} {dateObj && dateObj.getDate()} de{" "}
@@ -1844,7 +2158,23 @@ export function Screen5Confirm({
             )}
           </div>
         </div>
-        {!isMultiResolved && (
+        {separados ? (
+        <div className="summary__row">
+          <span className="summary__label">Profesional</span>
+          <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
+            {services.map((s, i) => {
+              const staffId = state.serviceStaff?.[s.id] ?? "auto"
+              const assignedPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
+              return (
+                <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
+                  {s.name}
+                  <small>{assignedPro.name}</small>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        ) : !isMultiResolved && (
         <div className="summary__row">
           <span className="summary__label">Profesional</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
@@ -1972,7 +2302,7 @@ export function Screen5Confirm({
                 <br />
                 <span style={{ color: "var(--ink-soft)", fontSize: 12 }}>{o.note}</span>
               </span>
-              <strong>{fmtPrice(amountDueNow(totalCents, o.v) / 100)}</strong>
+              <strong>{fmtPrice(dueNowFor(o.v) / 100)}</strong>
             </label>
           ))}
         </div>
