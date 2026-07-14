@@ -165,7 +165,19 @@ export function Screen1Services({
     } else {
       // El pack ya NO borra los servicios sueltos: se pueden comprar juntos.
       // El combo sí (tiene precio propio; mezclarlo está fuera de alcance).
-      setState({ ...state, pack: { pack: p, zoneIds: [] }, combo: null, ...clearedPack })
+      //
+      // OJO: si venía un combo, `state.services` son LOS SERVICIOS DEL COMBO.
+      // Sacar el combo tiene que sacarlos también: si no, se quedan en la
+      // compra y se cobran SUELTOS (sin el precio del combo), sin que la
+      // clienta los haya pedido. Sólo se limpian en ese caso — un servicio
+      // suelto que ella eligió a mano se conserva.
+      setState({
+        ...state,
+        pack: { pack: p, zoneIds: [] },
+        combo: null,
+        ...(selectedCombo ? { services: [], ...clearedServices } : {}),
+        ...clearedPack,
+      })
     }
   }
 
