@@ -576,6 +576,58 @@ async function planLooseServices(
   return { ok: true, mode: "juntos", appointments: [appointment] }
 }
 
+/**
+ * Crea un evento de Google Calendar por cada turno de `items` (best-effort:
+ * `try/catch` por evento, no puede tirar) y le guarda `google_event_id` al
+ * turno. Cachea el staff (evita repetir la misma consulta cuando varios
+ * turnos comparten profesional) — antes este bloque vivía duplicado, línea
+ * por línea, entre "separados" y la mezcla. Lo usan esas dos ramas y también
+ * "pack solo" (que hasta ahora nunca creaba estos eventos).
+ */
+async function createCalendarEventsForAppointments(
+  supabase: ReturnType<typeof adminClient>,
+  clientName: string,
+  items: { appointmentId: string; staffId: string | null; label: string; startsAtMs: number; durationMin: number }[]
+): Promise<void> {
+  const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
+  try {
+    const distinctStaffIds = [...new Set(
+      items.map((item) => item.staffId).filter((id): id is string => !!id)
+    )]
+    if (distinctStaffIds.length) {
+      const { data: staffRows } = await supabase
+        .from("staff")
+        .select("id, full_name, email, calendar_color_id")
+        .in("id", distinctStaffIds)
+      for (const row of (staffRows ?? []) as { id: string; full_name: string | null; email: string | null; calendar_color_id: string | null }[]) {
+        staffCache.set(row.id, { full_name: row.full_name, email: row.email, calendar_color_id: row.calendar_color_id })
+      }
+    }
+  } catch {
+    // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
+  }
+
+  for (const item of items) {
+    try {
+      const cached = item.staffId ? staffCache.get(item.staffId) : undefined
+      const eventId = await createCalendarEvent({
+        appointmentId: item.appointmentId,
+        clientName,
+        serviceNames: [item.label],
+        staffName: cached?.full_name ?? null,
+        staffEmail: cached?.email ?? null,
+        staffColorId: cached?.calendar_color_id ?? null,
+        startsAt: new Date(item.startsAtMs),
+        endsAt: new Date(item.startsAtMs + item.durationMin * 60_000),
+        notes: null,
+      })
+      if (eventId)
+        await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", item.appointmentId)
+    } catch {
+      // Non-fatal: los turnos ya están creados.
+    }
+  }
+}
 
 export async function createBooking(
   raw: CreateBookingInput
@@ -896,8 +948,9 @@ export async function createBooking(
 
   // ── FASE D: avisos (best-effort, los turnos ya existen) ────────────────────
   if (hasPack && !hasServices) {
-    // Pack solo → sendPackConfirmation + notifyNewBooking, exactamente como
-    // hoy (sin Calendar: el pack nunca creó eventos).
+    // Pack solo → sendPackConfirmation + Calendar (una sesión por evento —
+    // antes esta rama nunca los creaba; ahora se comporta igual que un pack
+    // comprado mezclado con servicios) + notifyNewBooking.
     const pp = packPlan!
     try {
       await sendPackConfirmation({
@@ -909,6 +962,18 @@ export async function createBooking(
         totalCents: pp.pack.totalPriceCents,
       })
     } catch {}
+
+    await createCalendarEventsForAppointments(
+      supabase,
+      `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      ordered.map((p, i) => ({
+        appointmentId: created.appointmentIds[i],
+        staffId: p.staffId,
+        label: p.label,
+        startsAtMs: p.startsAtMs,
+        durationMin: p.durationMin,
+      }))
+    )
 
     try {
       await notifyNewBooking(supabase, {
@@ -941,51 +1006,19 @@ export async function createBooking(
         payChoice
       )
 
-      // Google Calendar: un evento por turno. Se cachea el staff (evita
-      // repetir la misma consulta cuando varios turnos comparten profesional).
-      const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
-      try {
-        const distinctStaffIds = [...new Set(
-          plan.map((item) => item.staffId).filter((id): id is string => !!id)
-        )]
-        if (distinctStaffIds.length) {
-          const { data: staffRows } = await supabase
-            .from("staff")
-            .select("id, full_name, email, calendar_color_id")
-            .in("id", distinctStaffIds)
-          for (const row of (staffRows ?? []) as { id: string; full_name: string | null; email: string | null; calendar_color_id: string | null }[]) {
-            staffCache.set(row.id, { full_name: row.full_name, email: row.email, calendar_color_id: row.calendar_color_id })
-          }
-        }
-      } catch {
-        // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
-      }
-
-      for (let i = 0; i < created.appointmentIds.length; i++) {
-        try {
-          const item = ordered[i]
-          const staffId = item.staffId
-          const cached = staffId ? staffCache.get(staffId) : undefined
-          const staffName = cached?.full_name ?? null
-          const staffEmail = cached?.email ?? null
-          const staffColorId = cached?.calendar_color_id ?? null
-          const eventId = await createCalendarEvent({
-            appointmentId: created.appointmentIds[i],
-            clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-            serviceNames: [item.label],
-            staffName,
-            staffEmail,
-            staffColorId,
-            startsAt: new Date(item.startsAtMs),
-            endsAt: new Date(item.startsAtMs + item.durationMin * 60_000),
-            notes: null,
-          })
-          if (eventId)
-            await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", created.appointmentIds[i])
-        } catch {
-          // Non-fatal: los turnos ya están creados.
-        }
-      }
+      // Google Calendar: un evento por turno (helper compartido con "pack
+      // solo" y la mezcla — acá vivía duplicado línea por línea).
+      await createCalendarEventsForAppointments(
+        supabase,
+        `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        ordered.map((item, i) => ({
+          appointmentId: created.appointmentIds[i],
+          staffId: item.staffId,
+          label: item.label,
+          startsAtMs: item.startsAtMs,
+          durationMin: item.durationMin,
+        }))
+      )
 
       // UN solo mail, con UNA sola seña.
       try {
@@ -1106,51 +1139,40 @@ export async function createBooking(
       // ignore — la reserva ya está; el equipo puede reenviar manualmente.
     }
 
-    // Google Calendar: un evento por turno. Se cachea el staff (evita repetir
-    // la misma consulta cuando varios turnos comparten profesional).
-    const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
+    // Google Calendar: un evento por turno (mismo helper que "separados" y
+    // "pack solo" — antes vivía duplicado acá).
+    await createCalendarEventsForAppointments(
+      supabase,
+      `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      ordered.map((p, i) => ({
+        appointmentId: created.appointmentIds[i],
+        staffId: p.staffId,
+        label: p.label,
+        startsAtMs: p.startsAtMs,
+        durationMin: p.durationMin,
+      }))
+    )
+
+    // notifyNewBooking: UN aviso agregado para el pack — mismo formato que
+    // "pack solo" (nombre + precio TOTAL del pack + cuántas sesiones se
+    // agendaron), nunca uno por sesión (las sesiones 2..N no tienen precio
+    // propio: mandarían "$0") — más UN aviso por cada servicio suelto, con
+    // SU fecha, SU duración, SU profesional y SU precio.
     try {
-      const distinctStaffIds = [...new Set(
-        ordered.map((p) => p.staffId).filter((id): id is string => !!id)
-      )]
-      if (distinctStaffIds.length) {
-        const { data: staffRows } = await supabase
-          .from("staff")
-          .select("id, full_name, email, calendar_color_id")
-          .in("id", distinctStaffIds)
-        for (const row of (staffRows ?? []) as { id: string; full_name: string | null; email: string | null; calendar_color_id: string | null }[]) {
-          staffCache.set(row.id, { full_name: row.full_name, email: row.email, calendar_color_id: row.calendar_color_id })
-        }
-      }
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: [`${pp.pack.name} (pack · ${pp.slotDates.length} de ${pp.pack.sessions} sesiones agendadas)`],
+        startsAt: pp.slotDates[0],
+        durationMin: pp.appointments[0].durationMin,
+        totalCents: pp.pack.totalPriceCents,
+        assignedStaffIds: [pp.appointments[0].staffId],
+      })
     } catch {
-      // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
+      // no bloqueante: el pack y sus turnos ya están confirmados.
     }
 
-    for (let i = 0; i < ordered.length; i++) {
-      try {
-        const p = ordered[i]
-        const cached = p.staffId ? staffCache.get(p.staffId) : undefined
-        const eventId = await createCalendarEvent({
-          appointmentId: created.appointmentIds[i],
-          clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-          serviceNames: [p.label],
-          staffName: cached?.full_name ?? null,
-          staffEmail: cached?.email ?? null,
-          staffColorId: cached?.calendar_color_id ?? null,
-          startsAt: new Date(p.startsAtMs),
-          endsAt: new Date(p.startsAtMs + p.durationMin * 60_000),
-          notes: null,
-        })
-        if (eventId)
-          await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", created.appointmentIds[i])
-      } catch {
-        // Non-fatal: los turnos ya están creados.
-      }
-    }
-
-    // notifyNewBooking: un aviso por turno, con SU fecha, SU duración, SU
-    // profesional y SU precio — nunca uno solo con una fecha inventada.
-    for (const p of ordered) {
+    for (const p of looseItems) {
       try {
         await notifyNewBooking(supabase, {
           clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
