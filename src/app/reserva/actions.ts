@@ -12,6 +12,7 @@ import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot 
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
+import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -738,10 +739,47 @@ export async function createBooking(
     return { ok: true, appointmentId: createdIds[0], appointmentIds: createdIds }
   }
 
-  // 5) Determine main staff (first service's resolved pro, or proHint)
+  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
+  // de crear el turno. Tiene que resolverse acá (y no más abajo, donde vivía
+  // antes junto al insert de appointment_services) porque `mainStaffId`
+  // depende de él: la profesional principal tiene que ser la del PRIMER
+  // servicio del orden REAL, no la del primero que mandó la clienta — si el
+  // orden se reordena por "va siempre al final", usar `input.serviceOrder[0]`
+  // le asigna el turno a la profesional equivocada a la hora equivocada.
+  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
+  const requestedOrder = orderedIds
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
+    // se agrega acá sin perder ninguno de los campos de `services` que se usan
+    // más abajo (id, computed[s.id], etc).
+    .map((s) => ({ ...s, orderLast: s.order_last }))
+
+  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
+  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
+  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
+  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
+  // profesional podría quedar escrita en un horario en el que está bloqueada
+  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
+  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
+  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
+  // arbitrario de Postgres: no hay un orden validado que respetar, así que
+  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
+  // rechazar una reserva perfectamente válida.
+  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder)) {
+    return { ok: false, error: "Ese horario ya no es válido. Elegí el horario de nuevo." }
+  }
+
+  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
+  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
+  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
+  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
+  const orderedServices = sortOrderLast(requestedOrder)
+
+  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
   const mainStaffId = input.resolvedStaff
-    ? (input.serviceOrder?.[0]
-        ? (input.resolvedStaff[input.serviceOrder[0]] ?? null)
+    ? (orderedServices[0]
+        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
         : Object.values(input.resolvedStaff)[0] ?? null)
     : (input.proHint !== "auto" ? input.proHint : null)
 
@@ -769,19 +807,8 @@ export async function createBooking(
   if (apptErr || !appt)
     return { ok: false, error: `Turno: ${apptErr?.message}` }
 
-  // 6) Link services — respecting sequential order and per-service staff/starts_at
-  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
-  const requestedOrder = orderedIds
-    .map((id) => services.find((s) => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => Boolean(s))
-  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
-  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
-  // de los demás. Un payload manipulado no puede colar un masaje primero.
-  const orderedServices = [
-    ...requestedOrder.filter((s) => !s.order_last),
-    ...requestedOrder.filter((s) => s.order_last),
-  ]
-
+  // 6) Link services — respecting sequential order (resolved above) and
+  // per-service staff/starts_at
   let serviceMs = startsAt.getTime()
   const apptServices = orderedServices.map((s) => {
     const c = computed[s.id]
@@ -1215,6 +1242,14 @@ export async function fetchSequentialAvailability(
     supabase.from("services").select("id, order_last").in("id", serviceIds),
   ])
 
+  // Fail-open: si esta consulta falla, `orderLastIds` queda vacío y el solver
+  // ofrece cadenas sin respetar "va siempre al final" (createBooking, que sí
+  // relee `order_last`, puede terminar en desacuerdo con lo que se ofreció en
+  // pantalla). Es la dirección correcta para no romper el flujo principal de
+  // reservas si esta tabla falla, pero el error no puede quedar invisible.
+  if (orderLastRes.error)
+    console.error("fetchSequentialAvailability: no se pudo leer order_last", orderLastRes.error)
+
   const byDow = new Map(
     ((bhRes.data ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[]).map(
       (h) => [h.day_of_week, h]
@@ -1248,11 +1283,12 @@ export async function fetchSequentialAvailability(
         const b = services[perm[j]].id
         // If rule says b must come before a, this ordering is invalid
         if (orderRules.has(`${b}|${a}`)) return false
-        // "Va siempre al final": a (antes) marcado y b (después) sin marcar
-        // significa que un servicio "al final" quedó antes de uno normal.
-        if (orderLastIds.has(a) && !orderLastIds.has(b)) return false
       }
     }
+    // "Va siempre al final": misma regla pura que usa `createBooking` — se
+    // chequea sobre TODA la cadena, no sólo el par inmediato.
+    if (orderLastViolated(perm.map((i) => ({ orderLast: orderLastIds.has(services[i].id) }))))
+      return false
     return true
   }
 
