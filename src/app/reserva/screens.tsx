@@ -1103,6 +1103,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             businessHours={businessHours}
             durationMin={packDurationMin}
             proHint={proHint}
+            serviceId={pack.serviceId}
             minDate={minFor(idx)}
             onPick={(iso) => setSlot(idx, iso)}
             onCancel={backToList}
@@ -1251,6 +1252,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             businessHours={businessHours}
             durationMin={eff.duration}
             proHint={serviceStaff[picking.id] ?? "auto"}
+            serviceId={picking.id}
             minDate={null}
             onPick={(iso) => {
               setState({ ...state, serviceSlots: { ...serviceSlots, [picking.id]: iso } })

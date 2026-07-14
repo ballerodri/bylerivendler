@@ -93,6 +93,9 @@ export default function PackSessions({
             businessHours={businessHours}
             durationMin={purchase.durationMin}
             proHint="auto"
+            // Sin serviceId a propósito: admin, no aplica la regla de
+            // staff_services (igual que `schedulePackSession`, del lado del
+            // servidor).
             minDate={minDate}
             onPick={pick}
             onCancel={() => setPicking(false)}
