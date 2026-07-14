@@ -350,8 +350,19 @@ async function planLooseServices(
   computed: Record<string, { durationMin: number; priceCents: number; zones: ZoneSnapshot[] | null }>,
   payChoice: PayChoice,
   redeem: boolean,
-  totalPointsCost: number
-): Promise<{ ok: true; appointments: PlannedAppointment[] } | { ok: false; error: string }> {
+  totalPointsCost: number,
+  // La duración y el precio del turno "juntos" (ya con el combo aplicado, si
+  // corresponde): los computa `createBooking` UNA sola vez, antes de llamar
+  // acá, porque son los mismos valores que usan después el mail de
+  // confirmación y `notifyNewBooking`. Pasarlos en vez de re-derivarlos acá
+  // evita una segunda lectura del combo (podría desactivarse entre una y
+  // otra) y una segunda cuenta de la plata.
+  totalDuration: number,
+  totalCents: number
+): Promise<
+  | { ok: true; mode: "separados" | "juntos"; appointments: PlannedAppointment[] }
+  | { ok: false; error: string }
+> {
   // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
   // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
   // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
@@ -435,24 +446,12 @@ async function planLooseServices(
       }
     })
 
-    return { ok: true, appointments }
+    return { ok: true, mode: "separados", appointments }
   }
 
   // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────────
-  const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
-  let totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
-
-  // Si es un combo, reemplazamos el precio por el del combo
-  if (input.comboId) {
-    const { data: combo } = await supabase
-      .from("combos")
-      .select("total_price_cents, active")
-      .eq("id", input.comboId)
-      .eq("active", true)
-      .maybeSingle()
-    if (combo) totalCents = combo.total_price_cents
-  }
-
+  // `totalDuration` y `totalCents` vienen de `createBooking` (parámetros):
+  // no se recalculan acá. Ver el comentario de los parámetros más arriba.
   const depositCents = amountDueNow(totalCents, payChoice)
   const startsAt = new Date(input.startsAt)
 
@@ -573,7 +572,7 @@ async function planLooseServices(
     legs,
   }
 
-  return { ok: true, appointments: [appointment] }
+  return { ok: true, mode: "juntos", appointments: [appointment] }
 }
 
 
@@ -901,8 +900,9 @@ export async function createBooking(
   // de crearlos: valida TODO (fechas, superposición, horarios del negocio,
   // disponibilidad real, `order_last`) y devuelve el `PlannedAppointment[]`
   // que se va a crear — todavía sin escribir nada.
-  const isSeparados = !!(input.serviceSlots && services.length >= 2 && !input.comboId)
-  const planned = await planLooseServices(supabase, input, services, computed, payChoice, redeem, totalPointsCost)
+  const planned = await planLooseServices(
+    supabase, input, services, computed, payChoice, redeem, totalPointsCost, totalDuration, totalCents
+  )
   if (!planned.ok) {
     // Los puntos ya se descontaron arriba (paso 4b). Si la planificación
     // falla por CUALQUIER motivo, hay que devolverlos: la clienta no se
@@ -920,7 +920,7 @@ export async function createBooking(
   // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
   // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
   // sigue siendo UN turno, más abajo, exactamente como siempre.
-  if (isSeparados) {
+  if (planned.mode === "separados") {
     // Los puntos ya se descontaron arriba (paso 4b). Si esta rama falla por
     // CUALQUIER motivo, hay que devolverlos: la clienta no se lleva ningún
     // turno. Se hoistea ANTES de cualquier return para que ningún early
@@ -991,10 +991,18 @@ export async function createBooking(
     // "juntos" (que le pasa a `sendBookingConfirmation` el `totalCents` sin
     // zonificar). Si canjeó con puntos no debe nada, pero eso lo dice
     // `dueNowCents` — "Total: $0" sería mentira aunque haya canjeado.
-    const realTotal = planned.appointments.reduce((a, item) => a + item.legs[0].priceCents, 0)
+    // `item.legs.reduce(...)` en vez de `item.legs[0]`: correcto hoy (un turno
+    // "separados" tiene una sola pata), pero así no puede desaparecer una pata
+    // en silencio si eso cambiara.
+    const realTotal = planned.appointments.reduce(
+      (a, item) => a + item.legs.reduce((la, l) => la + l.priceCents, 0), 0
+    )
     // Misma función pura que usa la pantalla para mostrarle a la clienta
     // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
-    const dueNow = redeem ? 0 : totalDueNowSeparate(planned.appointments.map((item) => item.legs[0].priceCents), payChoice)
+    const dueNow = redeem ? 0 : totalDueNowSeparate(
+      planned.appointments.map((item) => item.legs.reduce((la, l) => la + l.priceCents, 0)),
+      payChoice
+    )
 
     // Google Calendar: un evento por turno. Se cachea el staff (evita repetir
     // la misma consulta cuando varios turnos comparten profesional).
