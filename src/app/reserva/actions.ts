@@ -156,7 +156,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents, points_cost, loyalty_enabled, pricing_mode, zone_selection")
+    .select("id, name, duration_min, price_cents, points_cost, loyalty_enabled, pricing_mode, zone_selection, order_last")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -771,9 +771,16 @@ export async function createBooking(
 
   // 6) Link services — respecting sequential order and per-service staff/starts_at
   const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
-  const orderedServices = orderedIds
+  const requestedOrder = orderedIds
     .map((id) => services.find((s) => s.id === id))
     .filter((s): s is NonNullable<typeof s> => Boolean(s))
+  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
+  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
+  // de los demás. Un payload manipulado no puede colar un masaje primero.
+  const orderedServices = [
+    ...requestedOrder.filter((s) => !s.order_last),
+    ...requestedOrder.filter((s) => s.order_last),
+  ]
 
   let serviceMs = startsAt.getTime()
   const apptServices = orderedServices.map((s) => {
@@ -1196,7 +1203,7 @@ export async function fetchSequentialAvailability(
 
   const serviceIds = services.map((s) => s.id)
 
-  const [bhRes, prosRes, rulesRes, availRes] = await Promise.all([
+  const [bhRes, prosRes, rulesRes, availRes, orderLastRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
     supabase
@@ -1205,6 +1212,7 @@ export async function fetchSequentialAvailability(
       .in("service_first_id", serviceIds)
       .in("service_second_id", serviceIds),
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
+    supabase.from("services").select("id, order_last").in("id", serviceIds),
   ])
 
   const byDow = new Map(
@@ -1223,6 +1231,15 @@ export async function fetchSequentialAvailability(
     )
   )
 
+  // Servicios marcados "va siempre al final" (ej: masajes). Ningún marcado
+  // puede quedar ANTES de uno no marcado; entre varios marcados, el orden es
+  // libre. Se combina con service_order_rules (ver más abajo).
+  const orderLastIds = new Set<string>(
+    ((orderLastRes.data ?? []) as { id: string; order_last: boolean }[])
+      .filter((s) => s.order_last)
+      .map((s) => s.id)
+  )
+
   // Filter permutations that violate order rules
   const isValidOrder = (perm: number[]): boolean => {
     for (let i = 0; i < perm.length; i++) {
@@ -1231,6 +1248,9 @@ export async function fetchSequentialAvailability(
         const b = services[perm[j]].id
         // If rule says b must come before a, this ordering is invalid
         if (orderRules.has(`${b}|${a}`)) return false
+        // "Va siempre al final": a (antes) marcado y b (después) sin marcar
+        // significa que un servicio "al final" quedó antes de uno normal.
+        if (orderLastIds.has(a) && !orderLastIds.has(b)) return false
       }
     }
     return true
