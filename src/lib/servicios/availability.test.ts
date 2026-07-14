@@ -118,6 +118,26 @@ describe("assignableStaff", () => {
     ]
     expect(assignableStaff(["leri"], legs, MAP, ACTIVE)).toEqual(["leri"])
   })
+
+  // ── Pin del Must-fix (revisión final de `feature/profesional-por-servicio`):
+  // el servidor re-validaba una candidata NOMBRADA con `assignableStaff([p],
+  // …)` — candidata ÚNICA — mientras el buscador le había preguntado lo mismo
+  // al conjunto COMPLETO de candidatas para resolver "auto". Con una pata
+  // anónima ambigua de un servicio de dos profesionales, la versión de
+  // candidata única rechazaba el MISMO horario que el buscador acababa de
+  // ofrecer ("El horario se ocupó. Elegí otro." en cada reserva de "Masaje
+  // descontracturante", el único servicio con dos profesionales). La
+  // corrección (`fetchDayAvailability` y `checkPerm`, en actions.ts): volver a
+  // preguntar contra el conjunto COMPLETO y usar `.includes(p)`.
+  it("Must-fix: candidata nombrada vía conjunto COMPLETO + .includes() da TRUE donde la candidata única daba vacío", () => {
+    const legs = [leg({ staffId: null, serviceId: "masaje" })] // podría ser roman o marina
+    const full = assignableStaff(["roman", "marina"], legs, MAP, ACTIVE)
+    expect(full).toEqual(["roman", "marina"])
+    expect(full.includes("roman")).toBe(true)
+    // La forma vieja (candidata única) es más estricta: rechaza exactamente el
+    // horario que el conjunto completo acaba de ofrecer.
+    expect(assignableStaff(["roman"], legs, MAP, ACTIVE)).toEqual([])
+  })
 })
 
 describe("buildBusyLegs", () => {

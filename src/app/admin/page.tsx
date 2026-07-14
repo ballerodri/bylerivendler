@@ -5,6 +5,8 @@ import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "./_components/status-actions"
 import PaidBadge from "./_components/paid-badge"
 import { fmtPrice } from "../reserva/data"
+import { fetchStaffServices } from "../reserva/queries"
+import { unbookableServiceIds } from "@/lib/servicios/staff-services"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "./_components/whatsapp-button"
 
@@ -72,6 +74,28 @@ export default async function AdminTodayPage() {
   const { data } = await q
   const appts = (data ?? []) as unknown as ApptRow[]
 
+  // Aviso: un servicio activo sin NINGUNA profesional asignada en
+  // `staff_services` no se puede reservar online y desaparece del catálogo
+  // público (regla estricta, rama profesional-por-servicio) — hoy vive sólo
+  // en /admin/servicios, así que el salón tiene que ir a buscarlo. Se repite
+  // acá, arriba de todo, el mismo día que el deploy pueda hacer desaparecer
+  // varios servicios de golpe. Sólo para admin/recepción, igual que el resto
+  // de la info de negocio de esta página (los profesionales sólo ven su
+  // propia agenda).
+  let unbookableServices: { id: string; name: string }[] = []
+  if (!staffProfile?.isProfessionalOnly) {
+    const { data: svcRows } = await admin
+      .from("services")
+      .select("id, name")
+      .eq("active", true)
+    const activeServices = (svcRows ?? []) as { id: string; name: string }[]
+    const staffServiceMap = await fetchStaffServices()
+    const unbookableIds = new Set(
+      unbookableServiceIds(activeServices.map((s) => s.id), staffServiceMap)
+    )
+    unbookableServices = activeServices.filter((s) => unbookableIds.has(s.id))
+  }
+
   const dateLabel = arNow.toLocaleDateString("es-AR", {
     weekday: "long",
     day: "numeric",
@@ -92,6 +116,18 @@ export default async function AdminTodayPage() {
           ? "Sin turnos programados para hoy."
           : `${appts.length} turno${appts.length === 1 ? "" : "s"} para hoy.`}
       </p>
+
+      {unbookableServices.length > 0 && (
+        <div className="adm-alert">
+          <strong>
+            {unbookableServices.length} servicio{unbookableServices.length === 1 ? "" : "s"} activo
+            {unbookableServices.length === 1 ? "" : "s"} sin ninguna profesional asignada
+          </strong>{" "}
+          — no se pueden reservar online: ya no aparecen en el catálogo de la reserva
+          ({unbookableServices.map((s) => s.name).join(", ")}).{" "}
+          <Link href="/admin/servicios">Asignar profesional →</Link>
+        </div>
+      )}
 
       {appts.length > 0 && (
         <div className="adm-card">

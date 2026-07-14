@@ -1227,7 +1227,17 @@ export async function fetchDayAvailability(
       // profesionales que ni siquiera hacen este servicio.
       if (serviceId) {
         const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
-        const candidates = allowedStaffFor(serviceId, staffMap).filter(
+        // Escape hatch de reagendado (`skipStaffServiceCheck`): si el servicio
+        // no tiene NINGUNA profesional cargada en `staff_services` (ej: una
+        // sesión de pack sin asignar — `schedulePackSession` siempre escribe
+        // `staff_id: NULL`), la regla ya no se está exigiendo acá — el turno
+        // existe igual, así que cualquier activa puede tomarlo. Sin este
+        // fallback, `candidates` queda vacío y ningún día ofrece horarios.
+        const allowedBase =
+          skipStaffServiceCheck && !allowedStaffFor(serviceId, staffMap).length
+            ? activePros
+            : allowedStaffFor(serviceId, staffMap)
+        const candidates = allowedBase.filter(
           (pid) =>
             activePros.includes(pid) &&
             proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
@@ -1261,7 +1271,33 @@ export async function fetchDayAvailability(
         // servicio que sólo ella hace también la ocupa (`assignableStaff`).
         const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
         if (overlappingLegs.some((l) => l.staffId === proHint)) return false
-        return assignableStaff([proHint], overlappingLegs, staffMap, activePros).length > 0
+
+        // El buscador (`fetchSequentialAvailability`/`checkPerm`) resolvió
+        // "auto" preguntando si ALGUNA candidata del conjunto COMPLETO era
+        // asignable, y devolvió a `proHint` como la elegida. Re-validar acá
+        // con `assignableStaff([proHint], …)` — proHint como candidata
+        // ÚNICA — es una pregunta MÁS ESTRICTA: ante una pata anónima
+        // ambigua (podría ser de proHint o de otra candidata), con un solo
+        // candidato `1 > pressure(=1)` da falso y se rechaza un horario que
+        // el buscador acaba de ofrecer. Hay que preguntar LO MISMO que el
+        // buscador: ¿proHint está ENTRE las asignables del conjunto completo?
+        //
+        // Escape hatch (`skipStaffServiceCheck`, reagendado de un turno
+        // cargado a mano con una profesional fuera de `staff_services`): si
+        // proHint no está en el roster permitido para este servicio,
+        // `.includes(proHint)` la rechazaría siempre — justo lo que el
+        // escape hatch existe para permitir. Ahí sí es la única candidata
+        // real: se mantiene la pregunta de siempre.
+        if (skipStaffServiceCheck && !allowedStaffFor(serviceId, staffMap).includes(proHint)) {
+          return assignableStaff([proHint], overlappingLegs, staffMap, activePros).length > 0
+        }
+        const candidates = allowedStaffFor(serviceId, staffMap).filter(
+          (pid) =>
+            activePros.includes(pid) &&
+            proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
+            !overlappingLegs.some((l) => l.staffId === pid)
+        )
+        return assignableStaff(candidates, overlappingLegs, staffMap, activePros).includes(proHint)
       }
       return !(appointments ?? []).some((appt) => {
         const aStart = new Date(appt.starts_at).getTime()
@@ -1391,6 +1427,15 @@ function checkPerm(
     // Patas (de cualquier servicio) que pisan esta ventana de horario.
     const overlappingLegs = legs.filter((l) => sStart < l.endMs && sEnd > l.startMs)
 
+    // Mismo conjunto de candidatas se use "auto" o un nombre puntual: la
+    // pregunta correcta siempre es "¿está ENTRE las asignables del conjunto
+    // COMPLETO?", nunca "¿sería asignable si fuera la única candidata?" — esa
+    // versión más estricta puede rechazar a la profesional puntual que ESTE
+    // MISMO solver ofrecería para "auto" (ver `assignableStaff`).
+    const withoutNamedOverlap = candidates.filter(
+      (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
+    )
+
     // Si la clienta pidió una profesional puntual, tiene que hacer el servicio.
     if (svc.staffId !== "auto") {
       if (enforce && !canStaffDoService(svc.staffId, svc.id, staffMap)) return null
@@ -1398,12 +1443,10 @@ function checkPerm(
         return null
       // Una pata ANÓNIMA de un servicio que sólo ella hace también la ocupa,
       // aunque no tenga su nombre puesto (ver `assignableStaff`).
-      if (!assignableStaff([svc.staffId], overlappingLegs, staffMap, allPros).length) return null
+      if (!assignableStaff(withoutNamedOverlap, overlappingLegs, staffMap, allPros).includes(svc.staffId))
+        return null
       assignment[svc.id] = svc.staffId
     } else {
-      const withoutNamedOverlap = candidates.filter(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
-      )
       // `assignableStaff` descuenta, además, a quien una pata ANÓNIMA
       // definitivamente ocupa (mismo criterio que `fetchDayAvailability`).
       const free = assignableStaff(withoutNamedOverlap, overlappingLegs, staffMap, allPros)
