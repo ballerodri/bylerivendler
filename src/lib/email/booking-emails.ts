@@ -423,14 +423,26 @@ export async function sendMultiBookingConfirmation(data: {
     )
     .join("")
 
+  // Si canjeó con puntos, `dueNowCents` llega en 0: no hay nada que
+  // transferir ni comprobante que mandar, y el turno ya está confirmado
+  // (no "te lo confirmamos" cuando ya lo está).
+  const transferBlock =
+    data.dueNowCents > 0
+      ? `
+    <p style="font-size:14px;margin:0 0 16px;">A transferir ahora: <strong>${fmtPrice(data.dueNowCents)}</strong></p>
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">Es <strong>una sola transferencia</strong> por los ${data.items.length} turnos. Mandanos el comprobante por WhatsApp y te los confirmamos.</p>
+    `
+      : `
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">Tus turnos ya están <strong>confirmados</strong>: los pagaste con tus puntos del Programa Cerca, no debés nada.</p>
+    `
+
   const body = `
     <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Reserva confirmada</p>
     <h1 style="font-family:Georgia,serif;font-size:22px;margin:0 0 16px;">Tus turnos</h1>
     <p style="font-size:14px;margin:0 0 16px;">Hola ${escape(data.firstName)}, reservamos tus ${data.items.length} turnos.</p>
     <table style="width:100%;border-collapse:collapse;margin:0 0 16px;">${rows}</table>
     <p style="font-size:13px;color:#7a6e64;margin:0 0 4px;">Total: <strong>${fmtPrice(data.totalCents)}</strong></p>
-    <p style="font-size:14px;margin:0 0 16px;">A transferir ahora: <strong>${fmtPrice(data.dueNowCents)}</strong></p>
-    <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">Es <strong>una sola transferencia</strong> por los ${data.items.length} turnos. Mandanos el comprobante por WhatsApp y te los confirmamos.</p>
+    ${transferBlock}
     ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
   `
 

@@ -160,8 +160,10 @@ export default async function ReservaExitoPage({
           )
         })}
 
-        {/* Con varios turnos, la seña es UNA sola: hay que decirlo. */}
-        {appts.length > 1 && (
+        {/* Con varios turnos, la seña es UNA sola: hay que decirlo. Si no hay
+            nada que transferir (canjeó con puntos), no hay comprobante que
+            mandar ni turno que "confirmar": ya está confirmado. */}
+        {appts.length > 1 && dueNowCents > 0 && (
           <div
             className="success__card"
             style={{ textAlign: "left", marginBottom: 24 }}
@@ -170,6 +172,18 @@ export default async function ReservaExitoPage({
               <strong>A transferir ahora: {fmtPrice(dueNowCents / 100)}</strong>
               <br />
               Es <strong>una sola transferencia</strong> por los {appts.length} turnos.
+            </div>
+          </div>
+        )}
+        {appts.length > 1 && dueNowCents <= 0 && (
+          <div
+            className="success__card"
+            style={{ textAlign: "left", marginBottom: 24 }}
+          >
+            <div className="success__when">
+              <strong>Tus turnos ya están confirmados.</strong>
+              <br />
+              Los pagaste con tus puntos del Programa Cerca: no debés nada.
             </div>
           </div>
         )}

@@ -618,7 +618,11 @@ export async function createBooking(
     // ── De acá para abajo, todo es best-effort: los turnos YA están creados ──
     // `slots` ya está ordenado cronológicamente (ver más arriba), así que no
     // hace falta un array `ordered` aparte para el mail: es el mismo `slots`.
-    const sumTotal = redeem ? 0 : slots.reduce((a, s) => a + s.priceCents, 0)
+    // Lo que VALEN los turnos: siempre el real, igual que en el camino
+    // "juntos" (que le pasa a `sendBookingConfirmation` el `totalCents` sin
+    // zonificar). Si canjeó con puntos no debe nada, pero eso lo dice
+    // `dueNowCents` — "Total: $0" sería mentira aunque haya canjeado.
+    const realTotal = slots.reduce((a, s) => a + s.priceCents, 0)
     // Misma función pura que usa la pantalla para mostrarle a la clienta
     // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
     const dueNow = redeem ? 0 : totalDueNowSeparate(slots.map((s) => s.priceCents), payChoice)
@@ -681,7 +685,7 @@ export async function createBooking(
         to: email,
         firstName: input.client.firstName.trim(),
         items: slots.map((s) => ({ serviceName: s.name, startsAt: new Date(s.startsAtMs) })),
-        totalCents: sumTotal,
+        totalCents: realTotal,
         dueNowCents: dueNow,
       })
     } catch {
