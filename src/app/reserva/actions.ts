@@ -69,60 +69,37 @@ function adminClient() {
 }
 
 /**
- * Deshace (todo o nada) los turnos de un pack creados hasta el momento de una
- * falla a mitad de camino. `appointments.pack_purchase_id` tiene ON DELETE SET
- * NULL, así que borrar `pack_purchases` SIEMPRE funciona aunque el borrado de
- * los turnos haya fallado — por eso hay que chequear ese error a mano: si no
- * pudimos borrar los turnos ya creados, NO borramos la compra del pack (queda
- * enganchada y visible/recuperable en Admin) y le avisamos al cliente que no
- * reintente solo, sino que se comunique con el salón.
- */
-async function rollbackPackAttempt(
-  supabase: ReturnType<typeof adminClient>,
-  createdIds: string[],
-  purchaseId: string,
-  fallbackError: string
-): Promise<CreateBookingResult> {
-  if (createdIds.length) {
-    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
-    if (delErr) {
-      return {
-        ok: false,
-        error:
-          "Hubo un problema al crear tu pack y no pudimos deshacerlo por completo. Por favor comunicate con el salón para confirmar el estado de tu reserva antes de volver a intentar.",
-      }
-    }
-  }
-  await supabase.from("pack_purchases").delete().eq("id", purchaseId)
-  return { ok: false, error: fallbackError }
-}
-
-/**
- * Deshace (todo o nada) una reserva que falló, y DEVUELVE LOS PUNTOS.
+ * Deshace una reserva que falló, y DEVUELVE LOS PUNTOS. Todo o nada.
  *
- * Los puntos del canje se descuentan en el paso 4b, **antes** de crear ningún
- * turno. Cualquier salida de error posterior tiene que pasar por acá, o la
- * clienta se queda sin puntos y sin turno.
+ * Reemplaza a los dos rollbacks que había (uno sabía borrar la compra del pack,
+ * el otro sabía devolver los puntos). En una compra MEZCLADA hay que hacer las
+ * dos cosas, y tener dos helpers es como se pierde un reembolso.
  *
- * Con `createdIds` vacío no borra nada: sólo reembolsa. Eso lo hace servible
- * tanto para las fallas del modo "separados" (que ya creó algunos turnos) como
- * para un rechazo temprano, antes de crear ninguno.
+ * Los puntos del canje se descuentan ANTES de crear ningún turno. Cualquier
+ * salida de error posterior tiene que pasar por acá, o la clienta se queda sin
+ * puntos y sin turno.
+ *
+ * Con `appointmentIds` vacío y sin `packPurchaseId` no borra nada: sólo
+ * reembolsa. Eso lo hace servible también para un rechazo temprano.
  */
-async function rollbackBookingAttempt(
+async function rollbackAll(
   supabase: ReturnType<typeof adminClient>,
-  createdIds: string[],
+  created: { appointmentIds: string[]; packPurchaseId: string | null },
   clientId: string,
   pointsToRefund: number,
   fallbackError: string
 ): Promise<CreateBookingResult> {
-  if (createdIds.length) {
-    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
+  if (created.appointmentIds.length) {
+    const { error: delErr } = await supabase
+      .from("appointments")
+      .delete()
+      .in("id", created.appointmentIds)
     if (delErr) {
       // No pudimos deshacer: quedan turnos sueltos en la agenda. Que NO
       // reintente sola (duplicaría los turnos): que llame al salón.
-      // A propósito NO se devuelven los puntos en este caso: si el DELETE
-      // falló, la clienta puede estar quedándose con algunos turnos ya
-      // creados, así que reembolsar sería regalarle los puntos Y el turno.
+      // A propósito NO se devuelven los puntos acá: si el DELETE falló, la
+      // clienta puede estar quedándose con algunos turnos ya creados, así que
+      // reembolsar sería regalarle los puntos Y el turno.
       // No "arreglarlo" agregando un refund acá.
       return {
         ok: false,
@@ -131,6 +108,14 @@ async function rollbackBookingAttempt(
       }
     }
   }
+
+  if (created.packPurchaseId) {
+    // `appointments.pack_purchase_id` tiene ON DELETE SET NULL, así que borrar
+    // la compra SIEMPRE "funciona" aunque hayan quedado turnos: por eso el
+    // borrado de turnos de arriba se chequea a mano y corta antes de llegar acá.
+    await supabase.from("pack_purchases").delete().eq("id", created.packPurchaseId)
+  }
+
   if (pointsToRefund > 0) {
     const { data: c, error: readErr } = await supabase
       .from("clients")
@@ -139,7 +124,6 @@ async function rollbackBookingAttempt(
       .maybeSingle()
     // Si no pudimos LEER el saldo, NO escribimos: sumarle el reembolso a un
     // saldo desconocido (que caería en 0) le borraría todos sus puntos.
-    // Preferimos avisarle que llame al salón antes que destruirle el saldo.
     if (readErr || !c) {
       return {
         ok: false,
@@ -152,6 +136,7 @@ async function rollbackBookingAttempt(
       .update({ loyalty_points: ((c.loyalty_points as number | null) ?? 0) + pointsToRefund })
       .eq("id", clientId)
   }
+
   return { ok: false, error: fallbackError }
 }
 
@@ -466,11 +451,12 @@ export async function createBooking(
         .single()
 
       if (apptErr || !appt) {
-        // Todo o nada: deshacer lo creado hasta acá (ver rollbackPackAttempt).
-        return await rollbackPackAttempt(
+        // Todo o nada: deshacer lo creado hasta acá (ver rollbackAll).
+        return await rollbackAll(
           supabase,
-          createdIds,
-          purchase.id,
+          { appointmentIds: createdIds, packPurchaseId: purchase.id },
+          clientId,
+          0,
           `No pudimos crear la sesión ${i + 1}: ${apptErr?.message}`
         )
       }
@@ -486,10 +472,11 @@ export async function createBooking(
         starts_at: startsAt.toISOString(),
       })
       if (linkErr) {
-        return await rollbackPackAttempt(
+        return await rollbackAll(
           supabase,
-          createdIds,
-          purchase.id,
+          { appointmentIds: createdIds, packPurchaseId: purchase.id },
+          clientId,
+          0,
           `Servicio de la sesión ${i + 1}: ${linkErr.message}`
         )
       }
@@ -570,7 +557,7 @@ export async function createBooking(
     // turno. Se hoistea ANTES de cualquier return para que ningún early
     // return de acá abajo pueda "olvidarse" del reembolso.
     const refund = redeem ? totalPointsCost : 0
-    const fail = (error: string) => rollbackBookingAttempt(supabase, [], clientId, refund, error)
+    const fail = (error: string) => rollbackAll(supabase, { appointmentIds: [], packPurchaseId: null }, clientId, refund, error)
 
     // En este modo las fechas son TODAS obligatorias.
     if (services.some((s) => !input.serviceSlots![s.id]))
@@ -650,8 +637,8 @@ export async function createBooking(
         .single()
 
       if (aErr || !a)
-        return await rollbackBookingAttempt(
-          supabase, createdIds, clientId, refund,
+        return await rollbackAll(
+          supabase, { appointmentIds: createdIds, packPurchaseId: null }, clientId, refund,
           `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
         )
       createdIds.push(a.id)
@@ -668,8 +655,8 @@ export async function createBooking(
         starts_at: sStart.toISOString(),
       })
       if (lErr)
-        return await rollbackBookingAttempt(
-          supabase, createdIds, clientId, refund,
+        return await rollbackAll(
+          supabase, { appointmentIds: createdIds, packPurchaseId: null }, clientId, refund,
           `Servicio del turno de ${s.name}: ${lErr.message}`
         )
     }
@@ -828,9 +815,9 @@ export async function createBooking(
     // Los puntos ya se descontaron en el paso 4b. Si rechazamos acá, la clienta
     // no se lleva NINGÚN turno: hay que devolvérselos (con la lista de turnos
     // creados vacía, el helper sólo reembolsa).
-    return await rollbackBookingAttempt(
+    return await rollbackAll(
       supabase,
-      [],
+      { appointmentIds: [], packPurchaseId: null },
       clientId,
       redeem ? totalPointsCost : 0,
       "Ese horario ya no es válido. Elegí el horario de nuevo."
@@ -867,8 +854,8 @@ export async function createBooking(
       .from("business_hours")
       .select("day_of_week, is_open, slots")
     if (bhErr)
-      return await rollbackBookingAttempt(
-        supabase, [], clientId, redeem ? totalPointsCost : 0,
+      return await rollbackAll(
+        supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
         "No pudimos verificar el horario. Probá de nuevo."
       )
     const bhByDow = new Map(
@@ -895,14 +882,14 @@ export async function createBooking(
       // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
       // día abierto (`is_open`).
       if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
-        return await rollbackBookingAttempt(
-          supabase, [], clientId, redeem ? totalPointsCost : 0,
+        return await rollbackAll(
+          supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
           `El horario de "${s.name}" ya no está disponible. Elegí otro.`
         )
       const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
       if (!free.includes(timeStr))
-        return await rollbackBookingAttempt(
-          supabase, [], clientId, redeem ? totalPointsCost : 0,
+        return await rollbackAll(
+          supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
           "El horario se ocupó. Elegí otro."
         )
     }
@@ -932,9 +919,9 @@ export async function createBooking(
   // No se creó el turno: si canjeó con puntos, ya se los descontamos en el paso
   // 4b y no se lleva nada. Se los devolvemos.
   if (apptErr || !appt)
-    return await rollbackBookingAttempt(
+    return await rollbackAll(
       supabase,
-      [],
+      { appointmentIds: [], packPurchaseId: null },
       clientId,
       redeem ? totalPointsCost : 0,
       `Turno: ${apptErr?.message}`
@@ -965,9 +952,9 @@ export async function createBooking(
   // El turno quedó sin servicios: se borra (todo o nada) y se devuelven los
   // puntos. Antes quedaba un turno huérfano y la clienta perdía el canje.
   if (linkErr)
-    return await rollbackBookingAttempt(
+    return await rollbackAll(
       supabase,
-      [appt.id],
+      { appointmentIds: [appt.id], packPurchaseId: null },
       clientId,
       redeem ? totalPointsCost : 0,
       `Servicios del turno: ${linkErr.message}`
