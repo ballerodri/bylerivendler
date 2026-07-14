@@ -281,11 +281,36 @@ async function planPack(
 
   const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
 
+  // Resolver la profesional de CADA sesión. Si la clienta pidió una puntual
+  // (packStaffId no es null), se respeta en todas. Si es "Auto", se elige por
+  // sesión, PREFIRIENDO la de la sesión anterior (continuidad) sin forzarla.
+  const sessionStaff: (string | null)[] = []
+  let prev: string | null = null
+  for (let i = 0; i < slotDates.length; i++) {
+    if (packStaffId) { sessionStaff.push(packStaffId); continue }
+    const { dateStr, timeStr } = arPartsFromUtc(slotDates[i])
+    const chosen = await chooseStaffForSlot(supabase, {
+      dateStr,
+      timeStr,
+      durationMin: firstDuration,
+      serviceId: svc.id,
+      preferredStaffId: prev,
+    })
+    // Este `planPack` corre ANTES de que `createBooking` descuente los puntos
+    // (y un pack nunca se canjea: `hasPack && redeem` ya se rechazó más
+    // arriba, en `createBooking`) — así que este `return` no tiene puntos que
+    // reembolsar.
+    if (!chosen)
+      return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
+    sessionStaff.push(chosen)
+    prev = chosen
+  }
+
   const appointments: PlannedAppointment[] = slotDates.map((d, i) => ({
     label: `Sesión ${i + 1} del pack`,
     startsAtMs: d.getTime(),
     durationMin: firstDuration,
-    staffId: packStaffId,
+    staffId: sessionStaff[i],
     totalCents: prices[i].totalCents,
     depositCents: prices[i].depositCents,
     depositPaid: prices[i].depositPaid,
@@ -298,7 +323,7 @@ async function planPack(
         durationMin: firstDuration,
         priceCents: prices[i].totalCents,
         zones: zonesSnapshot,
-        staffId: packStaffId,
+        staffId: sessionStaff[i],
         startsAtMs: d.getTime(),
       },
     ],
@@ -415,10 +440,41 @@ async function planLooseServices(
         return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
     }
 
+    // Resolver la profesional de cada slot ANTES de armar el plan. "Auto" se
+    // convierte en un nombre concreto (o se rechaza si nadie puede).
+    //
+    // Este `return`, igual que los dos de arriba, corre en `planLooseServices`
+    // — la fase de PLANIFICACIÓN — antes de que `createBooking` descuente los
+    // puntos y antes de que exista ningún turno o compra de pack (`created`
+    // recién se inicializa más abajo, en la fase de escritura). No hay nada
+    // que reembolsar todavía, así que NO pasa por `rollbackAll` (llamarlo acá
+    // con `redeem ? totalPointsCost : 0` le sumaría puntos a la clienta que
+    // nunca se le descontaron).
+    const resolvedByService: Record<string, string | null> = {}
+    for (const s of slots) {
+      const hint = hintFor(s.serviceId)
+      if (hint !== "auto") {
+        resolvedByService[s.serviceId] = hint
+        continue
+      }
+      const { dateStr, timeStr } = arPartsFromUtc(new Date(s.startsAtMs))
+      const chosen = await chooseStaffForSlot(supabase, {
+        dateStr,
+        timeStr,
+        durationMin: s.durationMin,
+        serviceId: s.serviceId,
+      })
+      // Si el buscador lo ofreció como libre pero acá nadie puede, hubo una
+      // carrera (alguien reservó en el medio): se rechaza, nunca se deja en $0
+      // ni se pisa un turno.
+      if (!chosen)
+        return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
+      resolvedByService[s.serviceId] = chosen
+    }
+
     // ── Un PlannedAppointment por servicio, cada uno con UNA pata ──────────
     const appointments: PlannedAppointment[] = slots.map((s) => {
-      const hint = hintFor(s.serviceId)
-      const staffId = hint !== "auto" ? hint : null
+      const staffId = resolvedByService[s.serviceId] ?? null
       return {
         label: s.name,
         startsAtMs: s.startsAtMs,
