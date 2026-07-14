@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic"
 
 type ApptService = {
   service: { id: string; name: string } | null
-  staff: { full_name: string } | null
+  staff: { id: string; full_name: string } | null
   starts_at: string | null
 }
 
@@ -73,7 +73,7 @@ export default async function AdminTurnosPage({
       appointment_services(
         starts_at,
         service:services(id, name),
-        staff:staff(full_name)
+        staff:staff(id, full_name)
       )
     `
   )
@@ -104,6 +104,15 @@ export default async function AdminTurnosPage({
         .in("client_id", clientIds)
     : { data: [] as ActivePackRow[] }
   const activePacks = ((ppData ?? []) as ActivePackRow[]).filter((p) => p.sessions_used < p.sessions_total)
+
+  // Profesionales activas, para el selector de "Cambiar profesional".
+  const { data: professionalsData } = await admin
+    .from("staff")
+    .select("id, full_name")
+    .eq("is_professional", true)
+    .eq("active", true)
+    .order("full_name")
+  const professionals = (professionalsData ?? []) as { id: string; full_name: string }[]
 
   function packsForAppt(a: ApptRow): { id: string; label: string }[] {
     if (!a.client) return []
@@ -242,6 +251,15 @@ export default async function AdminTurnosPage({
                     paidCents={a.paid_cents}
                     matchingPacks={packsForAppt(a)}
                     packLinked={!!a.pack_purchase_id}
+                    professionals={professionals}
+                    services={svcItems
+                      .filter((s) => s.service)
+                      .map((s) => ({
+                        serviceId: s.service!.id,
+                        serviceName: s.service!.name,
+                        staffId: s.staff?.id ?? null,
+                        staffName: s.staff?.full_name ?? null,
+                      }))}
                   />
                 </div>
               </div>

@@ -22,6 +22,7 @@ import {
   type BusyLeg,
   type ApptRow,
 } from "@/lib/servicios/availability"
+import { chooseStaff } from "@/lib/servicios/choose-staff"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -280,11 +281,36 @@ async function planPack(
 
   const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
 
+  // Resolver la profesional de CADA sesión. Si la clienta pidió una puntual
+  // (packStaffId no es null), se respeta en todas. Si es "Auto", se elige por
+  // sesión, PREFIRIENDO la de la sesión anterior (continuidad) sin forzarla.
+  const sessionStaff: (string | null)[] = []
+  let prev: string | null = null
+  for (let i = 0; i < slotDates.length; i++) {
+    if (packStaffId) { sessionStaff.push(packStaffId); continue }
+    const { dateStr, timeStr } = arPartsFromUtc(slotDates[i])
+    const chosen = await chooseStaffForSlot(supabase, {
+      dateStr,
+      timeStr,
+      durationMin: firstDuration,
+      serviceId: svc.id,
+      preferredStaffId: prev,
+    })
+    // Este `planPack` corre ANTES de que `createBooking` descuente los puntos
+    // (y un pack nunca se canjea: `hasPack && redeem` ya se rechazó más
+    // arriba, en `createBooking`) — así que este `return` no tiene puntos que
+    // reembolsar.
+    if (!chosen)
+      return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
+    sessionStaff.push(chosen)
+    prev = chosen
+  }
+
   const appointments: PlannedAppointment[] = slotDates.map((d, i) => ({
     label: `Sesión ${i + 1} del pack`,
     startsAtMs: d.getTime(),
     durationMin: firstDuration,
-    staffId: packStaffId,
+    staffId: sessionStaff[i],
     totalCents: prices[i].totalCents,
     depositCents: prices[i].depositCents,
     depositPaid: prices[i].depositPaid,
@@ -297,7 +323,7 @@ async function planPack(
         durationMin: firstDuration,
         priceCents: prices[i].totalCents,
         zones: zonesSnapshot,
-        staffId: packStaffId,
+        staffId: sessionStaff[i],
         startsAtMs: d.getTime(),
       },
     ],
@@ -414,10 +440,41 @@ async function planLooseServices(
         return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
     }
 
+    // Resolver la profesional de cada slot ANTES de armar el plan. "Auto" se
+    // convierte en un nombre concreto (o se rechaza si nadie puede).
+    //
+    // Este `return`, igual que los dos de arriba, corre en `planLooseServices`
+    // — la fase de PLANIFICACIÓN — antes de que `createBooking` descuente los
+    // puntos y antes de que exista ningún turno o compra de pack (`created`
+    // recién se inicializa más abajo, en la fase de escritura). No hay nada
+    // que reembolsar todavía, así que NO pasa por `rollbackAll` (llamarlo acá
+    // con `redeem ? totalPointsCost : 0` le sumaría puntos a la clienta que
+    // nunca se le descontaron).
+    const resolvedByService: Record<string, string | null> = {}
+    for (const s of slots) {
+      const hint = hintFor(s.serviceId)
+      if (hint !== "auto") {
+        resolvedByService[s.serviceId] = hint
+        continue
+      }
+      const { dateStr, timeStr } = arPartsFromUtc(new Date(s.startsAtMs))
+      const chosen = await chooseStaffForSlot(supabase, {
+        dateStr,
+        timeStr,
+        durationMin: s.durationMin,
+        serviceId: s.serviceId,
+      })
+      // Si el buscador lo ofreció como libre pero acá nadie puede, hubo una
+      // carrera (alguien reservó en el medio): se rechaza, nunca se deja en $0
+      // ni se pisa un turno.
+      if (!chosen)
+        return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
+      resolvedByService[s.serviceId] = chosen
+    }
+
     // ── Un PlannedAppointment por servicio, cada uno con UNA pata ──────────
     const appointments: PlannedAppointment[] = slots.map((s) => {
-      const hint = hintFor(s.serviceId)
-      const staffId = hint !== "auto" ? hint : null
+      const staffId = resolvedByService[s.serviceId] ?? null
       return {
         label: s.name,
         startsAtMs: s.startsAtMs,
@@ -1479,6 +1536,84 @@ export async function fetchDayAvailability(
       })
     }
   })
+}
+
+/**
+ * Elige UNA profesional concreta para un slot que se reservó en "Auto".
+ *
+ * Usa la MISMA consulta y la MISMA función (`assignableStaff`) que
+ * `fetchDayAvailability` para decidir la disponibilidad: si devuelve un nombre,
+ * ese nombre está tan libre como el buscador afirmó; si devuelve `null`, nadie
+ * puede — el mismo veredicto que el buscador. No pueden contradecirse.
+ *
+ * Desempate: la que tenga menos turnos ESE día. `preferredStaffId` (la elegida
+ * en una sesión anterior del mismo pack) se prefiere si sigue disponible.
+ */
+export async function chooseStaffForSlot(
+  supabase: ReturnType<typeof adminClient>,
+  args: {
+    dateStr: string
+    timeStr: string
+    durationMin: number
+    serviceId: string
+    preferredStaffId?: string | null
+  }
+): Promise<string | null> {
+  const { dateStr, timeStr, durationMin, serviceId, preferredStaffId } = args
+  const slotStart = slotToUtcMs(dateStr, timeStr)
+  const slotEnd = slotStart + durationMin * 60_000
+
+  // Ventana del día (AR) para traer los turnos y contar por profesional.
+  const [dy, dm, dd] = dateStr.split("-").map(Number)
+  const dayStartMs = Date.UTC(dy, dm - 1, dd, AR_UTC_OFFSET, 0, 0)
+  const dayStart = new Date(dayStartMs).toISOString()
+  const dayEnd = new Date(dayStartMs + 24 * 3_600_000).toISOString()
+
+  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: linkRows, error: linkErr }] =
+    await Promise.all([
+      supabase
+        .from("appointments")
+        .select("id, starts_at, duration_min, staff_id, appointment_services(service_id, staff_id, starts_at, duration_min)")
+        .gte("starts_at", dayStart)
+        .lte("starts_at", dayEnd)
+        .in("status", ["pending", "confirmed"]),
+      supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
+      supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
+      // Tabla ENTERA (no filtrada por servicio) — igual que `fetchDayAvailability`:
+      // `assignableStaff` necesita el mapa cruzado para resolver de qué servicio
+      // es una pata ANÓNIMA de un servicio distinto al que se está reservando.
+      supabase.from("staff_services").select("service_id, staff_id"),
+    ])
+  // Fail-closed: si no podemos leer quién hace el servicio, no inventamos a nadie.
+  if (linkErr) return null
+
+  const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
+  const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  const staffMap: StaffServiceMap = {}
+  for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
+    ;(staffMap[r.service_id] ??= []).push(r.staff_id)
+  }
+  const legs = buildBusyLegs((apptData ?? []) as ApptRow[])
+  const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
+
+  // El día de la semana AR para `proWorksAtSlot` (mismo criterio que el buscador).
+  const arDow = arPartsFromUtc(new Date(slotStart)).dayOfWeek
+
+  const candidates = allowedStaffFor(serviceId, staffMap).filter(
+    (pid) =>
+      activePros.includes(pid) &&
+      proWorksAtSlot(pid, arDow, slotStart, slotEnd, blockedMap) &&
+      !overlappingLegs.some((l) => l.staffId === pid)
+  )
+  const assignable = assignableStaff(candidates, overlappingLegs, staffMap, activePros)
+
+  // Conteo de turnos por profesional ESE día (para repartir la carga).
+  const countsByStaff: Record<string, number> = {}
+  for (const a of (apptData ?? []) as { staff_id: string | null }[]) {
+    if (a.staff_id) countsByStaff[a.staff_id] = (countsByStaff[a.staff_id] ?? 0) + 1
+  }
+
+  return chooseStaff(assignable, countsByStaff, preferredStaffId ?? null)
 }
 
 // ─── Sequential availability ──────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useTransition, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { updateAppointmentStatus, deleteAppointment, registrarPago } from "../actions"
+import { updateAppointmentStatus, deleteAppointment, registrarPago, reasignarProfesional } from "../actions"
 
 const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: string }[]> = {
   pending: [
@@ -119,6 +119,8 @@ export default function StatusActions({
   paidCents,
   matchingPacks = [],
   packLinked = false,
+  professionals,
+  services,
 }: {
   appointmentId: string
   currentStatus: string
@@ -126,6 +128,8 @@ export default function StatusActions({
   paidCents: number
   matchingPacks?: { id: string; label: string }[]
   packLinked?: boolean
+  professionals?: { id: string; full_name: string }[]
+  services?: { serviceId: string; serviceName: string; staffId: string | null; staffName: string | null }[]
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -135,6 +139,7 @@ export default function StatusActions({
   const [payInput, setPayInput] = useState("")
   const [undoTo, setUndoTo] = useState<number | null>(null)
   const [clearConfirm, setClearConfirm] = useState(false)
+  const [reassignOpen, setReassignOpen] = useState(false)
 
   const change = (status: string, packPurchaseId?: string) => {
     setError(null)
@@ -187,6 +192,15 @@ export default function StatusActions({
     setPayingOpen(false)
     setError(null)
     setClearConfirm(false)
+  }
+
+  const reasignar = (serviceId: string, staffId: string) => {
+    if (!staffId) return
+    setError(null)
+    startTransition(async () => {
+      const r = await reasignarProfesional(appointmentId, serviceId, staffId)
+      if (!r.ok) setError(r.error ?? "Error")
+    })
   }
 
   /** Corrige un cobro mal cargado: vuelve el registro a $0 para volver a
@@ -289,6 +303,37 @@ export default function StatusActions({
     )
   }
 
+  if (reassignOpen) {
+    return (
+      <>
+        <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+          Cambiar profesional
+        </span>
+        {(services ?? []).map((s) => (
+          <span key={s.serviceId} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+              {s.serviceName}:
+            </span>
+            <select
+              className="adm-select"
+              style={{ fontSize: 12, minHeight: 30, padding: "4px 8px" }}
+              value={s.staffId ?? ""}
+              disabled={pending}
+              onChange={(e) => reasignar(s.serviceId, e.target.value)}
+            >
+              <option value="" disabled>Sin asignar</option>
+              {(professionals ?? []).map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name}</option>
+              ))}
+            </select>
+          </span>
+        ))}
+        <button className="adm-btn" onClick={() => { setReassignOpen(false); setError(null) }}>Cerrar</button>
+        {error && <span style={{ fontSize: 10, color: "#8c463c" }}>{error}</span>}
+      </>
+    )
+  }
+
   if (confirmDelete) {
     return (
       <>
@@ -300,8 +345,10 @@ export default function StatusActions({
     )
   }
 
+  const canReassign = !!services && services.length > 0
+
   // Cantidad de ítems del menú (para decidir si abre hacia arriba).
-  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + (totalCents > 0 ? 1 : 0) + 1 // +Eliminar
+  const menuCount = secondaryActions.length + (canReschedule ? 1 : 0) + (totalCents > 0 ? 1 : 0) + (canReassign ? 1 : 0) + 1 // +Eliminar
 
   return (
     <>
@@ -357,6 +404,16 @@ export default function StatusActions({
             onClick={() => { setPayInput(""); setClearConfirm(false); setPayingOpen(true) }}
           >
             Registrar pago
+          </button>
+        )}
+        {canReassign && (
+          <button
+            type="button"
+            role="menuitem"
+            disabled={pending}
+            onClick={() => { setError(null); setReassignOpen(true) }}
+          >
+            Cambiar profesional
           </button>
         )}
         {(secondaryActions.length > 0 || canReschedule) && <div className="adm-menu__sep" />}
