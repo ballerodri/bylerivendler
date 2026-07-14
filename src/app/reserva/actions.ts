@@ -818,8 +818,16 @@ export async function createBooking(
     .select("id")
     .single()
 
+  // No se creó el turno: si canjeó con puntos, ya se los descontamos en el paso
+  // 4b y no se lleva nada. Se los devolvemos.
   if (apptErr || !appt)
-    return { ok: false, error: `Turno: ${apptErr?.message}` }
+    return await rollbackBookingAttempt(
+      supabase,
+      [],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      `Turno: ${apptErr?.message}`
+    )
 
   // 6) Link services — respecting sequential order (resolved above) and
   // per-service staff/starts_at
@@ -843,7 +851,16 @@ export async function createBooking(
     .from("appointment_services")
     .insert(apptServices)
 
-  if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+  // El turno quedó sin servicios: se borra (todo o nada) y se devuelven los
+  // puntos. Antes quedaba un turno huérfano y la clienta perdía el canje.
+  if (linkErr)
+    return await rollbackBookingAttempt(
+      supabase,
+      [appt.id],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      `Servicios del turno: ${linkErr.message}`
+    )
 
   // 7) Google Calendar event (no bloqueante)
   try {
