@@ -1706,3 +1706,85 @@ export async function confirmPackSessions(
   revalidatePath("/admin")
   return { ok: true, confirmed: rows.length }
 }
+
+// ─── Reasignar profesional (por servicio) ─────────────────────────────────────
+
+/**
+ * Cambia la profesional de UN servicio de un turno. Se niega si la profesional
+ * nueva ya está ocupada en esa ventana (sus turnos, sus horas bloqueadas),
+ * excluyendo este mismo turno — o sea, el botón NUNCA puede pisar un turno.
+ *
+ * NO exige `staff_services` (el admin es el escape del salón), pero la pantalla
+ * marca cuáles sí lo hacen.
+ */
+export async function reasignarProfesional(
+  appointmentId: string,
+  serviceId: string,
+  staffId: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // La profesional nueva tiene que estar activa y ser profesional.
+  const { data: staff } = await admin
+    .from("staff")
+    .select("full_name, active, is_professional")
+    .eq("id", staffId)
+    .maybeSingle()
+  if (!staff || !staff.active || !staff.is_professional)
+    return { ok: false, error: "Esa profesional no está activa." }
+
+  // La pata (servicio) que se está cambiando, para saber su ventana.
+  const { data: leg } = await admin
+    .from("appointment_services")
+    .select("starts_at, duration_min, appointment:appointments(starts_at, duration_min)")
+    .eq("appointment_id", appointmentId)
+    .eq("service_id", serviceId)
+    .maybeSingle()
+  if (!leg) return { ok: false, error: "No encontramos ese servicio en el turno." }
+
+  // La ventana de la pata (si la pata no tiene starts_at propio, la del turno).
+  const legStartIso = (leg.starts_at as string | null)
+    ?? (leg.appointment as unknown as { starts_at: string }).starts_at
+  const legDuration = (leg.duration_min as number | null)
+    ?? (leg.appointment as unknown as { duration_min: number }).duration_min
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(legStartIso))
+
+  // ¿Trabaja a esa hora? ¿Está libre? Se reusa el buscador con esa profesional
+  // como hint explícito, saltando la puerta `staff_services` (escape del admin)
+  // y EXCLUYENDO este turno (no puede bloquearse a sí mismo).
+  const free = await fetchDayAvailability(dateStr, legDuration, staffId, [timeStr], {
+    serviceId,
+    excludeAppointmentId: appointmentId,
+    skipStaffServiceCheck: true,
+  })
+  if (!free.includes(timeStr))
+    return { ok: false, error: `${staff.full_name} ya tiene un turno a esa hora (o no atiende).` }
+
+  // Cambiar la pata.
+  const { error: legErr } = await admin
+    .from("appointment_services")
+    .update({ staff_id: staffId })
+    .eq("appointment_id", appointmentId)
+    .eq("service_id", serviceId)
+  if (legErr) return { ok: false, error: legErr.message }
+
+  // `appointments.staff_id` = la profesional de la PRIMERA pata en el tiempo
+  // (la convención de `createBooking`/`mainStaffId`). Se recalcula.
+  const { data: legs } = await admin
+    .from("appointment_services")
+    .select("staff_id, starts_at")
+    .eq("appointment_id", appointmentId)
+  const firstLeg = (legs ?? [])
+    .filter((l) => l.staff_id)
+    .sort((a, b) => new Date(a.starts_at as string).getTime() - new Date(b.starts_at as string).getTime())[0]
+  await admin
+    .from("appointments")
+    .update({ staff_id: firstLeg?.staff_id ?? staffId })
+    .eq("id", appointmentId)
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin/clientas")
+  return { ok: true }
+}
