@@ -1,5 +1,6 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
+import { serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
 import type { Category, Combo, Professional, Service } from "./data"
 
 export type CurrentClient = {
@@ -71,34 +72,38 @@ export async function fetchCatalog(): Promise<Category[]> {
   if (error) throw new Error(`fetchCatalog: ${error.message}`)
   if (!data) return []
 
-  return (data as DbCategoryRow[]).map((cat): Category => ({
-    id: cat.slug,
-    name: cat.name,
-    tagline: cat.tagline ?? "",
-    services: cat.services
-      .filter((s) => s.active && s.visible_public)
-      .map(
-        (s): Service => ({
-          id: s.id,
-          name: s.name,
-          duration: s.duration_min,
-          price: Math.round(s.price_cents / 100),
-          desc: s.description ?? "",
-          pointsCost: s.loyalty_enabled ? s.points_cost : 0,
-          pricingMode: s.pricing_mode,
-          zoneSelection: s.zone_selection ?? "multiple",
-          zones: (s.service_zones ?? [])
-            .filter((z) => z.active)
-            .sort((a, b) => a.order_index - b.order_index)
-            .map((z) => ({
-              id: z.id,
-              name: z.name,
-              durationMin: z.duration_min,
-              price: z.price_cents != null ? Math.round(z.price_cents / 100) : null,
-            })),
-        })
-      ),
-  }))
+  const map = await fetchStaffServices()
+
+  return (data as DbCategoryRow[])
+    .map((cat): Category => ({
+      id: cat.slug,
+      name: cat.name,
+      tagline: cat.tagline ?? "",
+      services: cat.services
+        .filter((s) => s.active && s.visible_public && serviceIsBookable(s.id, map))
+        .map(
+          (s): Service => ({
+            id: s.id,
+            name: s.name,
+            duration: s.duration_min,
+            price: Math.round(s.price_cents / 100),
+            desc: s.description ?? "",
+            pointsCost: s.loyalty_enabled ? s.points_cost : 0,
+            pricingMode: s.pricing_mode,
+            zoneSelection: s.zone_selection ?? "multiple",
+            zones: (s.service_zones ?? [])
+              .filter((z) => z.active)
+              .sort((a, b) => a.order_index - b.order_index)
+              .map((z) => ({
+                id: z.id,
+                name: z.name,
+                durationMin: z.duration_min,
+                price: z.price_cents != null ? Math.round(z.price_cents / 100) : null,
+              })),
+          })
+        ),
+    }))
+    .filter((cat) => cat.services.length > 0)
 }
 
 /**
@@ -181,6 +186,28 @@ export async function fetchProfessionals(): Promise<Professional[]> {
   return [AUTO_PROFESSIONAL, ...staff]
 }
 
+/**
+ * serviceId → profesionales que lo hacen (`staff_services`), contando SÓLO
+ * staff activo y profesional (una profesional dada de baja no puede atender).
+ */
+export async function fetchStaffServices(): Promise<StaffServiceMap> {
+  const supabase = adminClient()
+
+  const { data } = await supabase
+    .from("staff_services")
+    .select("service_id, staff:staff(id, active, is_professional)")
+
+  const map: StaffServiceMap = {}
+  for (const row of (data ?? []) as unknown as {
+    service_id: string
+    staff: { id: string; active: boolean; is_professional: boolean } | null
+  }[]) {
+    if (!row.staff?.active || !row.staff.is_professional) continue
+    ;(map[row.service_id] ??= []).push(row.staff.id)
+  }
+  return map
+}
+
 type DbComboRow = {
   id: string
   name: string
@@ -214,31 +241,37 @@ export async function fetchCombos(): Promise<Combo[]> {
 
   if (!data) return []
 
-  return (data as unknown as DbComboRow[]).map((c): Combo => {
-    const services = c.combo_services
-      .filter((cs) => cs.service?.active && cs.service?.visible_public)
-      .sort((a, b) => a.order_index - b.order_index)
-      .map((cs): Service => ({
-        id: cs.service!.id,
-        name: cs.service!.name,
-        duration: cs.service!.duration_min,
-        price: Math.round(cs.service!.price_cents / 100),
-        desc: cs.service!.description ?? "",
-        pointsCost: cs.service!.points_cost,
-        pricingMode: "fixed",
-        zoneSelection: "multiple",
-        zones: [],
-      }))
-    const duration = services.reduce((a, s) => a + s.duration, 0)
-    return {
-      id: c.id,
-      name: c.name,
-      description: c.description ?? "",
-      price: Math.round(c.total_price_cents / 100),
-      duration,
-      services,
-    }
-  })
+  const map = await fetchStaffServices()
+
+  return (data as unknown as DbComboRow[])
+    .filter((c) =>
+      c.combo_services.every((cs) => !cs.service || serviceIsBookable(cs.service.id, map))
+    )
+    .map((c): Combo => {
+      const services = c.combo_services
+        .filter((cs) => cs.service?.active && cs.service?.visible_public)
+        .sort((a, b) => a.order_index - b.order_index)
+        .map((cs): Service => ({
+          id: cs.service!.id,
+          name: cs.service!.name,
+          duration: cs.service!.duration_min,
+          price: Math.round(cs.service!.price_cents / 100),
+          desc: cs.service!.description ?? "",
+          pointsCost: cs.service!.points_cost,
+          pricingMode: "fixed",
+          zoneSelection: "multiple",
+          zones: [],
+        }))
+      const duration = services.reduce((a, s) => a + s.duration, 0)
+      return {
+        id: c.id,
+        name: c.name,
+        description: c.description ?? "",
+        price: Math.round(c.total_price_cents / 100),
+        duration,
+        services,
+      }
+    })
 }
 
 /**
@@ -284,8 +317,11 @@ export async function fetchReservaPacks(): Promise<import("./data").ReservaPack[
     .order("name", { ascending: true })
 
   if (!data) return []
+
+  const map = await fetchStaffServices()
+
   return (data as unknown as DbReservaPackRow[])
-    .filter((p) => p.service)
+    .filter((p) => p.service && serviceIsBookable(p.service.id, map))
     .map((p) => ({
       id: p.id,
       name: p.name,
