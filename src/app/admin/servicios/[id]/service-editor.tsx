@@ -81,6 +81,7 @@ export default function ServiceEditor({
     price_cents: service.price_cents,
     active: service.active,
     visible_public: service.visible_public,
+    order_last: service.order_last,
   })
   const [zones, setZones] = useState<{ name: string; duration_min: number; price_cents: number | null }[]>(initialZones)
   const [pending, startTransition] = useTransition()
@@ -243,9 +244,20 @@ export default function ServiceEditor({
       )}
 
       {/* ── Orden al combinar con otros servicios ── */}
+      <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Orden al combinar</p>
+      <div style={{ marginBottom: 16 }}>
+        <Toggle
+          label="Va siempre al final"
+          checked={data.order_last}
+          onChange={(v) => setData({ ...data, order_last: v })}
+        />
+        <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 6 }}>
+          Cuando la clienta reserva varios servicios el mismo día, este queda al final (ej: masajes).
+        </p>
+      </div>
+
       {otherServices.length > 0 && (
         <>
-          <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Orden al combinar</p>
           <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
             Marcá los tratamientos con los que <strong>{service.name}</strong> debe hacerse <strong>primero</strong>.
           </p>

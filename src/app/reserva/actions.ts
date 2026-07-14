@@ -12,6 +12,7 @@ import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot 
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
+import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -90,12 +91,17 @@ async function rollbackPackAttempt(
 }
 
 /**
- * Deshace (todo o nada) los turnos ya creados de una reserva "separados" que
- * falló a mitad de camino. Si la clienta había canjeado con puntos, los puntos
- * ya se descontaron ANTES de crear los turnos: se le devuelven, porque no se
- * queda con ningún turno.
+ * Deshace (todo o nada) una reserva que falló, y DEVUELVE LOS PUNTOS.
+ *
+ * Los puntos del canje se descuentan en el paso 4b, **antes** de crear ningún
+ * turno. Cualquier salida de error posterior tiene que pasar por acá, o la
+ * clienta se queda sin puntos y sin turno.
+ *
+ * Con `createdIds` vacío no borra nada: sólo reembolsa. Eso lo hace servible
+ * tanto para las fallas del modo "separados" (que ya creó algunos turnos) como
+ * para un rechazo temprano, antes de crear ninguno.
  */
-async function rollbackSeparateAttempt(
+async function rollbackBookingAttempt(
   supabase: ReturnType<typeof adminClient>,
   createdIds: string[],
   clientId: string,
@@ -156,7 +162,7 @@ export async function createBooking(
   // 1) Resolve services to compute totals + ends_at
   const { data: services, error: svcErr } = await supabase
     .from("services")
-    .select("id, name, duration_min, price_cents, points_cost, loyalty_enabled, pricing_mode, zone_selection")
+    .select("id, name, duration_min, price_cents, points_cost, loyalty_enabled, pricing_mode, zone_selection, order_last")
     .in("id", input.serviceIds)
 
   if (svcErr) return { ok: false, error: `Servicios: ${svcErr.message}` }
@@ -511,7 +517,7 @@ export async function createBooking(
     // turno. Se hoistea ANTES de cualquier return para que ningún early
     // return de acá abajo pueda "olvidarse" del reembolso.
     const refund = redeem ? totalPointsCost : 0
-    const fail = (error: string) => rollbackSeparateAttempt(supabase, [], clientId, refund, error)
+    const fail = (error: string) => rollbackBookingAttempt(supabase, [], clientId, refund, error)
 
     // En este modo las fechas son TODAS obligatorias.
     if (services.some((s) => !input.serviceSlots![s.id]))
@@ -591,7 +597,7 @@ export async function createBooking(
         .single()
 
       if (aErr || !a)
-        return await rollbackSeparateAttempt(
+        return await rollbackBookingAttempt(
           supabase, createdIds, clientId, refund,
           `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
         )
@@ -609,7 +615,7 @@ export async function createBooking(
         starts_at: sStart.toISOString(),
       })
       if (lErr)
-        return await rollbackSeparateAttempt(
+        return await rollbackBookingAttempt(
           supabase, createdIds, clientId, refund,
           `Servicio del turno de ${s.name}: ${lErr.message}`
         )
@@ -738,10 +744,56 @@ export async function createBooking(
     return { ok: true, appointmentId: createdIds[0], appointmentIds: createdIds }
   }
 
-  // 5) Determine main staff (first service's resolved pro, or proHint)
+  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
+  // de crear el turno. Tiene que resolverse acá (y no más abajo, donde vivía
+  // antes junto al insert de appointment_services) porque `mainStaffId`
+  // depende de él: la profesional principal tiene que ser la del PRIMER
+  // servicio del orden REAL, no la del primero que mandó la clienta — si el
+  // orden se reordena por "va siempre al final", usar `input.serviceOrder[0]`
+  // le asigna el turno a la profesional equivocada a la hora equivocada.
+  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
+  const requestedOrder = orderedIds
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
+    // se agrega acá sin perder ninguno de los campos de `services` que se usan
+    // más abajo (id, computed[s.id], etc).
+    .map((s) => ({ ...s, orderLast: s.order_last }))
+
+  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
+  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
+  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
+  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
+  // profesional podría quedar escrita en un horario en el que está bloqueada
+  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
+  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
+  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
+  // arbitrario de Postgres: no hay un orden validado que respetar, así que
+  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
+  // rechazar una reserva perfectamente válida.
+  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder)) {
+    // Los puntos ya se descontaron en el paso 4b. Si rechazamos acá, la clienta
+    // no se lleva NINGÚN turno: hay que devolvérselos (con la lista de turnos
+    // creados vacía, el helper sólo reembolsa).
+    return await rollbackBookingAttempt(
+      supabase,
+      [],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      "Ese horario ya no es válido. Elegí el horario de nuevo."
+    )
+  }
+
+  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
+  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
+  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
+  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
+  const orderedServices = sortOrderLast(requestedOrder)
+
+  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
   const mainStaffId = input.resolvedStaff
-    ? (input.serviceOrder?.[0]
-        ? (input.resolvedStaff[input.serviceOrder[0]] ?? null)
+    ? (orderedServices[0]
+        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
         : Object.values(input.resolvedStaff)[0] ?? null)
     : (input.proHint !== "auto" ? input.proHint : null)
 
@@ -766,15 +818,19 @@ export async function createBooking(
     .select("id")
     .single()
 
+  // No se creó el turno: si canjeó con puntos, ya se los descontamos en el paso
+  // 4b y no se lleva nada. Se los devolvemos.
   if (apptErr || !appt)
-    return { ok: false, error: `Turno: ${apptErr?.message}` }
+    return await rollbackBookingAttempt(
+      supabase,
+      [],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      `Turno: ${apptErr?.message}`
+    )
 
-  // 6) Link services — respecting sequential order and per-service staff/starts_at
-  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
-  const orderedServices = orderedIds
-    .map((id) => services.find((s) => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => Boolean(s))
-
+  // 6) Link services — respecting sequential order (resolved above) and
+  // per-service staff/starts_at
   let serviceMs = startsAt.getTime()
   const apptServices = orderedServices.map((s) => {
     const c = computed[s.id]
@@ -795,7 +851,16 @@ export async function createBooking(
     .from("appointment_services")
     .insert(apptServices)
 
-  if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+  // El turno quedó sin servicios: se borra (todo o nada) y se devuelven los
+  // puntos. Antes quedaba un turno huérfano y la clienta perdía el canje.
+  if (linkErr)
+    return await rollbackBookingAttempt(
+      supabase,
+      [appt.id],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      `Servicios del turno: ${linkErr.message}`
+    )
 
   // 7) Google Calendar event (no bloqueante)
   try {
@@ -1196,7 +1261,7 @@ export async function fetchSequentialAvailability(
 
   const serviceIds = services.map((s) => s.id)
 
-  const [bhRes, prosRes, rulesRes, availRes] = await Promise.all([
+  const [bhRes, prosRes, rulesRes, availRes, orderLastRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
     supabase
@@ -1205,7 +1270,16 @@ export async function fetchSequentialAvailability(
       .in("service_first_id", serviceIds)
       .in("service_second_id", serviceIds),
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
+    supabase.from("services").select("id, order_last").in("id", serviceIds),
   ])
+
+  // Fail-open: si esta consulta falla, `orderLastIds` queda vacío y el solver
+  // ofrece cadenas sin respetar "va siempre al final" (createBooking, que sí
+  // relee `order_last`, puede terminar en desacuerdo con lo que se ofreció en
+  // pantalla). Es la dirección correcta para no romper el flujo principal de
+  // reservas si esta tabla falla, pero el error no puede quedar invisible.
+  if (orderLastRes.error)
+    console.error("fetchSequentialAvailability: no se pudo leer order_last", orderLastRes.error)
 
   const byDow = new Map(
     ((bhRes.data ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[]).map(
@@ -1223,6 +1297,15 @@ export async function fetchSequentialAvailability(
     )
   )
 
+  // Servicios marcados "va siempre al final" (ej: masajes). Ningún marcado
+  // puede quedar ANTES de uno no marcado; entre varios marcados, el orden es
+  // libre. Se combina con service_order_rules (ver más abajo).
+  const orderLastIds = new Set<string>(
+    ((orderLastRes.data ?? []) as { id: string; order_last: boolean }[])
+      .filter((s) => s.order_last)
+      .map((s) => s.id)
+  )
+
   // Filter permutations that violate order rules
   const isValidOrder = (perm: number[]): boolean => {
     for (let i = 0; i < perm.length; i++) {
@@ -1233,6 +1316,10 @@ export async function fetchSequentialAvailability(
         if (orderRules.has(`${b}|${a}`)) return false
       }
     }
+    // "Va siempre al final": misma regla pura que usa `createBooking` — se
+    // chequea sobre TODA la cadena, no sólo el par inmediato.
+    if (orderLastViolated(perm.map((i) => ({ orderLast: orderLastIds.has(services[i].id) }))))
+      return false
     return true
   }
 

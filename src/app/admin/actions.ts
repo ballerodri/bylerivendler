@@ -494,6 +494,7 @@ const ServicePatch = z.object({
   points_cost: z.number().int().nonnegative().optional(),
   active: z.boolean(),
   visible_public: z.boolean(),
+  order_last: z.boolean(),
   zones: z.array(ZoneInput).default([]),
 })
 
