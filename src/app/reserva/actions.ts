@@ -14,6 +14,7 @@ import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
 import { allowedStaffFor, canStaffDoService, type StaffServiceMap } from "@/lib/servicios/staff-services"
+import { assignableStaff, type BusyLeg } from "@/lib/servicios/availability"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -1026,15 +1027,19 @@ export async function fetchDayAvailability(
   // Regla estricta (sólo en los caminos públicos, que pasan `serviceId`): las
   // candidatas se acotan a quienes hacen ESE servicio (`staff_services`). Sin
   // `serviceId` (admin), el comportamiento es exactamente el de siempre.
+  // Se trae la tabla ENTERA (no filtrada por servicio): hace falta para poder
+  // resolver de qué servicio es una pata ANÓNIMA de un servicio distinto al
+  // pedido (ver `assignableStaff`).
   // Fail-closed: si esta consulta falla, el mapa queda vacío → sin candidatas.
   const staffMap: StaffServiceMap = {}
   if (serviceId) {
     const { data: linkRows, error: linkErr } = await supabase
       .from("staff_services")
-      .select("staff_id")
-      .eq("service_id", serviceId)
+      .select("service_id, staff_id")
     if (linkErr) console.error("staff_services:", linkErr.message)
-    staffMap[serviceId] = (linkRows ?? []).map((r: { staff_id: string }) => r.staff_id)
+    for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
+      ;(staffMap[r.service_id] ??= []).push(r.staff_id)
+    }
 
     if (proHint !== "auto") {
       if (!canStaffDoService(proHint, serviceId, staffMap)) return []
@@ -1051,12 +1056,16 @@ export async function fetchDayAvailability(
 
   let apptQuery = supabase
     .from("appointments")
-    .select("starts_at, duration_min, staff_id")
+    .select("id, starts_at, duration_min, staff_id, appointment_services(service_id, staff_id, starts_at, duration_min)")
     .gte("starts_at", dayStart)
     .lte("starts_at", dayEnd)
     .in("status", ["pending", "confirmed"])
 
-  if (proHint !== "auto") {
+  // La narrowing por staff_id sólo se conserva en el camino admin (sin
+  // `serviceId`, byte-idéntico a como era). En el camino público necesitamos
+  // ver TODO el día — las patas de otras profesionales y las anónimas — para
+  // poder resolverlas con `assignableStaff`; se filtra en memoria más abajo.
+  if (proHint !== "auto" && !serviceId) {
     apptQuery = apptQuery.eq("staff_id", proHint)
   }
 
@@ -1067,7 +1076,7 @@ export async function fetchDayAvailability(
 
   const [{ data: appointments }, { data: prosData }, { data: availData }] = await Promise.all([
     apptQuery,
-    proHint === "auto"
+    proHint === "auto" || serviceId
       ? supabase.from("staff").select("id").eq("is_professional", true).eq("active", true)
       : Promise.resolve({ data: [] as { id: string }[] }),
     availQuery,
@@ -1075,6 +1084,9 @@ export async function fetchDayAvailability(
 
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
   const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  // Sólo hace falta armar las patas por-servicio en el camino público: el
+  // admin (sin `serviceId`) sigue leyendo `appointments` tal cual, como siempre.
+  const legs = serviceId ? buildBusyLegs((appointments ?? []) as ApptRow[]) : []
 
   return candidateSlots.filter((slot) => {
     const slotStart = slotToUtcMs(dateStr, slot)
@@ -1086,22 +1098,14 @@ export async function fetchDayAvailability(
       // conteo genérico de más abajo, que mezclaría turnos ocupados de
       // profesionales que ni siquiera hacen este servicio.
       if (serviceId) {
-        const overlapping = (appointments ?? []).filter((appt) => {
-          const aStart = new Date(appt.starts_at).getTime()
-          const aEnd = aStart + (appt.duration_min as number) * 60_000
-          return slotStart < aEnd && slotEnd > aStart
-        })
-        // Un turno sin profesional asignada (staff_id NULL) puede estar ocupando
-        // a CUALQUIERA: se cuenta como una candidata menos. Conservador a
-        // propósito: preferimos no ofrecer un horario antes que pisar a alguien.
-        const anonBusy = overlapping.filter((appt) => !appt.staff_id).length
-        const freeCandidates = allowedStaffFor(serviceId, staffMap).filter(
+        const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
+        const candidates = allowedStaffFor(serviceId, staffMap).filter(
           (pid) =>
             activePros.includes(pid) &&
             proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
-            !overlapping.some((appt) => appt.staff_id === pid)
+            !overlappingLegs.some((l) => l.staffId === pid)
         )
-        return freeCandidates.length > anonBusy
+        return assignableStaff(candidates, overlappingLegs, staffMap, activePros).length > 0
       }
 
       // Count pros actually available at this slot (day + hours)
@@ -1123,6 +1127,14 @@ export async function fetchDayAvailability(
       return busyIds.size + anonymousBusy < availableAtSlot.length
     } else {
       if (!proWorksAtSlot(proHint, dayOfWeek, slotStart, slotEnd, blockedMap)) return false
+      if (serviceId) {
+        // Misma correción que arriba: una pata CON SU NOMBRE (no el turno
+        // entero) es lo que realmente la ocupa; una pata ANÓNIMA de un
+        // servicio que sólo ella hace también la ocupa (`assignableStaff`).
+        const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
+        if (overlappingLegs.some((l) => l.staffId === proHint)) return false
+        return assignableStaff([proHint], overlappingLegs, staffMap, activePros).length > 0
+      }
       return !(appointments ?? []).some((appt) => {
         const aStart = new Date(appt.starts_at).getTime()
         const aEnd   = aStart + (appt.duration_min as number) * 60_000
@@ -1184,6 +1196,63 @@ function buildBlockedMap(
   return m
 }
 
+// Fila de `appointment_services` embebida en un turno.
+type ApptServiceLegRow = {
+  service_id: string
+  staff_id: string | null
+  starts_at: string | null
+  duration_min: number | null
+}
+
+// Turno crudo tal como lo devuelve Supabase con `appointment_services(...)` embebido.
+type ApptRow = {
+  id: string
+  starts_at: string
+  duration_min: number
+  staff_id: string | null
+  appointment_services: ApptServiceLegRow[] | null
+}
+
+/**
+ * Convierte turnos crudos en patas ocupadas (`BusyLeg[]`): UNA por CADA
+ * servicio del turno, con SU PROPIA profesional, inicio y duración — no la
+ * del turno "portador" (que en una cadena "juntos" sólo guarda la de la
+ * PRIMERA profesional y la duración SUMADA de todos los servicios).
+ *
+ * Si un turno no tiene NINGUNA fila en `appointment_services` (no debería
+ * pasar, pero un turno invisible es un doble-booking), se emite UNA pata con
+ * el turno entero y `serviceId: ""` (servicio desconocido ⇒ `allowedStaffFor`
+ * da `[]` ⇒ `possible` queda vacío ⇒ sólo bloquea si coincide el nombre —
+ * la lectura segura).
+ */
+function buildBusyLegs(rows: ApptRow[]): BusyLeg[] {
+  const legs: BusyLeg[] = []
+  for (const r of rows) {
+    const svcRows = r.appointment_services ?? []
+    if (!svcRows.length) {
+      const startMs = new Date(r.starts_at).getTime()
+      legs.push({
+        staffId: r.staff_id,
+        serviceId: "",
+        startMs,
+        endMs: startMs + r.duration_min * 60_000,
+      })
+      continue
+    }
+    for (const s of svcRows) {
+      const startMs = s.starts_at ? new Date(s.starts_at).getTime() : new Date(r.starts_at).getTime()
+      const durationMin = s.duration_min ?? r.duration_min
+      legs.push({
+        staffId: s.staff_id ?? r.staff_id,
+        serviceId: s.service_id,
+        startMs,
+        endMs: startMs + durationMin * 60_000,
+      })
+    }
+  }
+  return legs
+}
+
 function utcMsToArTime(ms: number): string {
   const arMs = ms - AR_UTC_OFFSET * 3_600_000
   const d = new Date(arMs)
@@ -1216,7 +1285,7 @@ function checkPerm(
   startMs: number,
   perm: number[],
   services: ServiceInput[],
-  appts: Appt[],
+  legs: BusyLeg[],
   allPros: string[],
   dayOfWeek: number,
   blockedMap: BlockedMap,
@@ -1227,7 +1296,7 @@ function checkPerm(
   // Tracks which professionals are concurrently busy within THIS permutation's
   // time windows. Since services run sequentially (one ends before the next starts),
   // the same professional CAN appear in multiple services — no concurrency conflict.
-  // We only block concurrent overlap with EXISTING appointments in `appts`.
+  // We only block concurrent overlap with EXISTING legs in `legs`.
   let ms = startMs
 
   for (const idx of perm) {
@@ -1235,12 +1304,11 @@ function checkPerm(
     const sStart = ms
     const sEnd = ms + svc.duration * 60_000
 
-    const overlaps = (pid: string) =>
-      appts.some((a) => {
-        if (a.staff_id !== pid) return false
-        const aS = new Date(a.starts_at).getTime()
-        return sStart < aS + a.duration_min * 60_000 && sEnd > aS
-      })
+    // ¿Tiene esta profesional una pata CON SU NOMBRE que pise esta ventana?
+    // (No el turno entero: el turno "portador" de una cadena "juntos" sólo
+    // trae el nombre de la PRIMERA profesional — cada pata tiene la suya.)
+    const overlapsNamed = (pid: string) =>
+      legs.some((l) => l.staffId === pid && sStart < l.endMs && sEnd > l.startMs)
 
     // Las candidatas de ESTE servicio: las que lo hacen (regla estricta) y
     // siguen activas (una profesional dada de baja no puede atender). Sin la
@@ -1249,27 +1317,26 @@ function checkPerm(
       ? allowedStaffFor(svc.id, staffMap).filter((p) => allPros.includes(p))
       : allPros
 
+    // Patas (de cualquier servicio) que pisan esta ventana de horario.
+    const overlappingLegs = legs.filter((l) => sStart < l.endMs && sEnd > l.startMs)
+
     // Si la clienta pidió una profesional puntual, tiene que hacer el servicio.
     if (svc.staffId !== "auto") {
       if (enforce && !canStaffDoService(svc.staffId, svc.id, staffMap)) return null
-      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, blockedMap) || overlaps(svc.staffId))
+      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, blockedMap) || overlapsNamed(svc.staffId))
         return null
+      // Una pata ANÓNIMA de un servicio que sólo ella hace también la ocupa,
+      // aunque no tenga su nombre puesto (ver `assignableStaff`).
+      if (!assignableStaff([svc.staffId], overlappingLegs, staffMap, allPros).length) return null
       assignment[svc.id] = svc.staffId
     } else {
-      // Turnos que pisan esta ventana de horario.
-      const overlapping = appts.filter((a) => {
-        const aStart = new Date(a.starts_at).getTime()
-        const aEnd = aStart + a.duration_min * 60_000
-        return sStart < aEnd && sEnd > aStart
-      })
-      // Sin profesional asignada (staff_id NULL) = puede ser cualquiera: se
-      // cuenta como una candidata menos (mismo criterio que fetchDayAvailability).
-      const anonBusy = overlapping.filter((a) => !a.staff_id).length
-
-      const free = candidates.filter(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlaps(pid)
+      const withoutNamedOverlap = candidates.filter(
+        (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
       )
-      if (free.length <= anonBusy) return null
+      // `assignableStaff` descuenta, además, a quien una pata ANÓNIMA
+      // definitivamente ocupa (mismo criterio que `fetchDayAvailability`).
+      const free = assignableStaff(withoutNamedOverlap, overlappingLegs, staffMap, allPros)
+      if (!free.length) return null
 
       // Preferir a alguien ya asignada antes en esta misma cadena (ej: dos
       // masajes seguidos con la misma profesional), si sigue libre.
@@ -1285,7 +1352,7 @@ function trySlot(
   slot: string,
   dateStr: string,
   services: ServiceInput[],
-  appts: Appt[],
+  legs: BusyLeg[],
   allPros: string[],
   dayOfWeek: number,
   blockedMap: BlockedMap,
@@ -1297,7 +1364,7 @@ function trySlot(
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const assignment = checkPerm(startMs, perm, services, appts, allPros, dayOfWeek, blockedMap, staffMap, enforce)
+    const assignment = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce)
     if (assignment) {
       return {
         date: dateStr,
@@ -1329,12 +1396,16 @@ export async function fetchSequentialAvailability(
 
   const serviceIds = services.map((s) => s.id)
 
-  // Regla estricta (público): quién hace cada servicio. Sólo se pide si hace
-  // falta (`enforce`) — una query menos cuando el admin no la necesita. Va
-  // adentro del Promise.all de abajo (junto a las demás) para no agregar una
-  // ida y vuelta serial extra en el camino más transitado.
-  // Fail-closed: si esta consulta falla, el mapa queda vacío → ningún
-  // servicio tiene candidatas → no se ofrece ningún horario.
+  // Quién hace cada servicio (`staff_services`) — tabla ENTERA (no filtrada
+  // por servicio, ~20 filas): hace falta para resolver de qué servicio es una
+  // pata ANÓNIMA que puede pertenecer a un servicio DISTINTO de los pedidos
+  // (ver `assignableStaff`). Se usa también para acotar candidatas cuando
+  // `enforce` (público). Se trae siempre — incluso en el admin — porque
+  // `checkPerm` es compartida y necesita el mapa para el conteo correcto de
+  // patas anónimas/por-servicio (la ÚNICA excepción sancionada al "byte-
+  // idéntico" del admin: puede ahora rechazar un horario que antes ofrecía
+  // mal). Fail-closed: si esta consulta falla, el mapa queda vacío → cuando
+  // `enforce`, ningún servicio tiene candidatas → no se ofrece ningún horario.
   const [bhRes, prosRes, rulesRes, availRes, orderLastRes, staffSvcRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
@@ -1345,17 +1416,13 @@ export async function fetchSequentialAvailability(
       .in("service_second_id", serviceIds),
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
     supabase.from("services").select("id, order_last").in("id", serviceIds),
-    enforce
-      ? supabase.from("staff_services").select("service_id, staff_id").in("service_id", serviceIds)
-      : Promise.resolve({ data: [] as { service_id: string; staff_id: string }[], error: null }),
+    supabase.from("staff_services").select("service_id, staff_id"),
   ])
 
   const staffMap: StaffServiceMap = {}
-  if (enforce) {
-    if (staffSvcRes.error) console.error("staff_services:", staffSvcRes.error.message)
-    for (const r of (staffSvcRes.data ?? []) as { service_id: string; staff_id: string }[]) {
-      ;(staffMap[r.service_id] ??= []).push(r.staff_id)
-    }
+  if (staffSvcRes.error) console.error("staff_services:", staffSvcRes.error.message)
+  for (const r of (staffSvcRes.data ?? []) as { service_id: string; staff_id: string }[]) {
+    ;(staffMap[r.service_id] ??= []).push(r.staff_id)
   }
 
   // Fail-open: si esta consulta falla, `orderLastIds` queda vacío y el solver
@@ -1415,10 +1482,13 @@ export async function fetchSequentialAvailability(
 
   const { data: apptData } = await supabase
     .from("appointments")
-    .select("starts_at, duration_min, staff_id")
+    .select("id, starts_at, duration_min, staff_id, appointment_services(service_id, staff_id, starts_at, duration_min)")
     .gte("starts_at", from.toISOString())
     .lt("starts_at", to.toISOString())
     .in("status", ["pending", "confirmed"])
+  const allApptRows = (apptData ?? []) as ApptRow[]
+  // `individualSlotsForDate` (más abajo) sigue leyendo turnos "a secas", sin
+  // tocar: mismos campos que siempre, ignorando el `appointment_services` embebido.
   const allAppts = (apptData ?? []) as Appt[]
 
   const slotsForDate: SlotResult[] = []
@@ -1438,10 +1508,11 @@ export async function fetchSequentialAvailability(
       ? filterFutureSlots(dateStr, bh.slots, now)
       : [...bh.slots]
 
-    const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === dateStr)
+    const dayApptRows = allApptRows.filter((a) => a.starts_at.slice(0, 10) === dateStr)
+    const dayLegs = buildBusyLegs(dayApptRows)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayAppts, allPros, dayOfWeek, blockedMap, staffMap, enforce, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
