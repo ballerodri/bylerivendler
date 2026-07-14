@@ -91,12 +91,17 @@ async function rollbackPackAttempt(
 }
 
 /**
- * Deshace (todo o nada) los turnos ya creados de una reserva "separados" que
- * falló a mitad de camino. Si la clienta había canjeado con puntos, los puntos
- * ya se descontaron ANTES de crear los turnos: se le devuelven, porque no se
- * queda con ningún turno.
+ * Deshace (todo o nada) una reserva que falló, y DEVUELVE LOS PUNTOS.
+ *
+ * Los puntos del canje se descuentan en el paso 4b, **antes** de crear ningún
+ * turno. Cualquier salida de error posterior tiene que pasar por acá, o la
+ * clienta se queda sin puntos y sin turno.
+ *
+ * Con `createdIds` vacío no borra nada: sólo reembolsa. Eso lo hace servible
+ * tanto para las fallas del modo "separados" (que ya creó algunos turnos) como
+ * para un rechazo temprano, antes de crear ninguno.
  */
-async function rollbackSeparateAttempt(
+async function rollbackBookingAttempt(
   supabase: ReturnType<typeof adminClient>,
   createdIds: string[],
   clientId: string,
@@ -512,7 +517,7 @@ export async function createBooking(
     // turno. Se hoistea ANTES de cualquier return para que ningún early
     // return de acá abajo pueda "olvidarse" del reembolso.
     const refund = redeem ? totalPointsCost : 0
-    const fail = (error: string) => rollbackSeparateAttempt(supabase, [], clientId, refund, error)
+    const fail = (error: string) => rollbackBookingAttempt(supabase, [], clientId, refund, error)
 
     // En este modo las fechas son TODAS obligatorias.
     if (services.some((s) => !input.serviceSlots![s.id]))
@@ -592,7 +597,7 @@ export async function createBooking(
         .single()
 
       if (aErr || !a)
-        return await rollbackSeparateAttempt(
+        return await rollbackBookingAttempt(
           supabase, createdIds, clientId, refund,
           `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
         )
@@ -610,7 +615,7 @@ export async function createBooking(
         starts_at: sStart.toISOString(),
       })
       if (lErr)
-        return await rollbackSeparateAttempt(
+        return await rollbackBookingAttempt(
           supabase, createdIds, clientId, refund,
           `Servicio del turno de ${s.name}: ${lErr.message}`
         )
@@ -767,7 +772,16 @@ export async function createBooking(
   // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
   // rechazar una reserva perfectamente válida.
   if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder)) {
-    return { ok: false, error: "Ese horario ya no es válido. Elegí el horario de nuevo." }
+    // Los puntos ya se descontaron en el paso 4b. Si rechazamos acá, la clienta
+    // no se lleva NINGÚN turno: hay que devolvérselos (con la lista de turnos
+    // creados vacía, el helper sólo reembolsa).
+    return await rollbackBookingAttempt(
+      supabase,
+      [],
+      clientId,
+      redeem ? totalPointsCost : 0,
+      "Ese horario ya no es válido. Elegí el horario de nuevo."
+    )
   }
 
   // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
