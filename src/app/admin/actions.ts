@@ -253,6 +253,71 @@ export async function deleteAppointment(
 }
 
 /**
+ * Elimina una compra de pack de la ficha de la clienta (incidente real: un
+ * pack vendido mal configurado quedó pegado para siempre porque no había
+ * forma de borrarlo). Con dos frenos que no se saltean:
+ *  - si alguna sesión del pack ya está "completed" (ya se prestó, ya cuenta
+ *    en estadísticas), no se borra: se corrompería el historial.
+ *  - si el pack ya tiene una Factura C emitida (`invoice_id`), no se borra:
+ *    es un documento legal, no puede quedar huérfano — hay que manejarlo
+ *    desde Facturación.
+ * Si pasa ambos frenos, las sesiones que tenga (pending/confirmed/cancelled/
+ * no_show) se DESVINCULAN (pack_purchase_id = null) en vez de borrarse: la
+ * clienta no pierde esos turnos, sólo dejan de contar como sesión de pack.
+ */
+export async function deletePackPurchase(
+  packPurchaseId: string
+): Promise<{ ok: boolean; error?: string; unlinked?: number }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pp } = await admin
+    .from("pack_purchases")
+    .select("id, client_id, invoice_id")
+    .eq("id", packPurchaseId)
+    .maybeSingle()
+  if (!pp) return { ok: false, error: "No encontramos ese pack." }
+
+  if (pp.invoice_id) {
+    return {
+      ok: false,
+      error:
+        "Este pack tiene una Factura C emitida: es un documento legal y no se puede borrar desde acá. Manejalo desde Facturación.",
+    }
+  }
+
+  const { data: linkedData } = await admin
+    .from("appointments")
+    .select("id, status")
+    .eq("pack_purchase_id", packPurchaseId)
+  const linked = (linkedData ?? []) as { id: string; status: string }[]
+
+  if (linked.some((a) => a.status === "completed")) {
+    return {
+      ok: false,
+      error:
+        "Este pack tiene sesiones ya completadas: borrarlo corrompería el historial y las estadísticas. No se puede eliminar.",
+    }
+  }
+
+  if (linked.length) {
+    const { error: unlinkErr } = await admin
+      .from("appointments")
+      .update({ pack_purchase_id: null })
+      .in("id", linked.map((a) => a.id))
+    if (unlinkErr) return { ok: false, error: `No pudimos desvincular los turnos: ${unlinkErr.message}` }
+  }
+
+  const { error: delErr } = await admin.from("pack_purchases").delete().eq("id", packPurchaseId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  revalidatePath(`/admin/clientas/${pp.client_id}`)
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  return { ok: true, unlinked: linked.length }
+}
+
+/**
  * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
  * mueve): sólo anota lo efectivamente recibido.
  *

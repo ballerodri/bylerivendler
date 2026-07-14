@@ -5,6 +5,7 @@ import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
+import PackDeleteButton from "./pack-delete-button"
 import PackSessions, { type PackPurchaseView } from "./pack-sessions"
 import { fetchBusinessHours } from "@/app/reserva/queries"
 
@@ -102,6 +103,14 @@ export default async function AdminClientDetailPage({
     id: string; starts_at: string; status: string; duration_min: number; pack_purchase_id: string
   }[]
   const packAppts = packApptsAll.filter((a) => a.status !== "cancelled")
+
+  // Turnos vinculados a cada pack (CUALQUIER estado): si se borra el pack,
+  // todos estos se desvinculan (no se borran). Se lo mostramos a la clienta
+  // antes de confirmar el borrado.
+  const linkedApptsCount = new Map<string, number>()
+  for (const a of packApptsAll) {
+    linkedApptsCount.set(a.pack_purchase_id, (linkedApptsCount.get(a.pack_purchase_id) ?? 0) + 1)
+  }
 
   // interval_days + duración/modo de precio del servicio de cada pack comprado
   const { data: packMetaData } = await admin
@@ -242,6 +251,12 @@ export default async function AdminClientDetailPage({
                   purchase={purchaseViews.find((v) => v.id === p.id)!}
                   businessHours={businessHours}
                 />
+                <div style={{ padding: "0 12px 12px", display: "flex", justifyContent: "flex-end" }}>
+                  <PackDeleteButton
+                    purchaseId={p.id}
+                    linkedAppointmentsCount={linkedApptsCount.get(p.id) ?? 0}
+                  />
+                </div>
               </div>
             )
           })

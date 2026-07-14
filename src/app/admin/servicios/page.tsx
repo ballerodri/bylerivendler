@@ -3,6 +3,8 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "../../reserva/data"
+import { fetchStaffServices } from "../../reserva/queries"
+import { unbookableServiceIds } from "@/lib/servicios/staff-services"
 import CategoryActions from "./category-actions"
 
 export const dynamic = "force-dynamic"
@@ -47,6 +49,16 @@ export default async function AdminServiciosPage() {
 
   const categories = (data ?? []) as CategoryRow[]
 
+  // Regla estricta (rama profesional-por-servicio): un servicio activo sin
+  // ninguna profesional asignada en `staff_services` no se puede reservar
+  // online y desaparece del catálogo público. El admin lo sigue permitiendo
+  // (es la válvula de escape del salón), pero tiene que gritarlo acá.
+  const staffServiceMap = await fetchStaffServices()
+  const allServices = categories.flatMap((cat) => cat.services)
+  const activeServiceIds = allServices.filter((s) => s.active).map((s) => s.id)
+  const unbookableIds = new Set(unbookableServiceIds(activeServiceIds, staffServiceMap))
+  const unbookableServices = allServices.filter((s) => unbookableIds.has(s.id))
+
   return (
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
@@ -59,6 +71,18 @@ export default async function AdminServiciosPage() {
         Editá precios y duración por servicio. Los puntos del Programa Cerca se manejan en su
         propia sección.
       </p>
+
+      {unbookableServices.length > 0 && (
+        <div className="adm-alert">
+          <strong>
+            {unbookableServices.length} servicio{unbookableServices.length === 1 ? "" : "s"} sin
+            ninguna profesional asignada
+          </strong>{" "}
+          — no se pueden reservar online: ya no aparecen en el catálogo de la reserva
+          ({unbookableServices.map((s) => s.name).join(", ")}). Se arregla asignándoles una
+          profesional en el editor de cada servicio.
+        </div>
+      )}
 
       {categories.map((cat) => (
         <div key={cat.id} style={{ marginBottom: 32 }}>
@@ -106,6 +130,11 @@ export default async function AdminServiciosPage() {
                           ? "Inactivo"
                           : "Oculto del público"}
                     </div>
+                    {unbookableIds.has(s.id) && (
+                      <div className="adm-sub" style={{ color: "#8c463c" }}>
+                        Sin profesional · no reservable online
+                      </div>
+                    )}
                   </div>
                   <div style={{ fontSize: 14, color: "var(--ink-soft)" }}>{s.duration_min} min</div>
                   <div style={{ fontSize: 18, fontFamily: "var(--serif)", fontWeight: 500 }}>
