@@ -50,11 +50,13 @@ export default function PackSessionPicker({
   businessHours: BusinessHour[]
   durationMin: number
   proHint: string
-  // Con serviceId: se aplica la regla estricta de `staff_services` (caminos
-  // públicos, en screens.tsx). Sin él (admin, ver pack-sessions.tsx): ninguna
-  // regla — el salón tiene que poder agendar una sesión de un servicio
-  // todavía sin profesional asignada, igual que en `schedulePackSession`.
-  serviceId?: string | null
+  // Requerido (pero nullable): así ningún call site público puede olvidarse
+  // de pasarlo y perder la regla en silencio. Con serviceId: se aplica la
+  // regla estricta de `staff_services` (caminos públicos, en screens.tsx).
+  // Con null (admin, ver pack-sessions.tsx): ninguna regla — el salón tiene
+  // que poder agendar una sesión de un servicio todavía sin profesional
+  // asignada, igual que en `schedulePackSession`.
+  serviceId: string | null
   minDate: Date | null
   onPick: (startsAtIso: string) => void
   onCancel: () => void

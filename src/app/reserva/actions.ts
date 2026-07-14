@@ -1086,15 +1086,22 @@ export async function fetchDayAvailability(
       // conteo genérico de más abajo, que mezclaría turnos ocupados de
       // profesionales que ni siquiera hacen este servicio.
       if (serviceId) {
-        return allowedStaffFor(serviceId, staffMap).some((pid) => {
-          if (!proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap)) return false
-          return !(appointments ?? []).some((appt) => {
-            if (appt.staff_id !== pid) return false
-            const aStart = new Date(appt.starts_at).getTime()
-            const aEnd   = aStart + (appt.duration_min as number) * 60_000
-            return slotStart < aEnd && slotEnd > aStart
-          })
+        const overlapping = (appointments ?? []).filter((appt) => {
+          const aStart = new Date(appt.starts_at).getTime()
+          const aEnd = aStart + (appt.duration_min as number) * 60_000
+          return slotStart < aEnd && slotEnd > aStart
         })
+        // Un turno sin profesional asignada (staff_id NULL) puede estar ocupando
+        // a CUALQUIERA: se cuenta como una candidata menos. Conservador a
+        // propósito: preferimos no ofrecer un horario antes que pisar a alguien.
+        const anonBusy = overlapping.filter((appt) => !appt.staff_id).length
+        const freeCandidates = allowedStaffFor(serviceId, staffMap).filter(
+          (pid) =>
+            activePros.includes(pid) &&
+            proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
+            !overlapping.some((appt) => appt.staff_id === pid)
+        )
+        return freeCandidates.length > anonBusy
       }
 
       // Count pros actually available at this slot (day + hours)
@@ -1235,9 +1242,12 @@ function checkPerm(
         return sStart < aS + a.duration_min * 60_000 && sEnd > aS
       })
 
-    // Las candidatas de ESTE servicio: las que lo hacen (regla estricta).
-    // Sin la regla (admin), cualquiera de las activas.
-    const candidates = enforce ? allowedStaffFor(svc.id, staffMap) : allPros
+    // Las candidatas de ESTE servicio: las que lo hacen (regla estricta) y
+    // siguen activas (una profesional dada de baja no puede atender). Sin la
+    // regla (admin), cualquiera de las activas.
+    const candidates = enforce
+      ? allowedStaffFor(svc.id, staffMap).filter((p) => allPros.includes(p))
+      : allPros
 
     // Si la clienta pidió una profesional puntual, tiene que hacer el servicio.
     if (svc.staffId !== "auto") {
@@ -1246,11 +1256,25 @@ function checkPerm(
         return null
       assignment[svc.id] = svc.staffId
     } else {
-      const free = candidates.find(
+      // Turnos que pisan esta ventana de horario.
+      const overlapping = appts.filter((a) => {
+        const aStart = new Date(a.starts_at).getTime()
+        const aEnd = aStart + a.duration_min * 60_000
+        return sStart < aEnd && sEnd > aStart
+      })
+      // Sin profesional asignada (staff_id NULL) = puede ser cualquiera: se
+      // cuenta como una candidata menos (mismo criterio que fetchDayAvailability).
+      const anonBusy = overlapping.filter((a) => !a.staff_id).length
+
+      const free = candidates.filter(
         (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlaps(pid)
       )
-      if (!free) return null
-      assignment[svc.id] = free
+      if (free.length <= anonBusy) return null
+
+      // Preferir a alguien ya asignada antes en esta misma cadena (ej: dos
+      // masajes seguidos con la misma profesional), si sigue libre.
+      const preferred = Object.values(assignment).find((pid) => free.includes(pid))
+      assignment[svc.id] = preferred ?? free[0]
     }
     ms = sEnd
   }
@@ -1306,22 +1330,12 @@ export async function fetchSequentialAvailability(
   const serviceIds = services.map((s) => s.id)
 
   // Regla estricta (público): quién hace cada servicio. Sólo se pide si hace
-  // falta (`enforce`) — una query menos cuando el admin no la necesita.
+  // falta (`enforce`) — una query menos cuando el admin no la necesita. Va
+  // adentro del Promise.all de abajo (junto a las demás) para no agregar una
+  // ida y vuelta serial extra en el camino más transitado.
   // Fail-closed: si esta consulta falla, el mapa queda vacío → ningún
   // servicio tiene candidatas → no se ofrece ningún horario.
-  const staffMap: StaffServiceMap = {}
-  if (enforce) {
-    const { data: linkRows, error: linkErr } = await supabase
-      .from("staff_services")
-      .select("service_id, staff_id")
-      .in("service_id", services.map((s) => s.id))
-    if (linkErr) console.error("staff_services:", linkErr.message)
-    for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
-      ;(staffMap[r.service_id] ??= []).push(r.staff_id)
-    }
-  }
-
-  const [bhRes, prosRes, rulesRes, availRes, orderLastRes] = await Promise.all([
+  const [bhRes, prosRes, rulesRes, availRes, orderLastRes, staffSvcRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
     supabase
@@ -1331,7 +1345,18 @@ export async function fetchSequentialAvailability(
       .in("service_second_id", serviceIds),
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
     supabase.from("services").select("id, order_last").in("id", serviceIds),
+    enforce
+      ? supabase.from("staff_services").select("service_id, staff_id").in("service_id", serviceIds)
+      : Promise.resolve({ data: [] as { service_id: string; staff_id: string }[], error: null }),
   ])
+
+  const staffMap: StaffServiceMap = {}
+  if (enforce) {
+    if (staffSvcRes.error) console.error("staff_services:", staffSvcRes.error.message)
+    for (const r of (staffSvcRes.data ?? []) as { service_id: string; staff_id: string }[]) {
+      ;(staffMap[r.service_id] ??= []).push(r.staff_id)
+    }
+  }
 
   // Fail-open: si esta consulta falla, `orderLastIds` queda vacío y el solver
   // ofrece cadenas sin respetar "va siempre al final" (createBooking, que sí
@@ -1438,10 +1463,12 @@ export async function fetchSequentialAvailability(
       const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === fromDate)
 
       for (const svc of services) {
-        // Las candidatas de ESTE servicio (regla estricta) o cualquiera de
-        // las activas si no se aplica la regla (admin) — mismo criterio que
-        // en checkPerm.
-        const proCandidates = enforce ? allowedStaffFor(svc.id, staffMap) : allPros
+        // Las candidatas de ESTE servicio (regla estricta) y activas, o
+        // cualquiera de las activas si no se aplica la regla (admin) —
+        // mismo criterio que en checkPerm.
+        const proCandidates = enforce
+          ? allowedStaffFor(svc.id, staffMap).filter((p) => allPros.includes(p))
+          : allPros
 
         // Si pidió una profesional puntual que no hace este servicio, no hay horarios.
         if (svc.staffId !== "auto" && enforce && !canStaffDoService(svc.staffId, svc.id, staffMap)) {
