@@ -1971,6 +1971,26 @@ export function Screen5Confirm({
       return
     }
 
+    // Re-validar las fechas con la MISMA regla que usa el servidor (futuras y
+    // sin superposición): el estado puede venir de localStorage y traer
+    // fechas que ya pasaron, o que ahora se solapan (p.ej. cambió la duración
+    // por una zona elegida distinta). El servidor lo rechaza igual, pero acá
+    // se lo decimos ANTES de mostrar el spinner de "Confirmando…".
+    if (separados) {
+      const items = services.map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(state.serviceSlots![s.id]).getTime(),
+        durationMin: effective(s).duration,
+        priceCents: Math.round(effective(s).price * 100),
+      }))
+      const check = validateSeparateSlots(items, Date.now())
+      if (!check.ok) {
+        setError(check.error)
+        return
+      }
+    }
+
     // En separados el servidor usa serviceSlots; startsAt va igual porque el
     // schema lo exige: mandamos el más temprano de los elegidos.
     const startsAt = pack
@@ -1995,11 +2015,16 @@ export function Screen5Confirm({
       serviceIds: services.map((s) => s.id),
       startsAt: startsAt.toISOString(),
       proHint: state.pro || "auto",
-      // El pack nunca resuelve `serviceOrder`/`resolvedStaff` (eso lo escribe
-      // sólo `selectSeqSlot`, en el flujo de servicios sueltos) — si un pack
-      // quedó seleccionado después de haber resuelto un turno suelto, esos
-      // campos podrían traer un profesional que la clienta nunca eligió para
-      // el pack. Belt-and-braces: nunca los mandamos cuando hay pack.
+      // `serviceOrder`/`resolvedStaff` son conceptos de "juntos" (el orden y
+      // profesional que el algoritmo resolvió para encadenar servicios en UN
+      // turno, ver `selectSeqSlot`) — ni el pack ni "separados" los usan.
+      // El pack nunca los resuelve: si quedó seleccionado después de haber
+      // resuelto un turno suelto "juntos", esos campos podrían traer un
+      // profesional que la clienta nunca eligió para el pack. Y en
+      // "separados" cada servicio tiene SU fecha/profesional propios en
+      // `serviceSlots`/`serviceStaff`; mandar un `serviceOrder`/`resolvedStaff`
+      // viejo (de un "juntos" anterior) no aplica y podría confundir al
+      // servidor. Belt-and-braces: nunca los mandamos cuando hay pack o separados.
       serviceOrder: pack || separados ? undefined : state.serviceOrder,
       resolvedStaff: pack || separados ? undefined : state.resolvedStaff,
       serviceSlots: separados ? state.serviceSlots : undefined,
@@ -2086,7 +2111,7 @@ export function Screen5Confirm({
         </div>
         <div className="summary__row">
           <span className="summary__label">Cuándo</span>
-          <div className="summary__value">
+          <div className="summary__value" style={separados ? { flex: 1, marginLeft: 16 } : undefined}>
             {pack ? (
               <div>
                 {packSlotsForDisplay.map((iso, i) => {
@@ -2129,7 +2154,23 @@ export function Screen5Confirm({
             )}
           </div>
         </div>
-        {!isMultiResolved && (
+        {separados ? (
+        <div className="summary__row">
+          <span className="summary__label">Profesional</span>
+          <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
+            {services.map((s, i) => {
+              const staffId = state.serviceStaff?.[s.id] ?? "auto"
+              const assignedPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
+              return (
+                <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
+                  {s.name}
+                  <small>{assignedPro.name}</small>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        ) : !isMultiResolved && (
         <div className="summary__row">
           <span className="summary__label">Profesional</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
