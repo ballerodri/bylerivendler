@@ -963,7 +963,7 @@ export async function createBooking(
 
       for (let i = 0; i < created.appointmentIds.length; i++) {
         try {
-          const item = plan[i]
+          const item = ordered[i]
           const staffId = item.staffId
           const cached = staffId ? staffCache.get(staffId) : undefined
           const staffName = cached?.full_name ?? null
