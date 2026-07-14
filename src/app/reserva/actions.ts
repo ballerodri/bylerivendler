@@ -22,6 +22,7 @@ import {
   type BusyLeg,
   type ApptRow,
 } from "@/lib/servicios/availability"
+import { chooseStaff } from "@/lib/servicios/choose-staff"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -1479,6 +1480,84 @@ export async function fetchDayAvailability(
       })
     }
   })
+}
+
+/**
+ * Elige UNA profesional concreta para un slot que se reservó en "Auto".
+ *
+ * Usa la MISMA consulta y la MISMA función (`assignableStaff`) que
+ * `fetchDayAvailability` para decidir la disponibilidad: si devuelve un nombre,
+ * ese nombre está tan libre como el buscador afirmó; si devuelve `null`, nadie
+ * puede — el mismo veredicto que el buscador. No pueden contradecirse.
+ *
+ * Desempate: la que tenga menos turnos ESE día. `preferredStaffId` (la elegida
+ * en una sesión anterior del mismo pack) se prefiere si sigue disponible.
+ */
+async function chooseStaffForSlot(
+  supabase: ReturnType<typeof adminClient>,
+  args: {
+    dateStr: string
+    timeStr: string
+    durationMin: number
+    serviceId: string
+    preferredStaffId?: string | null
+  }
+): Promise<string | null> {
+  const { dateStr, timeStr, durationMin, serviceId, preferredStaffId } = args
+  const slotStart = slotToUtcMs(dateStr, timeStr)
+  const slotEnd = slotStart + durationMin * 60_000
+
+  // Ventana del día (AR) para traer los turnos y contar por profesional.
+  const [dy, dm, dd] = dateStr.split("-").map(Number)
+  const dayStartMs = Date.UTC(dy, dm - 1, dd, AR_UTC_OFFSET, 0, 0)
+  const dayStart = new Date(dayStartMs).toISOString()
+  const dayEnd = new Date(dayStartMs + 24 * 3_600_000).toISOString()
+
+  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: linkRows, error: linkErr }] =
+    await Promise.all([
+      supabase
+        .from("appointments")
+        .select("id, starts_at, duration_min, staff_id, appointment_services(service_id, staff_id, starts_at, duration_min)")
+        .gte("starts_at", dayStart)
+        .lte("starts_at", dayEnd)
+        .in("status", ["pending", "confirmed"]),
+      supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
+      supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
+      // Tabla ENTERA (no filtrada por servicio) — igual que `fetchDayAvailability`:
+      // `assignableStaff` necesita el mapa cruzado para resolver de qué servicio
+      // es una pata ANÓNIMA de un servicio distinto al que se está reservando.
+      supabase.from("staff_services").select("service_id, staff_id"),
+    ])
+  // Fail-closed: si no podemos leer quién hace el servicio, no inventamos a nadie.
+  if (linkErr) return null
+
+  const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
+  const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  const staffMap: StaffServiceMap = {}
+  for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
+    ;(staffMap[r.service_id] ??= []).push(r.staff_id)
+  }
+  const legs = buildBusyLegs((apptData ?? []) as ApptRow[])
+  const overlappingLegs = legs.filter((l) => slotStart < l.endMs && slotEnd > l.startMs)
+
+  // El día de la semana AR para `proWorksAtSlot` (mismo criterio que el buscador).
+  const arDow = arPartsFromUtc(new Date(slotStart)).dayOfWeek
+
+  const candidates = allowedStaffFor(serviceId, staffMap).filter(
+    (pid) =>
+      activePros.includes(pid) &&
+      proWorksAtSlot(pid, arDow, slotStart, slotEnd, blockedMap) &&
+      !overlappingLegs.some((l) => l.staffId === pid)
+  )
+  const assignable = assignableStaff(candidates, overlappingLegs, staffMap, activePros)
+
+  // Conteo de turnos por profesional ESE día (para repartir la carga).
+  const countsByStaff: Record<string, number> = {}
+  for (const a of (apptData ?? []) as { staff_id: string | null }[]) {
+    if (a.staff_id) countsByStaff[a.staff_id] = (countsByStaff[a.staff_id] ?? 0) + 1
+  }
+
+  return chooseStaff(assignable, countsByStaff, preferredStaffId ?? null)
 }
 
 // ─── Sequential availability ──────────────────────────────────────────────────
