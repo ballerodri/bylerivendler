@@ -113,7 +113,20 @@ async function rollbackAll(
     // `appointments.pack_purchase_id` tiene ON DELETE SET NULL, así que borrar
     // la compra SIEMPRE "funciona" aunque hayan quedado turnos: por eso el
     // borrado de turnos de arriba se chequea a mano y corta antes de llegar acá.
-    await supabase.from("pack_purchases").delete().eq("id", created.packPurchaseId)
+    const { error: purDelErr } = await supabase
+      .from("pack_purchases")
+      .delete()
+      .eq("id", created.packPurchaseId)
+    // Si la compra del pack NO se pudo borrar, la clienta se queda CON el pack.
+    // Devolverle además los puntos sería regalarle las dos cosas — el mismo
+    // razonamiento que en el borrado de turnos de arriba. Se corta acá.
+    if (purDelErr) {
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tu reserva y no pudimos deshacerla por completo. Por favor comunicate con el salón para confirmar el estado de tu pack antes de volver a intentar.",
+      }
+    }
   }
 
   if (pointsToRefund > 0) {
