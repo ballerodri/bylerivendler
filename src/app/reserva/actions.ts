@@ -4,12 +4,14 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingConfirmation, sendPackConfirmation, sendMultiBookingConfirmation } from "@/lib/email/booking-emails"
+import { sendBookingConfirmation, sendPackConfirmation, sendMultiBookingConfirmation, sendMixedBookingConfirmation } from "@/lib/email/booking-emails"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
+import { crossOverlapCheck, sumDeposits, sumTotals } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
@@ -35,6 +37,10 @@ const BookingInput = z.object({
   packId: z.string().uuid().optional(),
   packZoneIds: z.array(z.string().uuid()).optional(),
   packSlots: z.array(z.string().datetime()).optional(),
+  // La profesional del pack ("auto" o un staffId). ES SUYA: no se deriva de
+  // `resolvedStaff`, que pertenece a los servicios sueltos (en una compra
+  // mezclada el pack terminaría con la profesional de otro servicio).
+  packStaff: z.union([z.literal("auto"), z.string().uuid()]).optional(),
   payChoice: z.enum(["deposit", "full"]).optional(),
   // Modo "separados": una fecha por servicio (serviceId → ISO). Si no viene,
   // la reserva es la de siempre: UN turno con los servicios encadenados.
@@ -69,60 +75,37 @@ function adminClient() {
 }
 
 /**
- * Deshace (todo o nada) los turnos de un pack creados hasta el momento de una
- * falla a mitad de camino. `appointments.pack_purchase_id` tiene ON DELETE SET
- * NULL, así que borrar `pack_purchases` SIEMPRE funciona aunque el borrado de
- * los turnos haya fallado — por eso hay que chequear ese error a mano: si no
- * pudimos borrar los turnos ya creados, NO borramos la compra del pack (queda
- * enganchada y visible/recuperable en Admin) y le avisamos al cliente que no
- * reintente solo, sino que se comunique con el salón.
- */
-async function rollbackPackAttempt(
-  supabase: ReturnType<typeof adminClient>,
-  createdIds: string[],
-  purchaseId: string,
-  fallbackError: string
-): Promise<CreateBookingResult> {
-  if (createdIds.length) {
-    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
-    if (delErr) {
-      return {
-        ok: false,
-        error:
-          "Hubo un problema al crear tu pack y no pudimos deshacerlo por completo. Por favor comunicate con el salón para confirmar el estado de tu reserva antes de volver a intentar.",
-      }
-    }
-  }
-  await supabase.from("pack_purchases").delete().eq("id", purchaseId)
-  return { ok: false, error: fallbackError }
-}
-
-/**
- * Deshace (todo o nada) una reserva que falló, y DEVUELVE LOS PUNTOS.
+ * Deshace una reserva que falló, y DEVUELVE LOS PUNTOS. Todo o nada.
  *
- * Los puntos del canje se descuentan en el paso 4b, **antes** de crear ningún
- * turno. Cualquier salida de error posterior tiene que pasar por acá, o la
- * clienta se queda sin puntos y sin turno.
+ * Reemplaza a los dos rollbacks que había (uno sabía borrar la compra del pack,
+ * el otro sabía devolver los puntos). En una compra MEZCLADA hay que hacer las
+ * dos cosas, y tener dos helpers es como se pierde un reembolso.
  *
- * Con `createdIds` vacío no borra nada: sólo reembolsa. Eso lo hace servible
- * tanto para las fallas del modo "separados" (que ya creó algunos turnos) como
- * para un rechazo temprano, antes de crear ninguno.
+ * Los puntos del canje se descuentan ANTES de crear ningún turno. Cualquier
+ * salida de error posterior tiene que pasar por acá, o la clienta se queda sin
+ * puntos y sin turno.
+ *
+ * Con `appointmentIds` vacío y sin `packPurchaseId` no borra nada: sólo
+ * reembolsa. Eso lo hace servible también para un rechazo temprano.
  */
-async function rollbackBookingAttempt(
+async function rollbackAll(
   supabase: ReturnType<typeof adminClient>,
-  createdIds: string[],
+  created: { appointmentIds: string[]; packPurchaseId: string | null },
   clientId: string,
   pointsToRefund: number,
   fallbackError: string
 ): Promise<CreateBookingResult> {
-  if (createdIds.length) {
-    const { error: delErr } = await supabase.from("appointments").delete().in("id", createdIds)
+  if (created.appointmentIds.length) {
+    const { error: delErr } = await supabase
+      .from("appointments")
+      .delete()
+      .in("id", created.appointmentIds)
     if (delErr) {
       // No pudimos deshacer: quedan turnos sueltos en la agenda. Que NO
       // reintente sola (duplicaría los turnos): que llame al salón.
-      // A propósito NO se devuelven los puntos en este caso: si el DELETE
-      // falló, la clienta puede estar quedándose con algunos turnos ya
-      // creados, así que reembolsar sería regalarle los puntos Y el turno.
+      // A propósito NO se devuelven los puntos acá: si el DELETE falló, la
+      // clienta puede estar quedándose con algunos turnos ya creados, así que
+      // reembolsar sería regalarle los puntos Y el turno.
       // No "arreglarlo" agregando un refund acá.
       return {
         ok: false,
@@ -131,6 +114,27 @@ async function rollbackBookingAttempt(
       }
     }
   }
+
+  if (created.packPurchaseId) {
+    // `appointments.pack_purchase_id` tiene ON DELETE SET NULL, así que borrar
+    // la compra SIEMPRE "funciona" aunque hayan quedado turnos: por eso el
+    // borrado de turnos de arriba se chequea a mano y corta antes de llegar acá.
+    const { error: purDelErr } = await supabase
+      .from("pack_purchases")
+      .delete()
+      .eq("id", created.packPurchaseId)
+    // Si la compra del pack NO se pudo borrar, la clienta se queda CON el pack.
+    // Devolverle además los puntos sería regalarle las dos cosas — el mismo
+    // razonamiento que en el borrado de turnos de arriba. Se corta acá.
+    if (purDelErr) {
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tu reserva y no pudimos deshacerla por completo. Por favor comunicate con el salón para confirmar el estado de tu pack antes de volver a intentar.",
+      }
+    }
+  }
+
   if (pointsToRefund > 0) {
     const { data: c, error: readErr } = await supabase
       .from("clients")
@@ -139,7 +143,6 @@ async function rollbackBookingAttempt(
       .maybeSingle()
     // Si no pudimos LEER el saldo, NO escribimos: sumarle el reembolso a un
     // saldo desconocido (que caería en 0) le borraría todos sus puntos.
-    // Preferimos avisarle que llame al salón antes que destruirle el saldo.
     if (readErr || !c) {
       return {
         ok: false,
@@ -152,9 +155,479 @@ async function rollbackBookingAttempt(
       .update({ loyalty_points: ((c.loyalty_points as number | null) ?? 0) + pointsToRefund })
       .eq("id", clientId)
   }
+
   return { ok: false, error: fallbackError }
 }
 
+/** El plan de turnos de un pack: lo que habría que crear, todavía sin crear nada. */
+type PackPlan = {
+  pack: { id: string; name: string; sessions: number; totalPriceCents: number }
+  serviceId: string
+  serviceName: string
+  slotDates: Date[]
+  appointments: PlannedAppointment[]
+}
+
+/**
+ * Resuelve un pack y arma el plan de sus turnos: el pack y su servicio, las
+ * zonas y duración de la 1ª sesión, valida las fechas elegidas y revalida CADA
+ * una contra la disponibilidad real. **No escribe nada** — `createBooking` es
+ * quien, con este plan, crea la `pack_purchase` y los turnos.
+ */
+async function planPack(
+  supabase: ReturnType<typeof adminClient>,
+  input: CreateBookingInput,
+  payChoice: PayChoice
+): Promise<{ ok: true; plan: PackPlan } | { ok: false; error: string }> {
+  const { data: pack } = await supabase
+    .from("packs")
+    .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
+    .eq("id", input.packId)
+    .eq("active", true)
+    .eq("visible_reserva", true)
+    .maybeSingle()
+  if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
+  const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
+  if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
+
+  // Quién hace el servicio del pack (`staff_services`). Mismo criterio
+  // fail-closed que el turno normal (más abajo): un servicio sin ninguna
+  // profesional asignada no se puede reservar online.
+  const { data: packLinkRows, error: packLinkErr } = await supabase
+    .from("staff_services")
+    .select("staff_id")
+    .eq("service_id", svc.id)
+  if (packLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+  const packStaffMap: StaffServiceMap = {
+    [svc.id]: (packLinkRows ?? []).map((r) => r.staff_id as string),
+  }
+  if (!serviceIsBookable(svc.id, packStaffMap))
+    return { ok: false, error: `"${svc.name}" no está disponible para reservar online por ahora.` }
+
+  // Duración de la 1ª sesión + snapshot de zonas
+  let firstDuration = svc.duration_min
+  let zonesSnapshot: ZoneSnapshot[] | null = null
+  if (svc.pricing_mode === "per_zone") {
+    const { data: zoneRows } = await supabase
+      .from("service_zones")
+      .select("id, name, duration_min, price_cents")
+      .eq("service_id", svc.id)
+      .eq("active", true)
+    const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null }))
+    const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
+    if (!selected || selected.length !== (pack.zones_count ?? 0))
+      return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
+    const p = computeZonePricing(selected, svc.price_cents)
+    firstDuration = p.durationMin
+    zonesSnapshot = p.zones
+  }
+
+  // ── Fechas de las sesiones ────────────────────────────────────────────────
+  const rawSlots = (input.packSlots?.length ? input.packSlots : [input.startsAt])
+  const slotDates = rawSlots.map((s) => new Date(s))
+  if (slotDates.some((d) => isNaN(d.getTime())))
+    return { ok: false, error: "Alguna fecha del pack es inválida." }
+
+  const nowMs = Date.now()
+  const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
+  if (pastIdx !== -1)
+    return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+
+  const rules = validatePackSlots(slotDates, {
+    sessionsTotal: pack.sessions,
+    intervalDays: pack.interval_days ?? null,
+  })
+  if (!rules.ok) return { ok: false, error: rules.error }
+
+  // La profesional del pack sale de SU propio campo. `proHint` se conserva
+  // como fallback para las reservas viejas (una pestaña abierta de antes del
+  // deploy manda `proHint` y no `packStaff`).
+  const packHint = input.packStaff ?? (input.proHint !== "auto" ? input.proHint : "auto")
+  const packStaffId = packHint !== "auto" ? packHint : null
+  const packProHint = packStaffId ?? "auto"
+
+  // La profesional pedida para el pack (si pidió una puntual) tiene que
+  // hacer el servicio del pack.
+  if (packStaffId && !canStaffDoService(packStaffId, svc.id, packStaffMap))
+    return { ok: false, error: `Esa profesional no realiza "${svc.name}". Elegí el horario de nuevo.` }
+
+  // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
+  const { data: bhRows } = await supabase
+    .from("business_hours")
+    .select("day_of_week, is_open, slots")
+  const bhByDow = new Map(
+    ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+      .map((h) => [h.day_of_week, h])
+  )
+
+  for (let i = 0; i < slotDates.length; i++) {
+    // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
+    // recién más abajo), así que fetchDayAvailability no las puede ver entre
+    // sí. Sin una regla de intervalo (interval_days null) dos sesiones
+    // podrían quedar más cerca que la duración de la sesión y superponerse:
+    // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
+    if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
+      return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
+
+    const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
+    const bh = bhByDow.get(dayOfWeek)
+    if (!bh?.is_open || !bh.slots.includes(timeStr))
+      return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
+    const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], { serviceId: svc.id })
+    if (!free.includes(timeStr))
+      return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
+  }
+
+  const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
+
+  const appointments: PlannedAppointment[] = slotDates.map((d, i) => ({
+    label: `Sesión ${i + 1} del pack`,
+    startsAtMs: d.getTime(),
+    durationMin: firstDuration,
+    staffId: packStaffId,
+    totalCents: prices[i].totalCents,
+    depositCents: prices[i].depositCents,
+    depositPaid: prices[i].depositPaid,
+    notesInternal: `Pack: ${pack.name} (sesión ${i + 1} de ${pack.sessions})`,
+    isPackSession: true,
+    legs: [
+      {
+        serviceId: svc.id,
+        name: svc.name,
+        durationMin: firstDuration,
+        priceCents: prices[i].totalCents,
+        zones: zonesSnapshot,
+        staffId: packStaffId,
+        startsAtMs: d.getTime(),
+      },
+    ],
+  }))
+
+  return {
+    ok: true,
+    plan: {
+      pack: {
+        id: pack.id,
+        name: pack.name,
+        sessions: pack.sessions,
+        totalPriceCents: pack.total_price_cents,
+      },
+      serviceId: svc.id,
+      serviceName: svc.name,
+      slotDates,
+      appointments,
+    },
+  }
+}
+
+type LooseService = {
+  id: string
+  name: string
+  duration_min: number
+  price_cents: number
+  points_cost: number | null
+  loyalty_enabled: boolean
+  pricing_mode: "fixed" | "per_zone"
+  zone_selection: string | null
+  order_last: boolean
+}
+
+/**
+ * Arma el plan de los servicios sueltos: **separados** (una fecha por
+ * servicio → N turnos, cada uno con una pata) o **"juntos"** (los servicios
+ * encadenados el mismo día — incluye el caso de un solo servicio o un combo
+ * → UN turno con M patas escalonadas). Valida TODO lo que hoy validan esas
+ * dos ramas (fechas futuras, superposición, horarios del negocio,
+ * disponibilidad real por pata, `order_last`) — **no escribe nada**:
+ * `createBooking` es quien, con este plan, crea los turnos.
+ *
+ * Una falla de validación devuelve `{ ok: false, error }`: el reembolso de
+ * los puntos (ya descontados antes de llamar acá) lo hace quien la llama.
+ */
+async function planLooseServices(
+  supabase: ReturnType<typeof adminClient>,
+  input: CreateBookingInput,
+  services: LooseService[],
+  computed: Record<string, { durationMin: number; priceCents: number; zones: ZoneSnapshot[] | null }>,
+  payChoice: PayChoice,
+  redeem: boolean,
+  totalPointsCost: number,
+  // La duración y el precio del turno "juntos" (ya con el combo aplicado, si
+  // corresponde): los computa `createBooking` UNA sola vez, antes de llamar
+  // acá, porque son los mismos valores que usan después el mail de
+  // confirmación y `notifyNewBooking`. Pasarlos en vez de re-derivarlos acá
+  // evita una segunda lectura del combo (podría desactivarse entre una y
+  // otra) y una segunda cuenta de la plata.
+  totalDuration: number,
+  totalCents: number
+): Promise<
+  | { ok: true; mode: "separados" | "juntos"; appointments: PlannedAppointment[] }
+  | { ok: false; error: string }
+> {
+  // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
+  // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
+  // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
+  // sigue siendo UN turno, más abajo, exactamente como siempre.
+  if (input.serviceSlots && services.length >= 2 && !input.comboId) {
+    // En este modo las fechas son TODAS obligatorias.
+    if (services.some((s) => !input.serviceSlots![s.id]))
+      return { ok: false, error: "Elegí fecha y hora para cada servicio." }
+
+    // Ordenados cronológicamente: así el primer turno (más abajo) es
+    // genuinamente el primero de la clienta, sin depender del orden
+    // arbitrario en que Postgres devuelve `services` (sin `.order()`).
+    const slots: SlotItem[] = services
+      .map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(input.serviceSlots![s.id]).getTime(),
+        durationMin: computed[s.id].durationMin,
+        priceCents: computed[s.id].priceCents,
+      }))
+      .sort((a, b) => a.startsAtMs - b.startsAtMs)
+
+    const rules = validateSeparateSlots(slots, Date.now())
+    if (!rules.ok) return { ok: false, error: rules.error }
+
+    // Revalidar CADA horario contra la disponibilidad real (autoritativo),
+    // con la duración y la profesional de ESE servicio.
+    const { data: bhRows } = await supabase
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+    const bhByDow = new Map(
+      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+        .map((h) => [h.day_of_week, h])
+    )
+
+    const hintFor = (serviceId: string) => {
+      const h = input.serviceStaff?.[serviceId] ?? input.proHint
+      return h && h !== "auto" ? h : "auto"
+    }
+
+    for (const s of slots) {
+      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(s.startsAtMs))
+      const bh = bhByDow.get(dayOfWeek)
+      if (!bh?.is_open || !bh.slots.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} ya no está disponible. Elegí otro.` }
+      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], { serviceId: s.serviceId })
+      if (!free.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
+    }
+
+    // ── Un PlannedAppointment por servicio, cada uno con UNA pata ──────────
+    const appointments: PlannedAppointment[] = slots.map((s) => {
+      const hint = hintFor(s.serviceId)
+      const staffId = hint !== "auto" ? hint : null
+      return {
+        label: s.name,
+        startsAtMs: s.startsAtMs,
+        durationMin: s.durationMin,
+        staffId,
+        // Cada turno lleva el precio de SU servicio y SU propia seña.
+        totalCents: redeem ? 0 : s.priceCents,
+        depositCents: redeem ? 0 : amountDueNow(s.priceCents, payChoice),
+        depositPaid: redeem,
+        notesInternal: redeem
+          ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
+          : null,
+        isPackSession: false,
+        legs: [
+          {
+            serviceId: s.serviceId,
+            name: s.name,
+            durationMin: s.durationMin,
+            // El snapshot guarda lo que VALE el servicio aunque se haya
+            // canjeado (igual que en el camino "juntos").
+            priceCents: s.priceCents,
+            zones: computed[s.serviceId].zones,
+            staffId,
+            startsAtMs: s.startsAtMs,
+          },
+        ],
+      }
+    })
+
+    return { ok: true, mode: "separados", appointments }
+  }
+
+  // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────────
+  // `totalDuration` y `totalCents` vienen de `createBooking` (parámetros):
+  // no se recalculan acá. Ver el comentario de los parámetros más arriba.
+  const depositCents = amountDueNow(totalCents, payChoice)
+  const startsAt = new Date(input.startsAt)
+
+  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
+  // de armar el turno. Tiene que resolverse acá porque `mainStaffId` depende
+  // de él: la profesional principal tiene que ser la del PRIMER servicio del
+  // orden REAL, no la del primero que mandó la clienta — si el orden se
+  // reordena por "va siempre al final", usar `input.serviceOrder[0]` le
+  // asignaría el turno a la profesional equivocada a la hora equivocada.
+  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
+  const requestedOrder = orderedIds
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
+    // se agrega acá sin perder ninguno de los campos de `services` que se usan
+    // más abajo (id, computed[s.id], etc).
+    .map((s) => ({ ...s, orderLast: s.order_last }))
+
+  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
+  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
+  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
+  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
+  // profesional podría quedar escrita en un horario en el que está bloqueada
+  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
+  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
+  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
+  // arbitrario de Postgres: no hay un orden validado que respetar, así que
+  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
+  // rechazar una reserva perfectamente válida.
+  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder))
+    return { ok: false, error: "Ese horario ya no es válido. Elegí el horario de nuevo." }
+
+  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
+  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
+  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
+  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
+  const orderedServices = sortOrderLast(requestedOrder)
+
+  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
+  const mainStaffId = input.resolvedStaff
+    ? (orderedServices[0]
+        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
+        : Object.values(input.resolvedStaff)[0] ?? null)
+    : (input.proHint !== "auto" ? input.proHint : null)
+
+  // ── Revalidar CADA pata contra la disponibilidad real (autoritativo) ──────
+  // El modo "juntos" (UN turno con los servicios encadenados) nunca había
+  // vuelto a chequear el horario contra la DB entre que el buscador lo ofreció
+  // y que se confirma acá: sólo confiaba en `resolvedStaff` armado en
+  // pantalla. Dos clientas con la pantalla abierta en el mismo horario
+  // terminaban las dos con turno. Se revalida cada servicio con SU propio
+  // horario escalonado (mismo cálculo que arma cada pata), SU propia
+  // duración y SU propia profesional — mismo criterio que ya usan acá arriba
+  // los modos "pack" y "separados".
+  const { data: bhRows, error: bhErr } = await supabase
+    .from("business_hours")
+    .select("day_of_week, is_open, slots")
+  if (bhErr)
+    return { ok: false, error: "No pudimos verificar el horario. Probá de nuevo." }
+  const bhByDow = new Map(
+    ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+      .map((h) => [h.day_of_week, h])
+  )
+
+  const legs: PlannedLeg[] = []
+  let legMs = startsAt.getTime()
+  for (let i = 0; i < orderedServices.length; i++) {
+    const s = orderedServices[i]
+    const c = computed[s.id]
+    const legStart = new Date(legMs)
+    legMs += c.durationMin * 60_000
+    // La profesional de esta pata: la pedida para este servicio, o si no, la
+    // principal del turno. Puede quedar en `null` (auto) — el hint para
+    // `fetchDayAvailability` (que espera "auto" como centinela) se arma aparte.
+    const legStaffId = input.resolvedStaff?.[s.id] ?? mainStaffId
+    const legProHint = legStaffId ?? "auto"
+    const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
+    const bh = bhByDow.get(dayOfWeek)
+    // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
+    // reservables (`bh.slots`): es el inicio del turno, el horario que la
+    // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
+    // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
+    // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
+    // buscador (`checkPerm`) no les exige estar en la grilla, así que
+    // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
+    // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
+    // día abierto (`is_open`).
+    if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
+      return {
+        ok: false,
+        error: `El horario de "${s.name}" ya no está disponible. Elegí otro.`,
+      }
+    const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
+    if (!free.includes(timeStr))
+      return { ok: false, error: "El horario se ocupó. Elegí otro." }
+
+    legs.push({
+      serviceId: s.id,
+      name: s.name,
+      durationMin: c.durationMin,
+      priceCents: c.priceCents,
+      zones: c.zones,
+      staffId: legStaffId,
+      startsAtMs: legStart.getTime(),
+    })
+  }
+
+  const appointment: PlannedAppointment = {
+    label: orderedServices.map((s) => s.name).join(" + "),
+    startsAtMs: startsAt.getTime(),
+    durationMin: totalDuration,
+    staffId: mainStaffId,
+    totalCents: redeem ? 0 : totalCents,
+    depositCents: redeem ? 0 : depositCents,
+    depositPaid: redeem,
+    notesInternal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
+    isPackSession: false,
+    legs,
+  }
+
+  return { ok: true, mode: "juntos", appointments: [appointment] }
+}
+
+/**
+ * Crea un evento de Google Calendar por cada turno de `items` (best-effort:
+ * `try/catch` por evento, no puede tirar) y le guarda `google_event_id` al
+ * turno. Cachea el staff (evita repetir la misma consulta cuando varios
+ * turnos comparten profesional) — antes este bloque vivía duplicado, línea
+ * por línea, entre "separados" y la mezcla. Lo usan esas dos ramas y también
+ * "pack solo" (que hasta ahora nunca creaba estos eventos).
+ */
+async function createCalendarEventsForAppointments(
+  supabase: ReturnType<typeof adminClient>,
+  clientName: string,
+  items: { appointmentId: string; staffId: string | null; label: string; startsAtMs: number; durationMin: number }[]
+): Promise<void> {
+  const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
+  try {
+    const distinctStaffIds = [...new Set(
+      items.map((item) => item.staffId).filter((id): id is string => !!id)
+    )]
+    if (distinctStaffIds.length) {
+      const { data: staffRows } = await supabase
+        .from("staff")
+        .select("id, full_name, email, calendar_color_id")
+        .in("id", distinctStaffIds)
+      for (const row of (staffRows ?? []) as { id: string; full_name: string | null; email: string | null; calendar_color_id: string | null }[]) {
+        staffCache.set(row.id, { full_name: row.full_name, email: row.email, calendar_color_id: row.calendar_color_id })
+      }
+    }
+  } catch {
+    // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
+  }
+
+  for (const item of items) {
+    try {
+      const cached = item.staffId ? staffCache.get(item.staffId) : undefined
+      const eventId = await createCalendarEvent({
+        appointmentId: item.appointmentId,
+        clientName,
+        serviceNames: [item.label],
+        staffName: cached?.full_name ?? null,
+        staffEmail: cached?.email ?? null,
+        staffColorId: cached?.calendar_color_id ?? null,
+        startsAt: new Date(item.startsAtMs),
+        endsAt: new Date(item.startsAtMs + item.durationMin * 60_000),
+        notes: null,
+      })
+      if (eventId)
+        await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", item.appointmentId)
+    } catch {
+      // Non-fatal: los turnos ya están creados.
+    }
+  }
+}
 
 export async function createBooking(
   raw: CreateBookingInput
@@ -249,8 +722,9 @@ export async function createBooking(
   }
 
   // Lo que se le pide pagar AHORA: la seña (30%) o el total, según eligió.
+  // (`depositCents` en sí lo recalcula `planLooseServices` para el plan; acá
+  // sólo hace falta `payChoice`, que sí se usa más abajo.)
   const payChoice: PayChoice = input.payChoice ?? "deposit"
-  const depositCents = amountDueNow(totalCents, payChoice)
   const totalPointsCost = services.reduce(
     (a, s) => a + (s.loyalty_enabled ? (s.points_cost ?? 0) : 0),
     0
@@ -318,213 +792,9 @@ export async function createBooking(
     }
   }
 
-  // ── Reserva de un PACK (excluyente): crea la compra + primer turno portador ──
-  if (input.packId) {
-    const { data: pack } = await supabase
-      .from("packs")
-      .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
-      .eq("id", input.packId)
-      .eq("active", true)
-      .eq("visible_reserva", true)
-      .maybeSingle()
-    if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
-    const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
-    if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
-
-    // Quién hace el servicio del pack (`staff_services`). Mismo criterio
-    // fail-closed que el turno normal (más abajo): un servicio sin ninguna
-    // profesional asignada no se puede reservar online.
-    const { data: packLinkRows, error: packLinkErr } = await supabase
-      .from("staff_services")
-      .select("staff_id")
-      .eq("service_id", svc.id)
-    if (packLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
-    const packStaffMap: StaffServiceMap = {
-      [svc.id]: (packLinkRows ?? []).map((r) => r.staff_id as string),
-    }
-    if (!serviceIsBookable(svc.id, packStaffMap))
-      return { ok: false, error: `"${svc.name}" no está disponible para reservar online por ahora.` }
-
-    // Duración de la 1ª sesión + snapshot de zonas
-    let firstDuration = svc.duration_min
-    let zonesSnapshot: ZoneSnapshot[] | null = null
-    if (svc.pricing_mode === "per_zone") {
-      const { data: zoneRows } = await supabase
-        .from("service_zones")
-        .select("id, name, duration_min, price_cents")
-        .eq("service_id", svc.id)
-        .eq("active", true)
-      const avail: Zone[] = (zoneRows ?? []).map((z) => ({ id: z.id, name: z.name, durationMin: z.duration_min, priceCents: z.price_cents ?? null }))
-      const selected = resolveSelectedZones(input.packZoneIds ?? [], avail)
-      if (!selected || selected.length !== (pack.zones_count ?? 0))
-        return { ok: false, error: `Elegí exactamente ${pack.zones_count} zona(s) para el pack.` }
-      const p = computeZonePricing(selected, svc.price_cents)
-      firstDuration = p.durationMin
-      zonesSnapshot = p.zones
-    }
-
-    // ── Fechas de las sesiones ────────────────────────────────────────────────
-    const rawSlots = (input.packSlots?.length ? input.packSlots : [input.startsAt])
-    const slotDates = rawSlots.map((s) => new Date(s))
-    if (slotDates.some((d) => isNaN(d.getTime())))
-      return { ok: false, error: "Alguna fecha del pack es inválida." }
-
-    const nowMs = Date.now()
-    const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
-    if (pastIdx !== -1)
-      return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
-
-    const rules = validatePackSlots(slotDates, {
-      sessionsTotal: pack.sessions,
-      intervalDays: pack.interval_days ?? null,
-    })
-    if (!rules.ok) return { ok: false, error: rules.error }
-
-    // Sala + staff (mismo criterio que el turno normal)
-    const { data: packRoom } = await supabase.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
-    const packStaffId = input.resolvedStaff
-      ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
-      : (input.proHint !== "auto" ? input.proHint : null)
-    const packProHint = packStaffId ?? "auto"
-
-    // La profesional pedida para el pack (si pidió una puntual) tiene que
-    // hacer el servicio del pack.
-    if (packStaffId && !canStaffDoService(packStaffId, svc.id, packStaffMap))
-      return { ok: false, error: `Esa profesional no realiza "${svc.name}". Elegí el horario de nuevo.` }
-
-    // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
-    const { data: bhRows } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
-    )
-
-    for (let i = 0; i < slotDates.length; i++) {
-      // Las sesiones de ESTE pedido todavía no existen en la DB (se insertan
-      // recién más abajo), así que fetchDayAvailability no las puede ver entre
-      // sí. Sin una regla de intervalo (interval_days null) dos sesiones
-      // podrían quedar más cerca que la duración de la sesión y superponerse:
-      // lo chequeamos acá a mano contra la sesión anterior de este mismo pedido.
-      if (i > 0 && slotDates[i].getTime() < slotDates[i - 1].getTime() + firstDuration * 60_000)
-        return { ok: false, error: `La sesión ${i + 1} se superpone con la anterior. Elegí otro horario.` }
-
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(slotDates[i])
-      const bh = bhByDow.get(dayOfWeek)
-      if (!bh?.is_open || !bh.slots.includes(timeStr))
-        return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
-      const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], { serviceId: svc.id })
-      if (!free.includes(timeStr))
-        return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
-    }
-
-    // ── Crear la compra del pack ──────────────────────────────────────────────
-    const { data: purchase, error: purErr } = await supabase
-      .from("pack_purchases")
-      .insert({
-        client_id: clientId,
-        pack_id: pack.id,
-        pack_name: pack.name,
-        service_id: svc.id,
-        service_name: svc.name,
-        sessions_total: pack.sessions,
-        sessions_used: 0,
-      })
-      .select("id")
-      .single()
-    if (purErr || !purchase) return { ok: false, error: `No pudimos registrar el pack: ${purErr?.message}` }
-
-    // ── Un turno por sesión elegida ───────────────────────────────────────────
-    const prices = packSessionPrices(pack.total_price_cents, slotDates.length, payChoice)
-    const createdIds: string[] = []
-
-    for (let i = 0; i < slotDates.length; i++) {
-      const startsAt = slotDates[i]
-      const endsAt = new Date(startsAt.getTime() + firstDuration * 60_000)
-      const price = prices[i]
-
-      const { data: appt, error: apptErr } = await supabase
-        .from("appointments")
-        .insert({
-          client_id: clientId,
-          staff_id: packStaffId,
-          room_id: packRoom?.id ?? null,
-          starts_at: startsAt.toISOString(),
-          ends_at: endsAt.toISOString(),
-          duration_min: firstDuration,
-          total_cents: price.totalCents,
-          deposit_cents: price.depositCents,
-          deposit_paid: price.depositPaid,
-          paid_cents: 0,
-          status: "pending",
-          source: "web",
-          pack_purchase_id: purchase.id,
-          notes_internal: `Pack: ${pack.name} (sesión ${i + 1} de ${pack.sessions})`,
-        })
-        .select("id")
-        .single()
-
-      if (apptErr || !appt) {
-        // Todo o nada: deshacer lo creado hasta acá (ver rollbackPackAttempt).
-        return await rollbackPackAttempt(
-          supabase,
-          createdIds,
-          purchase.id,
-          `No pudimos crear la sesión ${i + 1}: ${apptErr?.message}`
-        )
-      }
-      createdIds.push(appt.id)
-
-      const { error: linkErr } = await supabase.from("appointment_services").insert({
-        appointment_id: appt.id,
-        service_id: svc.id,
-        duration_min: firstDuration,
-        price_cents: price.totalCents,
-        zones: zonesSnapshot,
-        staff_id: packStaffId,
-        starts_at: startsAt.toISOString(),
-      })
-      if (linkErr) {
-        return await rollbackPackAttempt(
-          supabase,
-          createdIds,
-          purchase.id,
-          `Servicio de la sesión ${i + 1}: ${linkErr.message}`
-        )
-      }
-    }
-
-    // ── Avisos (best-effort) ──────────────────────────────────────────────────
-    try {
-      await sendPackConfirmation({
-        to: email,
-        firstName: input.client.firstName.trim(),
-        packName: pack.name,
-        sessionsTotal: pack.sessions,
-        startsAtList: slotDates,
-        totalCents: pack.total_price_cents,
-      })
-    } catch {}
-
-    try {
-      await notifyNewBooking(supabase, {
-        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-        clientPhone: input.client.phone,
-        servicesNames: [`${pack.name} (pack · ${slotDates.length} de ${pack.sessions} sesiones agendadas)`],
-        startsAt: slotDates[0],
-        durationMin: firstDuration,
-        totalCents: pack.total_price_cents,
-        assignedStaffIds: [packStaffId],
-      })
-    } catch {
-      // no bloqueante: el pack y sus turnos ya están confirmados.
-    }
-
-    return { ok: true, appointmentId: createdIds[0] }
-  }
-
-  // 4) Default room (first active room)
+  // 4) Sala por defecto: la usan tanto el pack como los servicios sueltos (antes
+  // el pack hacía su propia consulta idéntica — `packRoom` — porque su rama
+  // retornaba antes de llegar acá).
   const { data: room } = await supabase
     .from("rooms")
     .select("id")
@@ -532,7 +802,56 @@ export async function createBooking(
     .limit(1)
     .maybeSingle()
 
-  // 4b) Validar y descontar puntos si pidió canjear con Programa Cerca.
+  const hasPack = !!input.packId
+  const hasServices = services.length > 0
+
+  // ── Canje con puntos: NO se puede canjear un pack ────────────────────────
+  // Hoy esto es inalcanzable (la pantalla no ofrece canje con un pack elegido)
+  // PERO la rama del pack retornaba ANTES del bloque de canje: si llegaran las
+  // dos cosas, el pack se creaba SIN descontar los puntos. Al fusionar los
+  // caminos ese agujero pasa a ser alcanzable. Se cierra acá.
+  if (hasPack && redeem)
+    return { ok: false, error: "Los packs no se pueden canjear con puntos." }
+
+  // ── FASE B: planificar y validar TODO, sin escribir nada ──────────────────
+  const plan: PlannedAppointment[] = []
+  let packPlan: PackPlan | null = null
+  let looseMode: "separados" | "juntos" | null = null
+
+  if (hasPack) {
+    const r = await planPack(supabase, input, payChoice)
+    if (!r.ok) return { ok: false, error: r.error }
+    packPlan = r.plan
+    plan.push(...r.plan.appointments)
+  }
+
+  if (hasServices) {
+    const r = await planLooseServices(
+      supabase, input, services, computed, payChoice, redeem, totalPointsCost, totalDuration, totalCents
+    )
+    if (!r.ok) return { ok: false, error: r.error }
+    looseMode = r.mode
+    plan.push(...r.appointments)
+  }
+
+  if (plan.length === 0)
+    return { ok: false, error: "No hay nada para reservar." }
+
+  // NUEVO: ningún turno puede pisar a otro — NI las sesiones del pack contra
+  // los servicios sueltos. Hasta ahora cada camino se chequeaba por su lado,
+  // porque nunca convivían.
+  const cross = crossOverlapCheck(plan)
+  if (!cross.ok) return { ok: false, error: cross.error }
+
+  // Los `return` de arriba NO reembolsan puntos, y está bien: todavía no se
+  // descontaron. El descuento va abajo.
+
+  // ── FASE C: escribir. Desde acá, TODO error tiene que pasar por rollbackAll ─
+  const created = { appointmentIds: [] as string[], packPurchaseId: null as string | null }
+  const refund = redeem ? totalPointsCost : 0
+
+  // 1) Descontar los puntos (sólo servicios: el pack ya se rechazó arriba).
+  //    Este bloque es el que YA existía, movido acá SIN cambios.
   if (redeem) {
     if (totalPointsCost <= 0) {
       return { ok: false, error: "Estos servicios no se pueden canjear por puntos." }
@@ -550,8 +869,8 @@ export async function createBooking(
       }
     }
     // Si el descuento falla, NO seguimos: si siguiéramos, la clienta se llevaría
-    // el turno gratis con los puntos intactos — y peor, en el modo "separados"
-    // un rollback posterior le SUMARÍA puntos que nunca gastó.
+    // el turno gratis con los puntos intactos — y peor, un rollback posterior le
+    // SUMARÍA puntos que nunca gastó.
     const { error: spendErr } = await supabase
       .from("clients")
       .update({ loyalty_points: balance - totalPointsCost })
@@ -560,484 +879,320 @@ export async function createBooking(
       return { ok: false, error: "No pudimos descontar tus puntos. Probá de nuevo en un momento." }
   }
 
-  // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
-  // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
-  // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
-  // sigue siendo UN turno, más abajo, exactamente como siempre.
-  if (input.serviceSlots && services.length >= 2 && !input.comboId) {
-    // Los puntos ya se descontaron arriba (paso 4b). Si esta rama falla por
-    // CUALQUIER motivo, hay que devolverlos: la clienta no se lleva ningún
-    // turno. Se hoistea ANTES de cualquier return para que ningún early
-    // return de acá abajo pueda "olvidarse" del reembolso.
-    const refund = redeem ? totalPointsCost : 0
-    const fail = (error: string) => rollbackBookingAttempt(supabase, [], clientId, refund, error)
+  // 2) La compra del pack.
+  if (packPlan) {
+    const { data: purchase, error: purErr } = await supabase
+      .from("pack_purchases")
+      .insert({
+        client_id: clientId,
+        pack_id: packPlan.pack.id,
+        pack_name: packPlan.pack.name,
+        service_id: packPlan.serviceId,
+        service_name: packPlan.serviceName,
+        sessions_total: packPlan.pack.sessions,
+        sessions_used: 0,
+      })
+      .select("id")
+      .single()
+    if (purErr || !purchase)
+      return await rollbackAll(supabase, created, clientId, refund, `No pudimos registrar el pack: ${purErr?.message}`)
+    created.packPurchaseId = purchase.id
+  }
 
-    // En este modo las fechas son TODAS obligatorias.
-    if (services.some((s) => !input.serviceSlots![s.id]))
-      return await fail("Elegí fecha y hora para cada servicio.")
+  // 3) Los turnos, en orden cronológico (así `appointmentIds[0]` es el primero
+  //    de verdad y la clienta aterriza en la confirmación correcta).
+  const ordered = [...plan].sort((a, b) => a.startsAtMs - b.startsAtMs)
 
-    // Ordenados cronológicamente: así `createdIds[0]` (más abajo) es
-    // genuinamente el primer turno de la clienta, sin depender del orden
-    // arbitrario en que Postgres devuelve `services` (sin `.order()`).
-    const slots: SlotItem[] = services
-      .map((s) => ({
-        serviceId: s.id,
-        name: s.name,
-        startsAtMs: new Date(input.serviceSlots![s.id]).getTime(),
-        durationMin: computed[s.id].durationMin,
-        priceCents: computed[s.id].priceCents,
+  for (const p of ordered) {
+    const { data: appt, error: apptErr } = await supabase
+      .from("appointments")
+      .insert({
+        client_id: clientId,
+        staff_id: p.staffId,
+        room_id: room?.id ?? null,
+        starts_at: new Date(p.startsAtMs).toISOString(),
+        ends_at: new Date(p.startsAtMs + p.durationMin * 60_000).toISOString(),
+        duration_min: p.durationMin,
+        total_cents: p.totalCents,
+        deposit_cents: p.depositCents,
+        deposit_paid: p.depositPaid,
+        paid_cents: 0,
+        status: redeem ? "confirmed" : "pending",
+        source: "web",
+        pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
+        notes_internal: p.notesInternal,
+      })
+      .select("id")
+      .single()
+    if (apptErr || !appt)
+      return await rollbackAll(supabase, created, clientId, refund, `No pudimos crear el turno de ${p.label}: ${apptErr?.message}`)
+    created.appointmentIds.push(appt.id)
+
+    // Se insertan TODAS las patas del turno (`item.legs.map`), no `legs[0]`:
+    // un turno "juntos" tiene varias y tomar sólo la primera las haría
+    // desaparecer en silencio.
+    const { error: linkErr } = await supabase.from("appointment_services").insert(
+      p.legs.map((l) => ({
+        appointment_id: appt.id,
+        service_id: l.serviceId,
+        duration_min: l.durationMin,
+        price_cents: l.priceCents,
+        zones: l.zones,
+        staff_id: l.staffId,
+        starts_at: new Date(l.startsAtMs).toISOString(),
       }))
-      .sort((a, b) => a.startsAtMs - b.startsAtMs)
+    )
+    if (linkErr)
+      return await rollbackAll(supabase, created, clientId, refund, `Servicios del turno de ${p.label}: ${linkErr.message}`)
+  }
 
-    const rules = validateSeparateSlots(slots, Date.now())
-    if (!rules.ok) return await fail(rules.error)
+  // ── FASE D: avisos (best-effort, los turnos ya existen) ────────────────────
+  if (hasPack && !hasServices) {
+    // Pack solo → sendPackConfirmation + Calendar (una sesión por evento —
+    // antes esta rama nunca los creaba; ahora se comporta igual que un pack
+    // comprado mezclado con servicios) + notifyNewBooking.
+    const pp = packPlan!
+    try {
+      await sendPackConfirmation({
+        to: email,
+        firstName: input.client.firstName.trim(),
+        packName: pp.pack.name,
+        sessionsTotal: pp.pack.sessions,
+        startsAtList: pp.slotDates,
+        totalCents: pp.pack.totalPriceCents,
+      })
+    } catch {}
 
-    // Revalidar CADA horario contra la disponibilidad real (autoritativo),
-    // con la duración y la profesional de ESE servicio.
-    const { data: bhRows } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
+    await createCalendarEventsForAppointments(
+      supabase,
+      `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      ordered.map((p, i) => ({
+        appointmentId: created.appointmentIds[i],
+        staffId: p.staffId,
+        label: p.label,
+        startsAtMs: p.startsAtMs,
+        durationMin: p.durationMin,
+      }))
     )
 
-    const hintFor = (serviceId: string) => {
-      const h = input.serviceStaff?.[serviceId] ?? input.proHint
-      return h && h !== "auto" ? h : "auto"
-    }
-
-    for (const s of slots) {
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(s.startsAtMs))
-      const bh = bhByDow.get(dayOfWeek)
-      if (!bh?.is_open || !bh.slots.includes(timeStr))
-        return await fail(`El horario de ${s.name} ya no está disponible. Elegí otro.`)
-      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], { serviceId: s.serviceId })
-      if (!free.includes(timeStr))
-        return await fail(`El horario de ${s.name} se ocupó. Elegí otro.`)
-    }
-
-    // ── Un turno por servicio ────────────────────────────────────────────────
-    const createdIds: string[] = []
-
-    for (const s of slots) {
-      const hint = hintFor(s.serviceId)
-      const staffId = hint !== "auto" ? hint : null
-      const sStart = new Date(s.startsAtMs)
-      const sEnd = new Date(s.startsAtMs + s.durationMin * 60_000)
-
-      const { data: a, error: aErr } = await supabase
-        .from("appointments")
-        .insert({
-          client_id: clientId,
-          staff_id: staffId,
-          room_id: room?.id ?? null,
-          starts_at: sStart.toISOString(),
-          ends_at: sEnd.toISOString(),
-          duration_min: s.durationMin,
-          // Cada turno lleva el precio de SU servicio y SU propia seña.
-          total_cents: redeem ? 0 : s.priceCents,
-          deposit_cents: redeem ? 0 : amountDueNow(s.priceCents, payChoice),
-          deposit_paid: redeem,
-          paid_cents: 0,
-          status: redeem ? "confirmed" : "pending",
-          source: "web",
-          notes_internal: redeem
-            ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
-            : null,
-        })
-        .select("id")
-        .single()
-
-      if (aErr || !a)
-        return await rollbackBookingAttempt(
-          supabase, createdIds, clientId, refund,
-          `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
-        )
-      createdIds.push(a.id)
-
-      const { error: lErr } = await supabase.from("appointment_services").insert({
-        appointment_id: a.id,
-        service_id: s.serviceId,
-        duration_min: s.durationMin,
-        // El snapshot guarda lo que VALE el servicio aunque se haya canjeado
-        // (igual que en el camino normal).
-        price_cents: s.priceCents,
-        zones: computed[s.serviceId].zones,
-        staff_id: staffId,
-        starts_at: sStart.toISOString(),
-      })
-      if (lErr)
-        return await rollbackBookingAttempt(
-          supabase, createdIds, clientId, refund,
-          `Servicio del turno de ${s.name}: ${lErr.message}`
-        )
-    }
-
-    // ── De acá para abajo, todo es best-effort: los turnos YA están creados ──
-    // `slots` ya está ordenado cronológicamente (ver más arriba), así que no
-    // hace falta un array `ordered` aparte para el mail: es el mismo `slots`.
-    // Lo que VALEN los turnos: siempre el real, igual que en el camino
-    // "juntos" (que le pasa a `sendBookingConfirmation` el `totalCents` sin
-    // zonificar). Si canjeó con puntos no debe nada, pero eso lo dice
-    // `dueNowCents` — "Total: $0" sería mentira aunque haya canjeado.
-    const realTotal = slots.reduce((a, s) => a + s.priceCents, 0)
-    // Misma función pura que usa la pantalla para mostrarle a la clienta
-    // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
-    const dueNow = redeem ? 0 : totalDueNowSeparate(slots.map((s) => s.priceCents), payChoice)
-
-    // Google Calendar: un evento por turno. Se cachea el staff (evita repetir
-    // la misma consulta cuando varios turnos comparten profesional).
-    const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
     try {
-      const distinctStaffIds = [...new Set(
-        slots
-          .map((s) => {
-            const h = hintFor(s.serviceId)
-            return h !== "auto" ? h : null
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: [`${pp.pack.name} (pack · ${pp.slotDates.length} de ${pp.pack.sessions} sesiones agendadas)`],
+        startsAt: pp.slotDates[0],
+        durationMin: pp.appointments[0].durationMin,
+        totalCents: pp.pack.totalPriceCents,
+        assignedStaffIds: [pp.appointments[0].staffId],
+      })
+    } catch {
+      // no bloqueante: el pack y sus turnos ya están confirmados.
+    }
+  } else if (hasServices && !hasPack) {
+    // Servicios solos → lo de hoy: "separados" (Calendar por turno + mail
+    // múltiple + aviso por turno) o "juntos" (un turno, un mail, un aviso).
+    if (looseMode === "separados") {
+      // Lo que VALEN los turnos: siempre el real, igual que en el camino
+      // "juntos". `item.legs.reduce(...)` en vez de `item.legs[0]`: correcto
+      // hoy (un turno "separados" tiene una sola pata), pero así no puede
+      // desaparecer una pata en silencio si eso cambiara.
+      const realTotal = plan.reduce(
+        (a, item) => a + item.legs.reduce((la, l) => la + l.priceCents, 0), 0
+      )
+      // Misma función pura que usa la pantalla para mostrarle a la clienta
+      // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
+      const dueNow = redeem ? 0 : totalDueNowSeparate(
+        plan.map((item) => item.legs.reduce((la, l) => la + l.priceCents, 0)),
+        payChoice
+      )
+
+      // Google Calendar: un evento por turno (helper compartido con "pack
+      // solo" y la mezcla — acá vivía duplicado línea por línea).
+      await createCalendarEventsForAppointments(
+        supabase,
+        `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        ordered.map((item, i) => ({
+          appointmentId: created.appointmentIds[i],
+          staffId: item.staffId,
+          label: item.label,
+          startsAtMs: item.startsAtMs,
+          durationMin: item.durationMin,
+        }))
+      )
+
+      // UN solo mail, con UNA sola seña.
+      try {
+        await sendMultiBookingConfirmation({
+          to: email,
+          firstName: input.client.firstName.trim(),
+          items: plan.map((item) => ({ serviceName: item.label, startsAt: new Date(item.startsAtMs) })),
+          totalCents: realTotal,
+          dueNowCents: dueNow,
+        })
+      } catch {
+        // ignore — la reserva ya está; el equipo puede reenviar manualmente.
+      }
+
+      // Un aviso por turno: cada uno es un turno real, en su día, con su
+      // profesional. Un solo aviso con una sola fecha le mentiría a la
+      // profesional asignada al segundo o al tercero.
+      for (const item of plan) {
+        try {
+          await notifyNewBooking(supabase, {
+            clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+            clientPhone: input.client.phone,
+            servicesNames: [item.label],
+            startsAt: new Date(item.startsAtMs),
+            durationMin: item.durationMin,
+            totalCents: item.totalCents,
+            assignedStaffIds: [item.staffId],
           })
-          .filter((id): id is string => !!id)
-      )]
-      if (distinctStaffIds.length) {
-        const { data: staffRows } = await supabase
-          .from("staff")
-          .select("id, full_name, email, calendar_color_id")
-          .in("id", distinctStaffIds)
-        for (const row of (staffRows ?? []) as { id: string; full_name: string | null; email: string | null; calendar_color_id: string | null }[]) {
-          staffCache.set(row.id, { full_name: row.full_name, email: row.email, calendar_color_id: row.calendar_color_id })
+        } catch {
+          // ignore — los turnos ya están creados
         }
       }
-    } catch {
-      // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
-    }
+    } else {
+      // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────
+      const plannedAppt = plan[0]
+      const apptId = created.appointmentIds[0]
 
-    for (let i = 0; i < createdIds.length; i++) {
+      // Google Calendar event (no bloqueante)
       try {
-        const s = slots[i]
-        const hint = hintFor(s.serviceId)
-        const staffId = hint !== "auto" ? hint : null
-        const cached = staffId ? staffCache.get(staffId) : undefined
-        const staffName = cached?.full_name ?? null
-        const staffEmail = cached?.email ?? null
-        const staffColorId = cached?.calendar_color_id ?? null
+        let staffName: string | null = null
+        let staffEmail: string | null = null
+        let staffColorId: string | null = null
+        if (plannedAppt.staffId) {
+          const { data: staffRow } = await supabase
+            .from("staff")
+            .select("full_name, email, calendar_color_id")
+            .eq("id", plannedAppt.staffId)
+            .maybeSingle()
+          staffName = staffRow?.full_name ?? null
+          staffEmail = staffRow?.email ?? null
+          staffColorId = (staffRow as any)?.calendar_color_id ?? null
+        }
         const eventId = await createCalendarEvent({
-          appointmentId: createdIds[i],
+          appointmentId: apptId,
           clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-          serviceNames: [s.name],
+          serviceNames: services.map((s) => s.name),
           staffName,
           staffEmail,
           staffColorId,
-          startsAt: new Date(s.startsAtMs),
-          endsAt: new Date(s.startsAtMs + s.durationMin * 60_000),
+          startsAt,
+          endsAt,
           notes: null,
         })
-        if (eventId)
-          await supabase.from("appointments").update({ google_event_id: eventId }).eq("id", createdIds[i])
+        if (eventId) {
+          await supabase
+            .from("appointments")
+            .update({ google_event_id: eventId })
+            .eq("id", apptId)
+        }
       } catch {
-        // Non-fatal: los turnos ya están creados.
+        // Non-fatal: el turno ya está creado
       }
-    }
 
-    // UN solo mail, con UNA sola seña.
+      // Email de confirmación con los detalles del turno (no bloqueante).
+      try {
+        await sendBookingConfirmation({
+          to: email,
+          firstName: input.client.firstName.trim(),
+          servicesNames: services.map((s) => s.name),
+          startsAt,
+          durationMin: totalDuration,
+          totalCents,
+          appointmentId: apptId,
+        })
+      } catch {
+        // ignore — la reserva ya está; el equipo puede reenviar manualmente.
+      }
+
+      // Aviso a Leri + profesional(es) asignado(s) de la nueva reserva (no bloqueante).
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: services.map((s) => s.name),
+        startsAt,
+        durationMin: totalDuration,
+        totalCents,
+        assignedStaffIds: [plannedAppt.staffId, ...Object.values(input.resolvedStaff ?? {})],
+      })
+    }
+  } else {
+    // ── Mezcla: un pack + servicios sueltos, en la misma reserva, con UNA
+    // sola seña. UN mail nuevo con todo.
+    const pp = packPlan!
+    const looseItems = ordered.filter((p) => !p.isPackSession)
+
     try {
-      await sendMultiBookingConfirmation({
+      await sendMixedBookingConfirmation({
         to: email,
         firstName: input.client.firstName.trim(),
-        items: slots.map((s) => ({ serviceName: s.name, startsAt: new Date(s.startsAtMs) })),
-        totalCents: realTotal,
-        dueNowCents: dueNow,
+        packName: pp.pack.name,
+        packSessionsTotal: pp.pack.sessions,
+        packStartsAtList: pp.slotDates,
+        services: looseItems.map((p) => ({ serviceName: p.label, startsAt: new Date(p.startsAtMs) })),
+        totalCents: sumTotals(plan),
+        dueNowCents: sumDeposits(plan),
       })
     } catch {
       // ignore — la reserva ya está; el equipo puede reenviar manualmente.
     }
 
-    // Un aviso por turno: cada uno es un turno real, en su día, con su
-    // profesional. Un solo aviso con una sola fecha le mentiría a la
-    // profesional asignada al segundo o al tercero.
-    for (const s of slots) {
-      const h = hintFor(s.serviceId)
+    // Google Calendar: un evento por turno (mismo helper que "separados" y
+    // "pack solo" — antes vivía duplicado acá).
+    await createCalendarEventsForAppointments(
+      supabase,
+      `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      ordered.map((p, i) => ({
+        appointmentId: created.appointmentIds[i],
+        staffId: p.staffId,
+        label: p.label,
+        startsAtMs: p.startsAtMs,
+        durationMin: p.durationMin,
+      }))
+    )
+
+    // notifyNewBooking: UN aviso agregado para el pack — mismo formato que
+    // "pack solo" (nombre + precio TOTAL del pack + cuántas sesiones se
+    // agendaron), nunca uno por sesión (las sesiones 2..N no tienen precio
+    // propio: mandarían "$0") — más UN aviso por cada servicio suelto, con
+    // SU fecha, SU duración, SU profesional y SU precio.
+    try {
+      await notifyNewBooking(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        servicesNames: [`${pp.pack.name} (pack · ${pp.slotDates.length} de ${pp.pack.sessions} sesiones agendadas)`],
+        startsAt: pp.slotDates[0],
+        durationMin: pp.appointments[0].durationMin,
+        totalCents: pp.pack.totalPriceCents,
+        assignedStaffIds: [pp.appointments[0].staffId],
+      })
+    } catch {
+      // no bloqueante: el pack y sus turnos ya están confirmados.
+    }
+
+    for (const p of looseItems) {
       try {
         await notifyNewBooking(supabase, {
           clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
           clientPhone: input.client.phone,
-          servicesNames: [s.name],
-          startsAt: new Date(s.startsAtMs),
-          durationMin: s.durationMin,
-          totalCents: redeem ? 0 : s.priceCents,
-          assignedStaffIds: [h !== "auto" ? h : null],
+          servicesNames: [p.label],
+          startsAt: new Date(p.startsAtMs),
+          durationMin: p.durationMin,
+          totalCents: p.totalCents,
+          assignedStaffIds: [p.staffId],
         })
       } catch {
         // ignore — los turnos ya están creados
       }
     }
-
-    if (!authUser && !alreadyLinked) {
-      try {
-        const h = await headers()
-        const proto = h.get("x-forwarded-proto") ?? "http"
-        const host = h.get("host")
-        const origin = `${proto}://${host}`
-        const plain = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          { auth: { persistSession: false, autoRefreshToken: false } }
-        )
-        await plain.auth.signInWithOtp({
-          email,
-          options: {
-            emailRedirectTo: `${origin}/auth/callback?next=/portal`,
-            shouldCreateUser: true,
-          },
-        })
-      } catch {
-        // ignore
-      }
-    }
-
-    return { ok: true, appointmentId: createdIds[0], appointmentIds: createdIds }
   }
 
-  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
-  // de crear el turno. Tiene que resolverse acá (y no más abajo, donde vivía
-  // antes junto al insert de appointment_services) porque `mainStaffId`
-  // depende de él: la profesional principal tiene que ser la del PRIMER
-  // servicio del orden REAL, no la del primero que mandó la clienta — si el
-  // orden se reordena por "va siempre al final", usar `input.serviceOrder[0]`
-  // le asigna el turno a la profesional equivocada a la hora equivocada.
-  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
-  const requestedOrder = orderedIds
-    .map((id) => services.find((s) => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => Boolean(s))
-    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
-    // se agrega acá sin perder ninguno de los campos de `services` que se usan
-    // más abajo (id, computed[s.id], etc).
-    .map((s) => ({ ...s, orderLast: s.order_last }))
-
-  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
-  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
-  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
-  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
-  // profesional podría quedar escrita en un horario en el que está bloqueada
-  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
-  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
-  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
-  // arbitrario de Postgres: no hay un orden validado que respetar, así que
-  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
-  // rechazar una reserva perfectamente válida.
-  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder)) {
-    // Los puntos ya se descontaron en el paso 4b. Si rechazamos acá, la clienta
-    // no se lleva NINGÚN turno: hay que devolvérselos (con la lista de turnos
-    // creados vacía, el helper sólo reembolsa).
-    return await rollbackBookingAttempt(
-      supabase,
-      [],
-      clientId,
-      redeem ? totalPointsCost : 0,
-      "Ese horario ya no es válido. Elegí el horario de nuevo."
-    )
-  }
-
-  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
-  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
-  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
-  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
-  const orderedServices = sortOrderLast(requestedOrder)
-
-  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
-  const mainStaffId = input.resolvedStaff
-    ? (orderedServices[0]
-        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
-        : Object.values(input.resolvedStaff)[0] ?? null)
-    : (input.proHint !== "auto" ? input.proHint : null)
-
-  // ── Revalidar CADA pata contra la disponibilidad real (autoritativo) ──────
-  // El modo "juntos" (UN turno con los servicios encadenados) nunca había
-  // vuelto a chequear el horario contra la DB entre que el buscador lo ofreció
-  // y que se confirma acá: sólo confiaba en `resolvedStaff` armado en
-  // pantalla. Dos clientas con la pantalla abierta en el mismo horario
-  // terminaban las dos con turno. Se revalida cada servicio con SU propio
-  // horario escalonado (mismo cálculo que arma `apptServices` más abajo), SU
-  // propia duración y SU propia profesional — mismo criterio que ya usan acá
-  // arriba los modos "pack" y "separados".
-  //
-  // Esto corre DESPUÉS del descuento de puntos (paso 4b), así que cada
-  // `return` de acá tiene que reembolsarlos.
-  {
-    const { data: bhRows, error: bhErr } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    if (bhErr)
-      return await rollbackBookingAttempt(
-        supabase, [], clientId, redeem ? totalPointsCost : 0,
-        "No pudimos verificar el horario. Probá de nuevo."
-      )
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
-    )
-
-    let legMs = startsAt.getTime()
-    for (let i = 0; i < orderedServices.length; i++) {
-      const s = orderedServices[i]
-      const c = computed[s.id]
-      const legStart = new Date(legMs)
-      legMs += c.durationMin * 60_000
-      const legProHint = input.resolvedStaff?.[s.id] ?? mainStaffId ?? "auto"
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
-      const bh = bhByDow.get(dayOfWeek)
-      // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
-      // reservables (`bh.slots`): es el inicio del turno, el horario que la
-      // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
-      // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
-      // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
-      // buscador (`checkPerm`) no les exige estar en la grilla, así que
-      // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
-      // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
-      // día abierto (`is_open`).
-      if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
-        return await rollbackBookingAttempt(
-          supabase, [], clientId, redeem ? totalPointsCost : 0,
-          `El horario de "${s.name}" ya no está disponible. Elegí otro.`
-        )
-      const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
-      if (!free.includes(timeStr))
-        return await rollbackBookingAttempt(
-          supabase, [], clientId, redeem ? totalPointsCost : 0,
-          "El horario se ocupó. Elegí otro."
-        )
-    }
-  }
-
-  // 5) Create appointment
-  const { data: appt, error: apptErr } = await supabase
-    .from("appointments")
-    .insert({
-      client_id: clientId,
-      staff_id: mainStaffId,
-      room_id: room?.id ?? null,
-      starts_at: startsAt.toISOString(),
-      ends_at: endsAt.toISOString(),
-      duration_min: totalDuration,
-      total_cents: redeem ? 0 : totalCents,
-      deposit_cents: redeem ? 0 : depositCents,
-      deposit_paid: redeem,
-      paid_cents: 0,
-      status: redeem ? "confirmed" : "pending",
-      source: "web",
-      notes_internal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
-    })
-    .select("id")
-    .single()
-
-  // No se creó el turno: si canjeó con puntos, ya se los descontamos en el paso
-  // 4b y no se lleva nada. Se los devolvemos.
-  if (apptErr || !appt)
-    return await rollbackBookingAttempt(
-      supabase,
-      [],
-      clientId,
-      redeem ? totalPointsCost : 0,
-      `Turno: ${apptErr?.message}`
-    )
-
-  // 6) Link services — respecting sequential order (resolved above) and
-  // per-service staff/starts_at
-  let serviceMs = startsAt.getTime()
-  const apptServices = orderedServices.map((s) => {
-    const c = computed[s.id]
-    const sStartsAt = new Date(serviceMs)
-    serviceMs += c.durationMin * 60_000
-    return {
-      appointment_id: appt.id,
-      service_id: s.id,
-      duration_min: c.durationMin,
-      price_cents: c.priceCents,
-      zones: c.zones,
-      staff_id: input.resolvedStaff?.[s.id] ?? mainStaffId,
-      starts_at: sStartsAt.toISOString(),
-    }
-  })
-
-  const { error: linkErr } = await supabase
-    .from("appointment_services")
-    .insert(apptServices)
-
-  // El turno quedó sin servicios: se borra (todo o nada) y se devuelven los
-  // puntos. Antes quedaba un turno huérfano y la clienta perdía el canje.
-  if (linkErr)
-    return await rollbackBookingAttempt(
-      supabase,
-      [appt.id],
-      clientId,
-      redeem ? totalPointsCost : 0,
-      `Servicios del turno: ${linkErr.message}`
-    )
-
-  // 7) Google Calendar event (no bloqueante)
-  try {
-    let staffName: string | null = null
-    let staffEmail: string | null = null
-    let staffColorId: string | null = null
-    if (mainStaffId) {
-      const { data: staffRow } = await supabase
-        .from("staff")
-        .select("full_name, email, calendar_color_id")
-        .eq("id", mainStaffId)
-        .maybeSingle()
-      staffName = staffRow?.full_name ?? null
-      staffEmail = staffRow?.email ?? null
-      staffColorId = (staffRow as any)?.calendar_color_id ?? null
-    }
-    const eventId = await createCalendarEvent({
-      appointmentId: appt.id,
-      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-      serviceNames: services.map((s) => s.name),
-      staffName,
-      staffEmail,
-      staffColorId,
-      startsAt,
-      endsAt,
-      notes: null,
-    })
-    if (eventId) {
-      await supabase
-        .from("appointments")
-        .update({ google_event_id: eventId })
-        .eq("id", appt.id)
-    }
-  } catch {
-    // Non-fatal: el turno ya está creado
-  }
-
-  // 8) Email de confirmación con los detalles del turno (no bloqueante).
-  try {
-    await sendBookingConfirmation({
-      to: email,
-      firstName: input.client.firstName.trim(),
-      servicesNames: services.map((s) => s.name),
-      startsAt,
-      durationMin: totalDuration,
-      totalCents,
-      appointmentId: appt.id,
-    })
-  } catch {
-    // ignore — la reserva ya está; el equipo puede reenviar manualmente.
-  }
-
-  // Aviso a Leri + profesional(es) asignado(s) de la nueva reserva (no bloqueante).
-  await notifyNewBooking(supabase, {
-    clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-    clientPhone: input.client.phone,
-    servicesNames: services.map((s) => s.name),
-    startsAt,
-    durationMin: totalDuration,
-    totalCents,
-    assignedStaffIds: [mainStaffId, ...Object.values(input.resolvedStaff ?? {})],
-  })
-
-  // 8) Magic link para portal — solo si:
+  // Magic link para portal — solo si:
   //   - no hay sesión activa
   //   - Y el clients row no está ya linkeado a un auth user
+  // Se conserva igual, ahora al final, común a los tres caminos.
   if (!authUser && !alreadyLinked) {
     try {
       const h = await headers()
@@ -1061,7 +1216,11 @@ export async function createBooking(
     }
   }
 
-  return { ok: true, appointmentId: appt.id }
+  return {
+    ok: true,
+    appointmentId: created.appointmentIds[0],
+    appointmentIds: created.appointmentIds,
+  }
 }
 
 export type SaveClientResult =

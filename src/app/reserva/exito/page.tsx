@@ -13,6 +13,7 @@ type ApptRow = {
   duration_min: number
   total_cents: number
   deposit_cents: number
+  pack_purchase_id: string | null
   client: { first_name: string | null } | null
   appointment_services: { service: { name: string } | null }[]
 }
@@ -37,7 +38,7 @@ export default async function ReservaExitoPage({
   const { data } = await admin
     .from("appointments")
     .select(
-      "id, starts_at, duration_min, total_cents, deposit_cents, client:clients(first_name), appointment_services(service:services(name))"
+      "id, starts_at, duration_min, total_cents, deposit_cents, pack_purchase_id, client:clients(first_name), appointment_services(service:services(name))"
     )
     .in("id", ids)
     .order("starts_at", { ascending: true })
@@ -145,7 +146,11 @@ export default async function ReservaExitoPage({
                   minute: "2-digit",
                 })}
                 hs · {fmtDuration(a.duration_min)} ·{" "}
-                {fmtPrice(a.total_cents / 100)}
+                {a.total_cents > 0
+                  ? fmtPrice(a.total_cents / 100)
+                  : a.pack_purchase_id
+                  ? "Incluida en el pack"
+                  : "Canjeada con puntos"}
                 <br />
                 <a
                   href={MAPS_LINK}

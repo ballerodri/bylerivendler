@@ -54,7 +54,10 @@ const VERSION_KEY = "blv_flow_version"
 // flujo (pasan a un formulario en papel); cambia el orden de pantallas.
 // v4: se agregó bookingMode/serviceSlots (modo "separados"); un estado viejo
 // no tiene esta forma.
-const FLOW_VERSION = 4
+// v5: pack y servicios sueltos dejan de ser excluyentes (se pueden comprar
+// juntos, con una sola seña); un estado viejo a medias podía quedar en una
+// combinación que la pantalla nueva ya no espera.
+const FLOW_VERSION = 5
 
 function useVariant(): "mobile" | "desktop" {
   const [variant, setVariant] = useState<"mobile" | "desktop">("mobile")

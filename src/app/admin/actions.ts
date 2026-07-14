@@ -1265,7 +1265,7 @@ export async function createAdminBooking(
     // el solver de disponibilidad (`buildBusyLegs` no puede resolver a quién
     // bloquea): se borra en vez de dejarlo huérfano bloqueando a nadie.
     // Mismo criterio "todo o nada" que los caminos públicos
-    // (`rollbackBookingAttempt` / `rollbackPackAttempt` en reserva/actions.ts).
+    // (`rollbackAll` en reserva/actions.ts).
     const { error: delErr } = await admin.from("appointments").delete().eq("id", appt.id)
     if (delErr) {
       return {
