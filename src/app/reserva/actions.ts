@@ -13,7 +13,7 @@ import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/serv
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
-import { allowedStaffFor, canStaffDoService, type StaffServiceMap } from "@/lib/servicios/staff-services"
+import { allowedStaffFor, canStaffDoService, serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
 import {
   assignableStaff,
   buildBusyLegs,
@@ -207,6 +207,33 @@ export async function createBooking(
     }
   }
 
+  // Quién hace qué (`staff_services`). El servidor es autoritativo: una
+  // profesional que no hace el servicio se rechaza, aunque el payload venga
+  // armado a mano (esto corre ANTES del descuento de puntos, paso 4b, así
+  // que sus `return` no necesitan reembolso).
+  const { data: linkRows, error: linkMapErr } = await supabase
+    .from("staff_services")
+    .select("service_id, staff_id")
+    .in("service_id", input.serviceIds)
+  if (linkMapErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+  const staffMap: StaffServiceMap = {}
+  for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
+    ;(staffMap[r.service_id] ??= []).push(r.staff_id)
+  }
+
+  // Un servicio que nadie hace no se puede reservar.
+  for (const s of services) {
+    if (!serviceIsBookable(s.id, staffMap))
+      return { ok: false, error: `"${s.name}" no está disponible para reservar online por ahora.` }
+  }
+
+  // La profesional pedida (si pidió una) tiene que hacer ese servicio.
+  for (const s of services) {
+    const asked = input.resolvedStaff?.[s.id] ?? input.serviceStaff?.[s.id]
+    if (asked && asked !== "auto" && !canStaffDoService(asked, s.id, staffMap))
+      return { ok: false, error: `Esa profesional no realiza "${s.name}". Elegí el horario de nuevo.` }
+  }
+
   const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
   let totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
 
@@ -304,6 +331,20 @@ export async function createBooking(
     const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
     if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
 
+    // Quién hace el servicio del pack (`staff_services`). Mismo criterio
+    // fail-closed que el turno normal (más abajo): un servicio sin ninguna
+    // profesional asignada no se puede reservar online.
+    const { data: packLinkRows, error: packLinkErr } = await supabase
+      .from("staff_services")
+      .select("staff_id")
+      .eq("service_id", svc.id)
+    if (packLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+    const packStaffMap: StaffServiceMap = {
+      [svc.id]: (packLinkRows ?? []).map((r) => r.staff_id as string),
+    }
+    if (!serviceIsBookable(svc.id, packStaffMap))
+      return { ok: false, error: `"${svc.name}" no está disponible para reservar online por ahora.` }
+
     // Duración de la 1ª sesión + snapshot de zonas
     let firstDuration = svc.duration_min
     let zonesSnapshot: ZoneSnapshot[] | null = null
@@ -345,6 +386,11 @@ export async function createBooking(
       ? (input.serviceOrder?.[0] ? (input.resolvedStaff[input.serviceOrder[0]] ?? null) : Object.values(input.resolvedStaff)[0] ?? null)
       : (input.proHint !== "auto" ? input.proHint : null)
     const packProHint = packStaffId ?? "auto"
+
+    // La profesional pedida para el pack (si pidió una puntual) tiene que
+    // hacer el servicio del pack.
+    if (packStaffId && !canStaffDoService(packStaffId, svc.id, packStaffMap))
+      return { ok: false, error: `Esa profesional no realiza "${svc.name}". Elegí el horario de nuevo.` }
 
     // ── Revalidar CADA fecha contra la disponibilidad real (autoritativo) ─────
     const { data: bhRows } = await supabase
@@ -804,6 +850,54 @@ export async function createBooking(
         : Object.values(input.resolvedStaff)[0] ?? null)
     : (input.proHint !== "auto" ? input.proHint : null)
 
+  // ── Revalidar CADA pata contra la disponibilidad real (autoritativo) ──────
+  // El modo "juntos" (UN turno con los servicios encadenados) nunca había
+  // vuelto a chequear el horario contra la DB entre que el buscador lo ofreció
+  // y que se confirma acá: sólo confiaba en `resolvedStaff` armado en
+  // pantalla. Dos clientas con la pantalla abierta en el mismo horario
+  // terminaban las dos con turno. Se revalida cada servicio con SU propio
+  // horario escalonado (mismo cálculo que arma `apptServices` más abajo), SU
+  // propia duración y SU propia profesional — mismo criterio que ya usan acá
+  // arriba los modos "pack" y "separados".
+  //
+  // Esto corre DESPUÉS del descuento de puntos (paso 4b), así que cada
+  // `return` de acá tiene que reembolsarlos.
+  {
+    const { data: bhRows, error: bhErr } = await supabase
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+    if (bhErr)
+      return await rollbackBookingAttempt(
+        supabase, [], clientId, redeem ? totalPointsCost : 0,
+        "No pudimos verificar el horario. Probá de nuevo."
+      )
+    const bhByDow = new Map(
+      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+        .map((h) => [h.day_of_week, h])
+    )
+
+    let legMs = startsAt.getTime()
+    for (const s of orderedServices) {
+      const c = computed[s.id]
+      const legStart = new Date(legMs)
+      legMs += c.durationMin * 60_000
+      const legProHint = input.resolvedStaff?.[s.id] ?? mainStaffId ?? "auto"
+      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
+      const bh = bhByDow.get(dayOfWeek)
+      if (!bh?.is_open || !bh.slots.includes(timeStr))
+        return await rollbackBookingAttempt(
+          supabase, [], clientId, redeem ? totalPointsCost : 0,
+          `El horario de "${s.name}" ya no está disponible. Elegí otro.`
+        )
+      const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], s.id)
+      if (!free.includes(timeStr))
+        return await rollbackBookingAttempt(
+          supabase, [], clientId, redeem ? totalPointsCost : 0,
+          "El horario se ocupó. Elegí otro."
+        )
+    }
+  }
+
   // 5) Create appointment
   const { data: appt, error: apptErr } = await supabase
     .from("appointments")
@@ -1023,7 +1117,8 @@ export async function fetchDayAvailability(
   durationMin: number,
   proHint: string,
   candidateSlots: string[],
-  serviceId?: string | null
+  serviceId?: string | null,
+  excludeAppointmentId?: string | null
 ): Promise<string[]> {
   if (!candidateSlots.length) return []
 
@@ -1079,13 +1174,19 @@ export async function fetchDayAvailability(
     .select("staff_id, day_of_week, slot")
   if (proHint !== "auto") availQuery = availQuery.eq("staff_id", proHint)
 
-  const [{ data: appointments }, { data: prosData }, { data: availData }] = await Promise.all([
+  const [{ data: apptData }, { data: prosData }, { data: availData }] = await Promise.all([
     apptQuery,
     proHint === "auto" || serviceId
       ? supabase.from("staff").select("id").eq("is_professional", true).eq("active", true)
       : Promise.resolve({ data: [] as { id: string }[] }),
     availQuery,
   ])
+
+  // El turno que se está reagendando no puede bloquearse a sí mismo: sus
+  // propias patas quedan afuera del solver (ver `excludeAppointmentId`).
+  const appointments = excludeAppointmentId
+    ? (apptData ?? []).filter((row) => row.id !== excludeAppointmentId)
+    : (apptData ?? [])
 
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
   const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import {
   DOW_NAMES,
@@ -15,6 +15,7 @@ import {
 } from "../../data"
 import { Icon, Wordmark } from "../../primitives"
 import { rescheduleMyAppointment } from "@/app/portal/actions"
+import { fetchDayAvailability } from "@/app/reserva/actions"
 
 import type { BusinessHour } from "../../data"
 
@@ -25,6 +26,13 @@ type Props = {
   currentStartsAt: string
   durationMin: number
   businessHours: BusinessHour[]
+  // Referencia para el buscador de horarios (autoritativo): la PRIMERA pata
+  // del turno (por horario) — su servicio, su duración y su profesional. Si
+  // el turno tiene varios servicios, el chequeo por-pata del servidor
+  // (`rescheduleMyAppointment`) es el que manda.
+  firstServiceId: string | null
+  firstServiceDurationMin: number
+  firstServiceProHint: string
 }
 
 export default function RescheduleFlow({
@@ -34,6 +42,9 @@ export default function RescheduleFlow({
   currentStartsAt,
   durationMin,
   businessHours,
+  firstServiceId,
+  firstServiceDurationMin,
+  firstServiceProHint,
 }: Props) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -44,6 +55,12 @@ export default function RescheduleFlow({
     d.setHours(0, 0, 0, 0)
     return d
   })
+  // Sólo horario comercial (sin mirar turnos existentes): se usa nada más
+  // para saber qué DÍAS mostrar como "con horarios" en el calendario. La
+  // lista REAL de horarios de un día (`daySlots`, más abajo) viene del
+  // servidor vía `fetchDayAvailability` — ésa sí mira los turnos existentes
+  // y es la autoridad. Antes esta pantalla ofrecía horarios ya ocupados: el
+  // click confirmaba igual, porque el servidor nunca los revalidaba.
   const [availability] = useState(() => generateAvailability(60, businessHours))
 
   const currentDate = new Date(currentStartsAt)
@@ -51,6 +68,12 @@ export default function RescheduleFlow({
   const [viewMonth, setViewMonth] = useState(today.getMonth())
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
+  // Resultado del último día efectivamente consultado al servidor, con su
+  // fecha adjunta: mientras `selectedDate` no coincida con `slotsResult.date`
+  // (recién elegido un día nuevo, todavía sin respuesta) se considera
+  // "cargando" — derivado en el render, sin un estado aparte que haya que
+  // sincronizar a mano.
+  const [slotsResult, setSlotsResult] = useState<{ date: string; slots: string[] } | null>(null)
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayRaw = new Date(viewYear, viewMonth, 1).getDay()
@@ -63,8 +86,30 @@ export default function RescheduleFlow({
     setSelectedTime(null)
   }
 
-  const rawSlotsForDay = selectedDate ? availability[selectedDate] || [] : []
-  const slotsForDay = selectedDate ? filterFutureSlots(selectedDate, rawSlotsForDay) : []
+  // Horarios REALES del día elegido, calculados por el servidor (autoritativo).
+  // Excluye este mismo turno (`appointmentId`): se está moviendo a sí mismo,
+  // no puede bloquearse a sí mismo.
+  useEffect(() => {
+    if (!selectedDate || !firstServiceId) return
+    let cancelled = false
+    const candidates = filterFutureSlots(selectedDate, availability[selectedDate] || [])
+    fetchDayAvailability(
+      selectedDate,
+      firstServiceDurationMin,
+      firstServiceProHint,
+      candidates,
+      firstServiceId,
+      appointmentId
+    ).then((slots) => {
+      if (!cancelled) setSlotsResult({ date: selectedDate, slots })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedDate, appointmentId, firstServiceId, firstServiceDurationMin, firstServiceProHint, availability])
+
+  const loadingSlots = selectedDate !== null && slotsResult?.date !== selectedDate
+  const slotsForDay = slotsResult && slotsResult.date === selectedDate ? slotsResult.slots : []
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
   const fmtCurrent = currentDate.toLocaleString("es-AR", {
@@ -192,11 +237,11 @@ export default function RescheduleFlow({
                 </em>
               </h3>
               <span className="slots__count">
-                {String(slotsForDay.length).padStart(2, "0")} horarios
+                {loadingSlots ? "Buscando…" : `${String(slotsForDay.length).padStart(2, "0")} horarios`}
               </span>
             </div>
             <div className="slots__grid">
-              {slotsForDay.map((t) => (
+              {!loadingSlots && slotsForDay.map((t) => (
                 <button
                   key={t}
                   className={`slot ${selectedTime === t ? "is-selected" : ""}`}
