@@ -66,18 +66,10 @@ export default async function ReschedulePage({ params }: Props) {
     .map((as) => as.service?.name)
     .filter((n): n is string => Boolean(n))
 
-  // Para el buscador de horarios (autoritativo, ver `fetchDayAvailability`):
-  // se usa la PRIMERA pata (por horario) como referencia — su servicio, su
-  // duración y su profesional. El chequeo por-pata del servidor
-  // (`rescheduleMyAppointment`) es el que manda si el turno tiene varias.
-  const orderedSvcs = a.appointment_services
-    .slice()
-    .sort((x, y) => {
-      if (!x.starts_at || !y.starts_at) return 0
-      return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
-    })
-  const firstLeg = orderedSvcs[0] ?? null
-
+  // El buscador de horarios (autoritativo) vive del lado del servidor en
+  // `fetchRescheduleSlots` (ver `@/app/portal/actions`): recalcula ahí la
+  // PRIMERA pata (por horario) — su servicio, su duración y su profesional —
+  // en vez de confiar en lo que esta página le pasara al cliente.
   return (
     <RescheduleFlow
       appointmentId={appointmentId}
@@ -86,9 +78,6 @@ export default async function ReschedulePage({ params }: Props) {
       currentStartsAt={a.starts_at}
       durationMin={a.duration_min}
       businessHours={businessHours}
-      firstServiceId={firstLeg?.service_id ?? null}
-      firstServiceDurationMin={firstLeg?.duration_min ?? a.duration_min}
-      firstServiceProHint={firstLeg?.staff_id ?? a.staff_id ?? "auto"}
     />
   )
 }

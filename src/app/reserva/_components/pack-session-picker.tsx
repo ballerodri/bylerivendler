@@ -87,7 +87,7 @@ export default function PackSessionPicker({
     if (!candidates.length) { setSlots([]); return }
     let cancelled = false
     setLoading(true)
-    fetchDayAvailability(selectedDate, durationMin, proHint, candidates, serviceId).then((free) => {
+    fetchDayAvailability(selectedDate, durationMin, proHint, candidates, { serviceId }).then((free) => {
       if (cancelled) return
       setSlots(free)
       setLoading(false)

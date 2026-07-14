@@ -7,6 +7,7 @@ import { sendBookingCancellation, sendBookingReschedule } from "@/lib/email/book
 import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { fetchDayAvailability } from "@/app/reserva/actions"
+import { filterFutureSlots, AR_UTC_OFFSET } from "@/app/reserva/data"
 
 type CancelResult = { ok: true } | { ok: false; error: string }
 
@@ -203,13 +204,29 @@ export async function rescheduleMyAppointment(
       .map((h) => [h.day_of_week, h])
   )
 
-  for (const leg of legs) {
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i]
     const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(leg.startMs))
     const bh = bhByDow.get(dayOfWeek)
-    if (!bh?.is_open || !bh.slots.includes(timeStr))
+    // Sólo la PRIMERA pata tiene que caer en la grilla de horarios reservables
+    // (`bh.slots`): es el horario que la clienta eligió en pantalla. Las
+    // patas 2..n arrancan encadenadas (`inicio + duraciones anteriores`) y
+    // casi nunca caen en la grilla — el buscador no se lo exige, así que
+    // exigírselo acá rechazaría cualquier reagendado de un turno con varios
+    // servicios. Todas las patas sí tienen que caer en un día abierto.
+    if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
       return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
     const free = await fetchDayAvailability(
-      dateStr, leg.durationMin, leg.staffId ?? "auto", [timeStr], leg.serviceId, appointmentId
+      dateStr, leg.durationMin, leg.staffId ?? "auto", [timeStr],
+      {
+        serviceId: leg.serviceId,
+        excludeAppointmentId: appointmentId,
+        // El turno ya existe con esta profesional (podría ser una que el
+        // admin cargó a mano sin vincular en `staff_services`, el escape
+        // hatch). No corresponde exigirle acá una regla que nunca tuvo que
+        // cumplir para tener este turno.
+        skipStaffServiceCheck: true,
+      }
     )
     if (!free.includes(timeStr))
       return { ok: false, error: "El horario se ocupó. Elegí otro." }
@@ -245,6 +262,18 @@ export async function rescheduleMyAppointment(
       .eq("appointment_id", appointmentId)
       .eq("service_id", svc.service_id)
     if (legErr) {
+      // Deshacer TODAS las patas ya escritas en iteraciones anteriores (no
+      // sólo el header): si la pata 1 ya quedó en el horario NUEVO y sólo se
+      // revirtiera el header, el solver (`buildBusyLegs`) leería a esa
+      // profesional libre en el horario VIEJO — el que la clienta todavía
+      // tiene — y otra clienta podría reservarle encima.
+      for (let j = 0; j < i; j++) {
+        await admin
+          .from("appointment_services")
+          .update({ starts_at: orderedSvcs[j].starts_at })
+          .eq("appointment_id", appointmentId)
+          .eq("service_id", orderedSvcs[j].service_id)
+      }
       await admin
         .from("appointments")
         .update({ starts_at: prevStartsAt, ends_at: prevEndsAt })
@@ -289,4 +318,108 @@ export async function rescheduleMyAppointment(
 
   revalidatePath("/portal")
   return { ok: true }
+}
+
+export type RescheduleSlotsResult = { ok: true; slots: string[] } | { ok: false; error: string }
+
+/**
+ * Horarios REALES de un día, para reagendar UN turno propio — la contraparte
+ * AUTENTICADA de `fetchDayAvailability` para la pantalla de reagendado.
+ *
+ * Antes, la pantalla (componente cliente) llamaba directo a
+ * `fetchDayAvailability` pasándole `excludeAppointmentId` a mano. Como esa
+ * acción es pública (`"use server"`, sin chequeo de dueño), cualquiera podía
+ * invocarla con el id de OTRO turno y usarla para sondear la disponibilidad
+ * real de otra persona. Acá se verifica primero que la clienta sea DUEÑA del
+ * turno (mismo chequeo que `rescheduleMyAppointment`) y recién después se
+ * llama a `fetchDayAvailability` con la exclusión — la duración, el servicio y
+ * la profesional se recalculan siempre del lado del servidor, nunca se
+ * confía en lo que mande el cliente.
+ */
+export async function fetchRescheduleSlots(
+  appointmentId: string,
+  dateStr: string
+): Promise<RescheduleSlotsResult> {
+  const supabase = await createSsrClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Sesión expirada" }
+
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select(
+      `id, status, duration_min, staff_id,
+       client:clients(user_id),
+       appointment_services(service_id, staff_id, starts_at, duration_min)`
+    )
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  type Shape = {
+    id: string
+    status: string
+    duration_min: number
+    staff_id: string | null
+    client: { user_id: string | null } | null
+    appointment_services: {
+      service_id: string
+      staff_id: string | null
+      starts_at: string | null
+      duration_min: number
+    }[]
+  }
+  const a = appt as unknown as Shape
+
+  if (!a.client || a.client.user_id !== user.id) {
+    return { ok: false, error: "No podés reagendar este turno" }
+  }
+  if (a.status !== "pending" && a.status !== "confirmed") {
+    return { ok: false, error: "Este turno ya no se puede reagendar" }
+  }
+
+  // Misma referencia que `rescheduleMyAppointment`: la PRIMERA pata por
+  // horario. Un turno sin ninguna (no debería pasar, pero sería un turno
+  // huérfano) se avisa en vez de dejar la pantalla "Buscando…" para siempre.
+  const firstLeg = a.appointment_services
+    .slice()
+    .sort((x, y) => {
+      if (!x.starts_at || !y.starts_at) return 0
+      return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+    })[0]
+  if (!firstLeg) {
+    return { ok: false, error: "Este turno no tiene servicios asociados. Comunicate con el salón." }
+  }
+
+  const [dy, dm, dd] = dateStr.split("-").map(Number)
+  if (!dy || !dm || !dd) return { ok: false, error: "Fecha inválida." }
+  const dayOfWeek = new Date(Date.UTC(dy, dm - 1, dd, AR_UTC_OFFSET, 0, 0)).getUTCDay()
+
+  const { data: bh, error: bhErr } = await admin
+    .from("business_hours")
+    .select("is_open, slots")
+    .eq("day_of_week", dayOfWeek)
+    .maybeSingle()
+  if (bhErr) return { ok: false, error: "No pudimos verificar el horario. Probá de nuevo." }
+  if (!bh?.is_open || !bh.slots.length) return { ok: true, slots: [] }
+
+  const candidates = filterFutureSlots(dateStr, bh.slots)
+  if (!candidates.length) return { ok: true, slots: [] }
+
+  const slots = await fetchDayAvailability(
+    dateStr,
+    firstLeg.duration_min,
+    firstLeg.staff_id ?? a.staff_id ?? "auto",
+    candidates,
+    {
+      serviceId: firstLeg.service_id,
+      excludeAppointmentId: appointmentId,
+      skipStaffServiceCheck: true,
+    }
+  )
+  return { ok: true, slots }
 }

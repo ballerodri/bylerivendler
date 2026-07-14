@@ -414,7 +414,7 @@ export async function createBooking(
       const bh = bhByDow.get(dayOfWeek)
       if (!bh?.is_open || !bh.slots.includes(timeStr))
         return { ok: false, error: `El horario de la sesión ${i + 1} ya no está disponible. Elegí otro.` }
-      const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], svc.id)
+      const free = await fetchDayAvailability(dateStr, firstDuration, packProHint, [timeStr], { serviceId: svc.id })
       if (!free.includes(timeStr))
         return { ok: false, error: `El horario de la sesión ${i + 1} se ocupó. Elegí otro.` }
     }
@@ -612,7 +612,7 @@ export async function createBooking(
       const bh = bhByDow.get(dayOfWeek)
       if (!bh?.is_open || !bh.slots.includes(timeStr))
         return await fail(`El horario de ${s.name} ya no está disponible. Elegí otro.`)
-      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], s.serviceId)
+      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], { serviceId: s.serviceId })
       if (!free.includes(timeStr))
         return await fail(`El horario de ${s.name} se ocupó. Elegí otro.`)
     }
@@ -877,19 +877,29 @@ export async function createBooking(
     )
 
     let legMs = startsAt.getTime()
-    for (const s of orderedServices) {
+    for (let i = 0; i < orderedServices.length; i++) {
+      const s = orderedServices[i]
       const c = computed[s.id]
       const legStart = new Date(legMs)
       legMs += c.durationMin * 60_000
       const legProHint = input.resolvedStaff?.[s.id] ?? mainStaffId ?? "auto"
       const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
       const bh = bhByDow.get(dayOfWeek)
-      if (!bh?.is_open || !bh.slots.includes(timeStr))
+      // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
+      // reservables (`bh.slots`): es el inicio del turno, el horario que la
+      // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
+      // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
+      // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
+      // buscador (`checkPerm`) no les exige estar en la grilla, así que
+      // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
+      // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
+      // día abierto (`is_open`).
+      if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
         return await rollbackBookingAttempt(
           supabase, [], clientId, redeem ? totalPointsCost : 0,
           `El horario de "${s.name}" ya no está disponible. Elegí otro.`
         )
-      const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], s.id)
+      const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
       if (!free.includes(timeStr))
         return await rollbackBookingAttempt(
           supabase, [], clientId, redeem ? totalPointsCost : 0,
@@ -1117,9 +1127,19 @@ export async function fetchDayAvailability(
   durationMin: number,
   proHint: string,
   candidateSlots: string[],
-  serviceId?: string | null,
-  excludeAppointmentId?: string | null
+  opts: {
+    serviceId?: string | null
+    excludeAppointmentId?: string
+    // Un reagendado no es una reserva nueva: el turno YA existe con esa
+    // profesional, aunque no esté vinculada en `staff_services` (el escape
+    // hatch del admin: puede cargar a mano un servicio con quien quiera). Con
+    // `true` se salta la puerta "¿hace este servicio?" — la profesional
+    // pedida se valida igual por disponibilidad REAL (sus propias patas, sus
+    // propias horas bloqueadas) más abajo, sin excepción.
+    skipStaffServiceCheck?: boolean
+  } = {}
 ): Promise<string[]> {
+  const { serviceId = null, excludeAppointmentId, skipStaffServiceCheck = false } = opts
   if (!candidateSlots.length) return []
 
   const supabase = adminClient()
@@ -1141,10 +1161,12 @@ export async function fetchDayAvailability(
       ;(staffMap[r.service_id] ??= []).push(r.staff_id)
     }
 
-    if (proHint !== "auto") {
-      if (!canStaffDoService(proHint, serviceId, staffMap)) return []
-    } else if (!allowedStaffFor(serviceId, staffMap).length) {
-      return []
+    if (!skipStaffServiceCheck) {
+      if (proHint !== "auto") {
+        if (!canStaffDoService(proHint, serviceId, staffMap)) return []
+      } else if (!allowedStaffFor(serviceId, staffMap).length) {
+        return []
+      }
     }
   }
 

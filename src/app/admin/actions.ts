@@ -372,20 +372,36 @@ export async function rescheduleAppointment(
       return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
     })
   let svcMs = newDate.getTime()
+  const newLegStartsAt: string[] = []
   for (const svc of orderedSvcs) {
+    newLegStartsAt.push(new Date(svcMs).toISOString())
+    svcMs += svc.duration_min * 60_000
+  }
+  for (let i = 0; i < orderedSvcs.length; i++) {
+    const svc = orderedSvcs[i]
     const { error: legErr } = await admin
       .from("appointment_services")
-      .update({ starts_at: new Date(svcMs).toISOString() })
+      .update({ starts_at: newLegStartsAt[i] })
       .eq("appointment_id", appointmentId)
       .eq("service_id", svc.service_id)
     if (legErr) {
+      // Deshacer TODAS las patas ya escritas en iteraciones anteriores (no
+      // sólo el header): si no, el solver (`buildBusyLegs`) leería a esa
+      // profesional libre en el horario VIEJO — el que la clienta todavía
+      // tiene — y otro turno podría reservarse encima.
+      for (let j = 0; j < i; j++) {
+        await admin
+          .from("appointment_services")
+          .update({ starts_at: orderedSvcs[j].starts_at })
+          .eq("appointment_id", appointmentId)
+          .eq("service_id", orderedSvcs[j].service_id)
+      }
       await admin
         .from("appointments")
         .update({ starts_at: prevStartsAt, ends_at: prevEndsAt })
         .eq("id", appointmentId)
       return { ok: false, error: "No pudimos reagendar. Probá de nuevo." }
     }
-    svcMs += svc.duration_min * 60_000
   }
 
   if (a.client) {
