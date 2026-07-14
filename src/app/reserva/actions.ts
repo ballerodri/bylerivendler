@@ -513,7 +513,6 @@ export async function createBooking(
 
     for (let i = 0; i < plan.appointments.length; i++) {
       const item = plan.appointments[i]
-      const leg = item.legs[0]
       const startsAt = new Date(item.startsAtMs)
       const endsAt = new Date(startsAt.getTime() + item.durationMin * 60_000)
 
@@ -550,15 +549,20 @@ export async function createBooking(
       }
       createdIds.push(appt.id)
 
-      const { error: linkErr } = await supabase.from("appointment_services").insert({
-        appointment_id: appt.id,
-        service_id: leg.serviceId,
-        duration_min: leg.durationMin,
-        price_cents: leg.priceCents,
-        zones: leg.zones,
-        staff_id: leg.staffId,
-        starts_at: startsAt.toISOString(),
-      })
+      // Se insertan TODAS las patas del turno, no `legs[0]`: hoy el pack tiene
+      // exactamente una, pero un turno "juntos" tiene varias, y tomar sólo la
+      // primera las haría desaparecer en silencio.
+      const { error: linkErr } = await supabase.from("appointment_services").insert(
+        item.legs.map((leg) => ({
+          appointment_id: appt.id,
+          service_id: leg.serviceId,
+          duration_min: leg.durationMin,
+          price_cents: leg.priceCents,
+          zones: leg.zones,
+          staff_id: leg.staffId,
+          starts_at: new Date(leg.startsAtMs).toISOString(),
+        }))
+      )
       if (linkErr) {
         return await rollbackAll(
           supabase,
