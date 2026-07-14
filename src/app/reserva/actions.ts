@@ -14,7 +14,12 @@ import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
 import { allowedStaffFor, canStaffDoService, type StaffServiceMap } from "@/lib/servicios/staff-services"
-import { assignableStaff, type BusyLeg } from "@/lib/servicios/availability"
+import {
+  assignableStaff,
+  buildBusyLegs,
+  type BusyLeg,
+  type ApptRow,
+} from "@/lib/servicios/availability"
 
 const BookingInput = z.object({
   serviceIds: z.array(z.string().uuid()),
@@ -1194,63 +1199,6 @@ function buildBlockedMap(
     set.add(r.slot)
   }
   return m
-}
-
-// Fila de `appointment_services` embebida en un turno.
-type ApptServiceLegRow = {
-  service_id: string
-  staff_id: string | null
-  starts_at: string | null
-  duration_min: number | null
-}
-
-// Turno crudo tal como lo devuelve Supabase con `appointment_services(...)` embebido.
-type ApptRow = {
-  id: string
-  starts_at: string
-  duration_min: number
-  staff_id: string | null
-  appointment_services: ApptServiceLegRow[] | null
-}
-
-/**
- * Convierte turnos crudos en patas ocupadas (`BusyLeg[]`): UNA por CADA
- * servicio del turno, con SU PROPIA profesional, inicio y duración — no la
- * del turno "portador" (que en una cadena "juntos" sólo guarda la de la
- * PRIMERA profesional y la duración SUMADA de todos los servicios).
- *
- * Si un turno no tiene NINGUNA fila en `appointment_services` (no debería
- * pasar, pero un turno invisible es un doble-booking), se emite UNA pata con
- * el turno entero y `serviceId: ""` (servicio desconocido ⇒ `allowedStaffFor`
- * da `[]` ⇒ `possible` queda vacío ⇒ sólo bloquea si coincide el nombre —
- * la lectura segura).
- */
-function buildBusyLegs(rows: ApptRow[]): BusyLeg[] {
-  const legs: BusyLeg[] = []
-  for (const r of rows) {
-    const svcRows = r.appointment_services ?? []
-    if (!svcRows.length) {
-      const startMs = new Date(r.starts_at).getTime()
-      legs.push({
-        staffId: r.staff_id,
-        serviceId: "",
-        startMs,
-        endMs: startMs + r.duration_min * 60_000,
-      })
-      continue
-    }
-    for (const s of svcRows) {
-      const startMs = s.starts_at ? new Date(s.starts_at).getTime() : new Date(r.starts_at).getTime()
-      const durationMin = s.duration_min ?? r.duration_min
-      legs.push({
-        staffId: s.staff_id ?? r.staff_id,
-        serviceId: s.service_id,
-        startMs,
-        endMs: startMs + durationMin * 60_000,
-      })
-    }
-  }
-  return legs
 }
 
 function utcMsToArTime(ms: number): string {

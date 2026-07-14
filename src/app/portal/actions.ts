@@ -118,7 +118,7 @@ export async function rescheduleMyAppointment(
       `id, status, duration_min, total_cents, google_event_id,
        client:clients(id, user_id, email, first_name, last_name),
        staff:staff(full_name),
-       appointment_services(service:services(name))`
+       appointment_services(service_id, starts_at, duration_min, service:services(name))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -138,7 +138,12 @@ export async function rescheduleMyAppointment(
       first_name: string | null
       last_name: string | null
     } | null
-    appointment_services: { service: { name: string } | null }[]
+    appointment_services: {
+      service_id: string
+      starts_at: string | null
+      duration_min: number
+      service: { name: string } | null
+    }[]
   }
   const a = appt as unknown as ApptShape
 
@@ -160,6 +165,28 @@ export async function rescheduleMyAppointment(
     .update({ starts_at: newDate.toISOString(), ends_at: endsAt.toISOString() })
     .eq("id", appointmentId)
   if (error) return { ok: false, error: error.message }
+
+  // Re-escalonar cada servicio (`appointment_services.starts_at`) a partir del
+  // nuevo inicio, preservando su orden actual. El solver de disponibilidad
+  // (`buildBusyLegs`) lee la ventana de CADA pata acá, no la del turno: si no
+  // se actualizara, las patas quedarían en el horario VIEJO mientras el turno
+  // dice el nuevo, mostrando a la profesional libre justo cuando en realidad
+  // sigue con esta clienta — mismo loop que `rescheduleAppointment` (admin).
+  const orderedSvcs = a.appointment_services
+    .slice()
+    .sort((x, y) => {
+      if (!x.starts_at || !y.starts_at) return 0
+      return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+    })
+  let svcMs = newDate.getTime()
+  for (const svc of orderedSvcs) {
+    await admin
+      .from("appointment_services")
+      .update({ starts_at: new Date(svcMs).toISOString() })
+      .eq("appointment_id", appointmentId)
+      .eq("service_id", svc.service_id)
+    svcMs += svc.duration_min * 60_000
+  }
 
   try {
     const services = a.appointment_services
