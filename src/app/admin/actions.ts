@@ -253,6 +253,71 @@ export async function deleteAppointment(
 }
 
 /**
+ * Elimina una compra de pack de la ficha de la clienta (incidente real: un
+ * pack vendido mal configurado quedó pegado para siempre porque no había
+ * forma de borrarlo). Con dos frenos que no se saltean:
+ *  - si alguna sesión del pack ya está "completed" (ya se prestó, ya cuenta
+ *    en estadísticas), no se borra: se corrompería el historial.
+ *  - si el pack ya tiene una Factura C emitida (`invoice_id`), no se borra:
+ *    es un documento legal, no puede quedar huérfano — hay que manejarlo
+ *    desde Facturación.
+ * Si pasa ambos frenos, las sesiones que tenga (pending/confirmed/cancelled/
+ * no_show) se DESVINCULAN (pack_purchase_id = null) en vez de borrarse: la
+ * clienta no pierde esos turnos, sólo dejan de contar como sesión de pack.
+ */
+export async function deletePackPurchase(
+  packPurchaseId: string
+): Promise<{ ok: boolean; error?: string; unlinked?: number }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pp } = await admin
+    .from("pack_purchases")
+    .select("id, client_id, invoice_id")
+    .eq("id", packPurchaseId)
+    .maybeSingle()
+  if (!pp) return { ok: false, error: "No encontramos ese pack." }
+
+  if (pp.invoice_id) {
+    return {
+      ok: false,
+      error:
+        "Este pack tiene una Factura C emitida: es un documento legal y no se puede borrar desde acá. Manejalo desde Facturación.",
+    }
+  }
+
+  const { data: linkedData } = await admin
+    .from("appointments")
+    .select("id, status")
+    .eq("pack_purchase_id", packPurchaseId)
+  const linked = (linkedData ?? []) as { id: string; status: string }[]
+
+  if (linked.some((a) => a.status === "completed")) {
+    return {
+      ok: false,
+      error:
+        "Este pack tiene sesiones ya completadas: borrarlo corrompería el historial y las estadísticas. No se puede eliminar.",
+    }
+  }
+
+  if (linked.length) {
+    const { error: unlinkErr } = await admin
+      .from("appointments")
+      .update({ pack_purchase_id: null })
+      .in("id", linked.map((a) => a.id))
+    if (unlinkErr) return { ok: false, error: `No pudimos desvincular los turnos: ${unlinkErr.message}` }
+  }
+
+  const { error: delErr } = await admin.from("pack_purchases").delete().eq("id", packPurchaseId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  revalidatePath(`/admin/clientas/${pp.client_id}`)
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  return { ok: true, unlinked: linked.length }
+}
+
+/**
  * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
  * mueve): sólo anota lo efectivamente recibido.
  *
@@ -321,7 +386,7 @@ export async function rescheduleAppointment(
   const { data: appt, error: apptErr } = await admin
     .from("appointments")
     .select(
-      `id, status, duration_min, total_cents, google_event_id, staff_id,
+      `id, status, starts_at, ends_at, duration_min, total_cents, google_event_id, staff_id,
        client:clients(email, first_name, last_name),
        staff:staff(full_name, email),
        appointment_services(service_id, starts_at, duration_min, service:services(name))`
@@ -336,6 +401,8 @@ export async function rescheduleAppointment(
   type ApptShape = {
     id: string
     status: string
+    starts_at: string
+    ends_at: string
     duration_min: number
     total_cents: number
     google_event_id: string | null
@@ -348,13 +415,21 @@ export async function rescheduleAppointment(
 
   const endsAt = new Date(newDate.getTime() + a.duration_min * 60_000)
 
+  const prevStartsAt = a.starts_at
+  const prevEndsAt = a.ends_at
+
   const { error } = await admin
     .from("appointments")
     .update({ starts_at: newDate.toISOString(), ends_at: endsAt.toISOString() })
     .eq("id", appointmentId)
   if (error) return { ok: false, error: error.message }
 
-  // Update per-service starts_at sequentially (preserve existing order by their current starts_at)
+  // Update per-service starts_at sequentially (preserve existing order by their current starts_at).
+  // Si ALGUNA pata falla a mitad de camino, el turno queda con el header en
+  // el horario NUEVO pero alguna pata en el VIEJO — exactamente lo que lee el
+  // solver de disponibilidad, así que la profesional parecería libre en el
+  // horario nuevo. Se revierte el header al horario anterior en vez de dejar
+  // la agenda inconsistente.
   const orderedSvcs = a.appointment_services
     .slice()
     .sort((x, y) => {
@@ -362,13 +437,36 @@ export async function rescheduleAppointment(
       return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
     })
   let svcMs = newDate.getTime()
+  const newLegStartsAt: string[] = []
   for (const svc of orderedSvcs) {
-    await admin
+    newLegStartsAt.push(new Date(svcMs).toISOString())
+    svcMs += svc.duration_min * 60_000
+  }
+  for (let i = 0; i < orderedSvcs.length; i++) {
+    const svc = orderedSvcs[i]
+    const { error: legErr } = await admin
       .from("appointment_services")
-      .update({ starts_at: new Date(svcMs).toISOString() })
+      .update({ starts_at: newLegStartsAt[i] })
       .eq("appointment_id", appointmentId)
       .eq("service_id", svc.service_id)
-    svcMs += svc.duration_min * 60_000
+    if (legErr) {
+      // Deshacer TODAS las patas ya escritas en iteraciones anteriores (no
+      // sólo el header): si no, el solver (`buildBusyLegs`) leería a esa
+      // profesional libre en el horario VIEJO — el que la clienta todavía
+      // tiene — y otro turno podría reservarse encima.
+      for (let j = 0; j < i; j++) {
+        await admin
+          .from("appointment_services")
+          .update({ starts_at: orderedSvcs[j].starts_at })
+          .eq("appointment_id", appointmentId)
+          .eq("service_id", orderedSvcs[j].service_id)
+      }
+      await admin
+        .from("appointments")
+        .update({ starts_at: prevStartsAt, ends_at: prevEndsAt })
+        .eq("id", appointmentId)
+      return { ok: false, error: "No pudimos reagendar. Probá de nuevo." }
+    }
   }
 
   if (a.client) {
@@ -1162,7 +1260,21 @@ export async function createAdminBooking(
   })
 
   const { error: linkErr } = await admin.from("appointment_services").insert(apptServices)
-  if (linkErr) return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+  if (linkErr) {
+    // Un turno sin ninguna pata en `appointment_services` es invisible para
+    // el solver de disponibilidad (`buildBusyLegs` no puede resolver a quién
+    // bloquea): se borra en vez de dejarlo huérfano bloqueando a nadie.
+    // Mismo criterio "todo o nada" que los caminos públicos
+    // (`rollbackBookingAttempt` / `rollbackPackAttempt` en reserva/actions.ts).
+    const { error: delErr } = await admin.from("appointments").delete().eq("id", appt.id)
+    if (delErr) {
+      return {
+        ok: false,
+        error: "No pudimos crear el turno y no pudimos deshacerlo por completo. Revisá la agenda antes de reintentar.",
+      }
+    }
+    return { ok: false, error: `Servicios del turno: ${linkErr.message}` }
+  }
 
   // Google Calendar event (no bloqueante)
   try {

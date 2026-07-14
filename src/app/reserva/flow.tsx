@@ -19,6 +19,7 @@ import {
   Screen5Confirm,
 } from "./screens"
 import type { CurrentClient, AuthProfile, BusinessHour } from "./queries"
+import type { StaffServiceMap } from "@/lib/servicios/staff-services"
 import { whatsappLink, WHATSAPP_DISPLAY } from "@/lib/whatsapp"
 
 const DOW_LABEL = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
@@ -96,6 +97,7 @@ export default function ReservaFlow({
   categories,
   combos,
   professionals,
+  staffServices,
   businessHours,
   currentClient,
   authProfile,
@@ -104,6 +106,7 @@ export default function ReservaFlow({
   categories: Category[]
   combos: Combo[]
   professionals: Professional[]
+  staffServices: StaffServiceMap
   businessHours: BusinessHour[]
   currentClient: CurrentClient | null
   authProfile: AuthProfile | null
@@ -233,7 +236,14 @@ export default function ReservaFlow({
           />
         )
       case "date":
-        return <Screen2DateTime {...screenProps} professionals={professionals} businessHours={businessHours} />
+        return (
+          <Screen2DateTime
+            {...screenProps}
+            professionals={professionals}
+            staffServices={staffServices}
+            businessHours={businessHours}
+          />
+        )
       case "details":
         return (
           <Screen3Details

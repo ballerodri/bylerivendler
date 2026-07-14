@@ -94,7 +94,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
       .map((s) => ({ id: s.id, name: s.name, duration: effective(s).duration, staffId: "auto" }))
     if (!svcs.length) return
     startSlotsTransition(async () => {
-      const res = await fetchSequentialAvailability(svcs, d, 1)
+      const res = await fetchSequentialAvailability(svcs, d, 1, { enforceStaffServices: false })
       setSlots(res.slotsForDate)
     })
   }

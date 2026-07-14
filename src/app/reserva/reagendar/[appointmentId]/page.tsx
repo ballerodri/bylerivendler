@@ -29,9 +29,9 @@ export default async function ReschedulePage({ params }: Props) {
     admin
       .from("appointments")
       .select(
-        `id, status, starts_at, duration_min, total_cents,
+        `id, status, starts_at, duration_min, total_cents, staff_id,
          client:clients(user_id, first_name),
-         appointment_services(service:services(name))`
+         appointment_services(service_id, staff_id, starts_at, duration_min, service:services(name))`
       )
       .eq("id", appointmentId)
       .maybeSingle(),
@@ -45,8 +45,15 @@ export default async function ReschedulePage({ params }: Props) {
     starts_at: string
     duration_min: number
     total_cents: number
+    staff_id: string | null
     client: { user_id: string | null; first_name: string | null } | null
-    appointment_services: { service: { name: string } | null }[]
+    appointment_services: {
+      service_id: string
+      staff_id: string | null
+      starts_at: string | null
+      duration_min: number
+      service: { name: string } | null
+    }[]
   }
   const a = appt as unknown as ApptShape
 
@@ -59,6 +66,10 @@ export default async function ReschedulePage({ params }: Props) {
     .map((as) => as.service?.name)
     .filter((n): n is string => Boolean(n))
 
+  // El buscador de horarios (autoritativo) vive del lado del servidor en
+  // `fetchRescheduleSlots` (ver `@/app/portal/actions`): recalcula ahí la
+  // PRIMERA pata (por horario) — su servicio, su duración y su profesional —
+  // en vez de confiar en lo que esta página le pasara al cliente.
   return (
     <RescheduleFlow
       appointmentId={appointmentId}

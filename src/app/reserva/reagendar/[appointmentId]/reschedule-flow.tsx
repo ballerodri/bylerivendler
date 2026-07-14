@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import {
   DOW_NAMES,
@@ -14,7 +14,7 @@ import {
   combineDateTime,
 } from "../../data"
 import { Icon, Wordmark } from "../../primitives"
-import { rescheduleMyAppointment } from "@/app/portal/actions"
+import { rescheduleMyAppointment, fetchRescheduleSlots } from "@/app/portal/actions"
 
 import type { BusinessHour } from "../../data"
 
@@ -44,6 +44,12 @@ export default function RescheduleFlow({
     d.setHours(0, 0, 0, 0)
     return d
   })
+  // Sólo horario comercial (sin mirar turnos existentes): se usa nada más
+  // para saber qué DÍAS mostrar como "con horarios" en el calendario. La
+  // lista REAL de horarios de un día (`slotsForDay`, más abajo) viene del
+  // servidor vía `fetchRescheduleSlots` — ésa sí mira los turnos existentes
+  // y es la autoridad. Antes esta pantalla ofrecía horarios ya ocupados: el
+  // click confirmaba igual, porque el servidor nunca los revalidaba.
   const [availability] = useState(() => generateAvailability(60, businessHours))
 
   const currentDate = new Date(currentStartsAt)
@@ -51,6 +57,14 @@ export default function RescheduleFlow({
   const [viewMonth, setViewMonth] = useState(today.getMonth())
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
+  // Resultado del último día efectivamente consultado al servidor, con su
+  // fecha adjunta: mientras `selectedDate` no coincida con `slotsResult.date`
+  // (recién elegido un día nuevo, todavía sin respuesta) se considera
+  // "cargando" — derivado en el render, sin un estado aparte que haya que
+  // sincronizar a mano. `error` (turno no encontrado/ajeno/sin servicios/etc)
+  // viaja en el mismo objeto: antes se perdía en silencio y la pantalla se
+  // quedaba en "Buscando…" para siempre.
+  const [slotsResult, setSlotsResult] = useState<{ date: string; slots: string[]; error?: string } | null>(null)
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayRaw = new Date(viewYear, viewMonth, 1).getDay()
@@ -63,8 +77,31 @@ export default function RescheduleFlow({
     setSelectedTime(null)
   }
 
-  const rawSlotsForDay = selectedDate ? availability[selectedDate] || [] : []
-  const slotsForDay = selectedDate ? filterFutureSlots(selectedDate, rawSlotsForDay) : []
+  // Horarios REALES del día elegido, calculados por el servidor (autoritativo)
+  // vía `fetchRescheduleSlots`: verifica que el turno sea de esta clienta y
+  // recién ahí llama a `fetchDayAvailability` con la exclusión de este mismo
+  // turno — a diferencia de llamar a `fetchDayAvailability` directo desde acá
+  // (una acción pública, sin dueño), que dejaba a cualquiera pedirle que
+  // ignore CUALQUIER turno.
+  useEffect(() => {
+    if (!selectedDate) return
+    let cancelled = false
+    fetchRescheduleSlots(appointmentId, selectedDate).then((res) => {
+      if (cancelled) return
+      if (res.ok) {
+        setSlotsResult({ date: selectedDate, slots: res.slots })
+      } else {
+        setSlotsResult({ date: selectedDate, slots: [], error: res.error })
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedDate, appointmentId])
+
+  const loadingSlots = selectedDate !== null && slotsResult?.date !== selectedDate
+  const slotsForDay = slotsResult && slotsResult.date === selectedDate ? slotsResult.slots : []
+  const slotsError = slotsResult && slotsResult.date === selectedDate ? slotsResult.error ?? null : null
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
   const fmtCurrent = currentDate.toLocaleString("es-AR", {
@@ -192,20 +229,26 @@ export default function RescheduleFlow({
                 </em>
               </h3>
               <span className="slots__count">
-                {String(slotsForDay.length).padStart(2, "0")} horarios
+                {loadingSlots ? "Buscando…" : slotsError ? "" : `${String(slotsForDay.length).padStart(2, "0")} horarios`}
               </span>
             </div>
-            <div className="slots__grid">
-              {slotsForDay.map((t) => (
-                <button
-                  key={t}
-                  className={`slot ${selectedTime === t ? "is-selected" : ""}`}
-                  onClick={() => setSelectedTime(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
+            {slotsError ? (
+              <p role="alert" style={{ fontSize: 13, color: "#8c463c", background: "#fdf0ee", borderRadius: 10, padding: "12px 16px" }}>
+                {slotsError}
+              </p>
+            ) : (
+              <div className="slots__grid">
+                {!loadingSlots && slotsForDay.map((t) => (
+                  <button
+                    key={t}
+                    className={`slot ${selectedTime === t ? "is-selected" : ""}`}
+                    onClick={() => setSelectedTime(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

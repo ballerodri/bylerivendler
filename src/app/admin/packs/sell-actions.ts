@@ -38,16 +38,20 @@ export async function venderPack(input: {
   if (!pack) return { ok: false, error: "Pack no encontrado" }
   const service = pack.service as unknown as { id: string; name: string } | null
 
-  const { error: insErr } = await admin.from("pack_purchases").insert({
-    client_id: input.clientId,
-    pack_id: pack.id,
-    pack_name: pack.name,
-    service_id: service?.id ?? null,
-    service_name: service?.name ?? "",
-    sessions_total: pack.sessions,
-    sessions_used: 0,
-  })
-  if (insErr) return { ok: false, error: insErr.message }
+  const { data: purchase, error: insErr } = await admin
+    .from("pack_purchases")
+    .insert({
+      client_id: input.clientId,
+      pack_id: pack.id,
+      pack_name: pack.name,
+      service_id: service?.id ?? null,
+      service_name: service?.name ?? "",
+      sessions_total: pack.sessions,
+      sessions_used: 0,
+    })
+    .select("id")
+    .single()
+  if (insErr || !purchase) return { ok: false, error: insErr?.message ?? "No se pudo registrar la compra." }
 
   let facturaError: string | undefined
   if (input.facturar) {
@@ -67,6 +71,9 @@ export async function venderPack(input: {
         totalCents: pack.total_price_cents,
         descripcion: pack.name,
       })
+      // Queda anotada acá (no en `invoices`) para poder bloquear el borrado
+      // de este pack más adelante sin tocar el esquema de facturación.
+      await admin.from("pack_purchases").update({ invoice_id: factura.id }).eq("id", purchase.id)
       await renderAndEmailInvoice(factura.id, client?.email ?? null, client?.first_name ?? "")
     } catch (e) {
       facturaError = e instanceof Error ? e.message : String(e)

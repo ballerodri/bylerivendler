@@ -42,6 +42,7 @@ export default function PackSessionPicker({
   businessHours,
   durationMin,
   proHint,
+  serviceId,
   minDate,
   onPick,
   onCancel,
@@ -49,6 +50,13 @@ export default function PackSessionPicker({
   businessHours: BusinessHour[]
   durationMin: number
   proHint: string
+  // Requerido (pero nullable): así ningún call site público puede olvidarse
+  // de pasarlo y perder la regla en silencio. Con serviceId: se aplica la
+  // regla estricta de `staff_services` (caminos públicos, en screens.tsx).
+  // Con null (admin, ver pack-sessions.tsx): ninguna regla — el salón tiene
+  // que poder agendar una sesión de un servicio todavía sin profesional
+  // asignada, igual que en `schedulePackSession`.
+  serviceId: string | null
   minDate: Date | null
   onPick: (startsAtIso: string) => void
   onCancel: () => void
@@ -79,13 +87,13 @@ export default function PackSessionPicker({
     if (!candidates.length) { setSlots([]); return }
     let cancelled = false
     setLoading(true)
-    fetchDayAvailability(selectedDate, durationMin, proHint, candidates).then((free) => {
+    fetchDayAvailability(selectedDate, durationMin, proHint, candidates, { serviceId }).then((free) => {
       if (cancelled) return
       setSlots(free)
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [selectedDate, durationMin, proHint, availability, minDate])
+  }, [selectedDate, durationMin, proHint, availability, minDate, serviceId])
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayOffset = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
