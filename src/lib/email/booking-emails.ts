@@ -453,3 +453,68 @@ export async function sendMultiBookingConfirmation(data: {
     return { ok: false, error: e instanceof Error ? e.message : "Error al enviar" }
   }
 }
+
+/**
+ * Confirmación de una compra MEZCLADA: un pack + servicios sueltos, en la misma
+ * reserva, con UNA sola seña.
+ */
+export async function sendMixedBookingConfirmation(data: {
+  to: string
+  firstName: string
+  packName: string
+  packSessionsTotal: number
+  /** Las sesiones del pack que SÍ agendó. */
+  packStartsAtList: Date[]
+  /** Los servicios sueltos, con su fecha. */
+  services: { serviceName: string; startsAt: Date }[]
+  totalCents: number
+  dueNowCents: number
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) return { ok: false, error: "Resend no configurado" }
+
+  const subject = "Tu reserva en By Leri Vendler"
+
+  const packRows = data.packStartsAtList
+    .map(
+      (d, i) =>
+        `<tr><td style="padding:6px 0;color:#7a6e64;font-size:13px;">Sesión ${i + 1}</td>` +
+        `<td style="padding:6px 0;text-align:right;font-size:13px;">${escape(fmtDateAR(d))}</td></tr>`
+    )
+    .join("")
+
+  const svcRows = data.services
+    .map(
+      (s) =>
+        `<tr><td style="padding:6px 0;color:#7a6e64;font-size:13px;">${escape(s.serviceName)}</td>` +
+        `<td style="padding:6px 0;text-align:right;font-size:13px;">${escape(fmtDateAR(s.startsAt))}</td></tr>`
+    )
+    .join("")
+
+  const missing = data.packSessionsTotal - data.packStartsAtList.length
+  const missingNote =
+    missing > 0
+      ? `<p style="font-size:13px;color:#7a6e64;">Te quedan <strong>${missing}</strong> sesión(es) del pack por agendar. Coordinamos con vos para fijarlas.</p>`
+      : ""
+
+  const body = `
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Reserva confirmada</p>
+    <h1 style="font-family:Georgia,serif;font-size:22px;margin:0 0 16px;">Tus turnos</h1>
+    <p style="font-size:14px;margin:0 0 16px;">Hola ${escape(data.firstName)}, reservamos tu pack y tus turnos.</p>
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 4px;"><strong>${escape(data.packName)}</strong></p>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 12px;">${packRows}</table>
+    ${missingNote}
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 4px;"><strong>Tus otros turnos</strong></p>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;">${svcRows}</table>
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 4px;">Total: <strong>${fmtPrice(data.totalCents)}</strong></p>
+    <p style="font-size:14px;margin:0 0 16px;">A transferir ahora: <strong>${fmtPrice(data.dueNowCents)}</strong></p>
+    <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">Es <strong>una sola transferencia</strong> por todo. Mandanos el comprobante por WhatsApp y te lo confirmamos.</p>
+    ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
+  `
+
+  try {
+    await resend.emails.send({ from: FROM, to: data.to, subject, html: shell(subject, body) })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Error al enviar" }
+  }
+}
