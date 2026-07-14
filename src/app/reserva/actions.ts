@@ -10,7 +10,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
-import type { PlannedAppointment } from "@/lib/servicios/booking-plan"
+import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { validateSeparateSlots, totalDueNowSeparate, type SlotItem } from "@/lib/servicios/multi-booking"
 import { orderLastViolated, sortOrderLast } from "@/lib/servicios/service-order"
@@ -319,6 +319,263 @@ async function planPack(
   }
 }
 
+type LooseService = {
+  id: string
+  name: string
+  duration_min: number
+  price_cents: number
+  points_cost: number | null
+  loyalty_enabled: boolean
+  pricing_mode: "fixed" | "per_zone"
+  zone_selection: string | null
+  order_last: boolean
+}
+
+/**
+ * Arma el plan de los servicios sueltos: **separados** (una fecha por
+ * servicio → N turnos, cada uno con una pata) o **"juntos"** (los servicios
+ * encadenados el mismo día — incluye el caso de un solo servicio o un combo
+ * → UN turno con M patas escalonadas). Valida TODO lo que hoy validan esas
+ * dos ramas (fechas futuras, superposición, horarios del negocio,
+ * disponibilidad real por pata, `order_last`) — **no escribe nada**:
+ * `createBooking` es quien, con este plan, crea los turnos.
+ *
+ * Una falla de validación devuelve `{ ok: false, error }`: el reembolso de
+ * los puntos (ya descontados antes de llamar acá) lo hace quien la llama.
+ */
+async function planLooseServices(
+  supabase: ReturnType<typeof adminClient>,
+  input: CreateBookingInput,
+  services: LooseService[],
+  computed: Record<string, { durationMin: number; priceCents: number; zones: ZoneSnapshot[] | null }>,
+  payChoice: PayChoice,
+  redeem: boolean,
+  totalPointsCost: number
+): Promise<{ ok: true; appointments: PlannedAppointment[] } | { ok: false; error: string }> {
+  // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
+  // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
+  // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
+  // sigue siendo UN turno, más abajo, exactamente como siempre.
+  if (input.serviceSlots && services.length >= 2 && !input.comboId) {
+    // En este modo las fechas son TODAS obligatorias.
+    if (services.some((s) => !input.serviceSlots![s.id]))
+      return { ok: false, error: "Elegí fecha y hora para cada servicio." }
+
+    // Ordenados cronológicamente: así el primer turno (más abajo) es
+    // genuinamente el primero de la clienta, sin depender del orden
+    // arbitrario en que Postgres devuelve `services` (sin `.order()`).
+    const slots: SlotItem[] = services
+      .map((s) => ({
+        serviceId: s.id,
+        name: s.name,
+        startsAtMs: new Date(input.serviceSlots![s.id]).getTime(),
+        durationMin: computed[s.id].durationMin,
+        priceCents: computed[s.id].priceCents,
+      }))
+      .sort((a, b) => a.startsAtMs - b.startsAtMs)
+
+    const rules = validateSeparateSlots(slots, Date.now())
+    if (!rules.ok) return { ok: false, error: rules.error }
+
+    // Revalidar CADA horario contra la disponibilidad real (autoritativo),
+    // con la duración y la profesional de ESE servicio.
+    const { data: bhRows } = await supabase
+      .from("business_hours")
+      .select("day_of_week, is_open, slots")
+    const bhByDow = new Map(
+      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+        .map((h) => [h.day_of_week, h])
+    )
+
+    const hintFor = (serviceId: string) => {
+      const h = input.serviceStaff?.[serviceId] ?? input.proHint
+      return h && h !== "auto" ? h : "auto"
+    }
+
+    for (const s of slots) {
+      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(s.startsAtMs))
+      const bh = bhByDow.get(dayOfWeek)
+      if (!bh?.is_open || !bh.slots.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} ya no está disponible. Elegí otro.` }
+      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], { serviceId: s.serviceId })
+      if (!free.includes(timeStr))
+        return { ok: false, error: `El horario de ${s.name} se ocupó. Elegí otro.` }
+    }
+
+    // ── Un PlannedAppointment por servicio, cada uno con UNA pata ──────────
+    const appointments: PlannedAppointment[] = slots.map((s) => {
+      const hint = hintFor(s.serviceId)
+      const staffId = hint !== "auto" ? hint : null
+      return {
+        label: s.name,
+        startsAtMs: s.startsAtMs,
+        durationMin: s.durationMin,
+        staffId,
+        // Cada turno lleva el precio de SU servicio y SU propia seña.
+        totalCents: redeem ? 0 : s.priceCents,
+        depositCents: redeem ? 0 : amountDueNow(s.priceCents, payChoice),
+        depositPaid: redeem,
+        notesInternal: redeem
+          ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
+          : null,
+        isPackSession: false,
+        legs: [
+          {
+            serviceId: s.serviceId,
+            name: s.name,
+            durationMin: s.durationMin,
+            // El snapshot guarda lo que VALE el servicio aunque se haya
+            // canjeado (igual que en el camino "juntos").
+            priceCents: s.priceCents,
+            zones: computed[s.serviceId].zones,
+            staffId,
+            startsAtMs: s.startsAtMs,
+          },
+        ],
+      }
+    })
+
+    return { ok: true, appointments }
+  }
+
+  // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────────
+  const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
+  let totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
+
+  // Si es un combo, reemplazamos el precio por el del combo
+  if (input.comboId) {
+    const { data: combo } = await supabase
+      .from("combos")
+      .select("total_price_cents, active")
+      .eq("id", input.comboId)
+      .eq("active", true)
+      .maybeSingle()
+    if (combo) totalCents = combo.total_price_cents
+  }
+
+  const depositCents = amountDueNow(totalCents, payChoice)
+  const startsAt = new Date(input.startsAt)
+
+  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
+  // de armar el turno. Tiene que resolverse acá porque `mainStaffId` depende
+  // de él: la profesional principal tiene que ser la del PRIMER servicio del
+  // orden REAL, no la del primero que mandó la clienta — si el orden se
+  // reordena por "va siempre al final", usar `input.serviceOrder[0]` le
+  // asignaría el turno a la profesional equivocada a la hora equivocada.
+  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
+  const requestedOrder = orderedIds
+    .map((id) => services.find((s) => s.id === id))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
+    // se agrega acá sin perder ninguno de los campos de `services` que se usan
+    // más abajo (id, computed[s.id], etc).
+    .map((s) => ({ ...s, orderLast: s.order_last }))
+
+  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
+  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
+  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
+  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
+  // profesional podría quedar escrita en un horario en el que está bloqueada
+  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
+  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
+  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
+  // arbitrario de Postgres: no hay un orden validado que respetar, así que
+  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
+  // rechazar una reserva perfectamente válida.
+  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder))
+    return { ok: false, error: "Ese horario ya no es válido. Elegí el horario de nuevo." }
+
+  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
+  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
+  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
+  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
+  const orderedServices = sortOrderLast(requestedOrder)
+
+  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
+  const mainStaffId = input.resolvedStaff
+    ? (orderedServices[0]
+        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
+        : Object.values(input.resolvedStaff)[0] ?? null)
+    : (input.proHint !== "auto" ? input.proHint : null)
+
+  // ── Revalidar CADA pata contra la disponibilidad real (autoritativo) ──────
+  // El modo "juntos" (UN turno con los servicios encadenados) nunca había
+  // vuelto a chequear el horario contra la DB entre que el buscador lo ofreció
+  // y que se confirma acá: sólo confiaba en `resolvedStaff` armado en
+  // pantalla. Dos clientas con la pantalla abierta en el mismo horario
+  // terminaban las dos con turno. Se revalida cada servicio con SU propio
+  // horario escalonado (mismo cálculo que arma cada pata), SU propia
+  // duración y SU propia profesional — mismo criterio que ya usan acá arriba
+  // los modos "pack" y "separados".
+  const { data: bhRows, error: bhErr } = await supabase
+    .from("business_hours")
+    .select("day_of_week, is_open, slots")
+  if (bhErr)
+    return { ok: false, error: "No pudimos verificar el horario. Probá de nuevo." }
+  const bhByDow = new Map(
+    ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
+      .map((h) => [h.day_of_week, h])
+  )
+
+  const legs: PlannedLeg[] = []
+  let legMs = startsAt.getTime()
+  for (let i = 0; i < orderedServices.length; i++) {
+    const s = orderedServices[i]
+    const c = computed[s.id]
+    const legStart = new Date(legMs)
+    legMs += c.durationMin * 60_000
+    // La profesional de esta pata: la pedida para este servicio, o si no, la
+    // principal del turno. Puede quedar en `null` (auto) — el hint para
+    // `fetchDayAvailability` (que espera "auto" como centinela) se arma aparte.
+    const legStaffId = input.resolvedStaff?.[s.id] ?? mainStaffId
+    const legProHint = legStaffId ?? "auto"
+    const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
+    const bh = bhByDow.get(dayOfWeek)
+    // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
+    // reservables (`bh.slots`): es el inicio del turno, el horario que la
+    // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
+    // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
+    // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
+    // buscador (`checkPerm`) no les exige estar en la grilla, así que
+    // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
+    // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
+    // día abierto (`is_open`).
+    if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
+      return {
+        ok: false,
+        error: `El horario de "${s.name}" ya no está disponible. Elegí otro.`,
+      }
+    const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
+    if (!free.includes(timeStr))
+      return { ok: false, error: "El horario se ocupó. Elegí otro." }
+
+    legs.push({
+      serviceId: s.id,
+      name: s.name,
+      durationMin: c.durationMin,
+      priceCents: c.priceCents,
+      zones: c.zones,
+      staffId: legStaffId,
+      startsAtMs: legStart.getTime(),
+    })
+  }
+
+  const appointment: PlannedAppointment = {
+    label: orderedServices.map((s) => s.name).join(" + "),
+    startsAtMs: startsAt.getTime(),
+    durationMin: totalDuration,
+    staffId: mainStaffId,
+    totalCents: redeem ? 0 : totalCents,
+    depositCents: redeem ? 0 : depositCents,
+    depositPaid: redeem,
+    notesInternal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
+    isPackSession: false,
+    legs,
+  }
+
+  return { ok: true, appointments: [appointment] }
+}
+
 
 export async function createBooking(
   raw: CreateBookingInput
@@ -413,8 +670,9 @@ export async function createBooking(
   }
 
   // Lo que se le pide pagar AHORA: la seña (30%) o el total, según eligió.
+  // (`depositCents` en sí lo recalcula `planLooseServices` para el plan; acá
+  // sólo hace falta `payChoice`, que sí se usa más abajo.)
   const payChoice: PayChoice = input.payChoice ?? "deposit"
-  const depositCents = amountDueNow(totalCents, payChoice)
   const totalPointsCost = services.reduce(
     (a, s) => a + (s.loyalty_enabled ? (s.points_cost ?? 0) : 0),
     0
@@ -639,91 +897,59 @@ export async function createBooking(
       return { ok: false, error: "No pudimos descontar tus puntos. Probá de nuevo en un momento." }
   }
 
+  // Los servicios sueltos (separados o "juntos") planifican sus turnos ANTES
+  // de crearlos: valida TODO (fechas, superposición, horarios del negocio,
+  // disponibilidad real, `order_last`) y devuelve el `PlannedAppointment[]`
+  // que se va a crear — todavía sin escribir nada.
+  const isSeparados = !!(input.serviceSlots && services.length >= 2 && !input.comboId)
+  const planned = await planLooseServices(supabase, input, services, computed, payChoice, redeem, totalPointsCost)
+  if (!planned.ok) {
+    // Los puntos ya se descontaron arriba (paso 4b). Si la planificación
+    // falla por CUALQUIER motivo, hay que devolverlos: la clienta no se
+    // lleva ningún turno.
+    return await rollbackAll(
+      supabase,
+      { appointmentIds: [], packPurchaseId: null },
+      clientId,
+      redeem ? totalPointsCost : 0,
+      planned.error
+    )
+  }
+
   // ── Varios servicios, cada uno con SU fecha (modo "separados") ─────────────
   // Un turno por servicio, con UNA sola seña (la suma de las de cada turno).
   // El modo "juntos" (los servicios encadenados el mismo día) NO pasa por acá:
   // sigue siendo UN turno, más abajo, exactamente como siempre.
-  if (input.serviceSlots && services.length >= 2 && !input.comboId) {
+  if (isSeparados) {
     // Los puntos ya se descontaron arriba (paso 4b). Si esta rama falla por
     // CUALQUIER motivo, hay que devolverlos: la clienta no se lleva ningún
     // turno. Se hoistea ANTES de cualquier return para que ningún early
     // return de acá abajo pueda "olvidarse" del reembolso.
     const refund = redeem ? totalPointsCost : 0
-    const fail = (error: string) => rollbackAll(supabase, { appointmentIds: [], packPurchaseId: null }, clientId, refund, error)
-
-    // En este modo las fechas son TODAS obligatorias.
-    if (services.some((s) => !input.serviceSlots![s.id]))
-      return await fail("Elegí fecha y hora para cada servicio.")
-
-    // Ordenados cronológicamente: así `createdIds[0]` (más abajo) es
-    // genuinamente el primer turno de la clienta, sin depender del orden
-    // arbitrario en que Postgres devuelve `services` (sin `.order()`).
-    const slots: SlotItem[] = services
-      .map((s) => ({
-        serviceId: s.id,
-        name: s.name,
-        startsAtMs: new Date(input.serviceSlots![s.id]).getTime(),
-        durationMin: computed[s.id].durationMin,
-        priceCents: computed[s.id].priceCents,
-      }))
-      .sort((a, b) => a.startsAtMs - b.startsAtMs)
-
-    const rules = validateSeparateSlots(slots, Date.now())
-    if (!rules.ok) return await fail(rules.error)
-
-    // Revalidar CADA horario contra la disponibilidad real (autoritativo),
-    // con la duración y la profesional de ESE servicio.
-    const { data: bhRows } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
-    )
-
-    const hintFor = (serviceId: string) => {
-      const h = input.serviceStaff?.[serviceId] ?? input.proHint
-      return h && h !== "auto" ? h : "auto"
-    }
-
-    for (const s of slots) {
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(new Date(s.startsAtMs))
-      const bh = bhByDow.get(dayOfWeek)
-      if (!bh?.is_open || !bh.slots.includes(timeStr))
-        return await fail(`El horario de ${s.name} ya no está disponible. Elegí otro.`)
-      const free = await fetchDayAvailability(dateStr, s.durationMin, hintFor(s.serviceId), [timeStr], { serviceId: s.serviceId })
-      if (!free.includes(timeStr))
-        return await fail(`El horario de ${s.name} se ocupó. Elegí otro.`)
-    }
 
     // ── Un turno por servicio ────────────────────────────────────────────────
     const createdIds: string[] = []
 
-    for (const s of slots) {
-      const hint = hintFor(s.serviceId)
-      const staffId = hint !== "auto" ? hint : null
-      const sStart = new Date(s.startsAtMs)
-      const sEnd = new Date(s.startsAtMs + s.durationMin * 60_000)
+    for (const item of planned.appointments) {
+      const sStart = new Date(item.startsAtMs)
+      const sEnd = new Date(item.startsAtMs + item.durationMin * 60_000)
 
       const { data: a, error: aErr } = await supabase
         .from("appointments")
         .insert({
           client_id: clientId,
-          staff_id: staffId,
+          staff_id: item.staffId,
           room_id: room?.id ?? null,
           starts_at: sStart.toISOString(),
           ends_at: sEnd.toISOString(),
-          duration_min: s.durationMin,
-          // Cada turno lleva el precio de SU servicio y SU propia seña.
-          total_cents: redeem ? 0 : s.priceCents,
-          deposit_cents: redeem ? 0 : amountDueNow(s.priceCents, payChoice),
-          deposit_paid: redeem,
+          duration_min: item.durationMin,
+          total_cents: item.totalCents,
+          deposit_cents: item.depositCents,
+          deposit_paid: item.depositPaid,
           paid_cents: 0,
-          status: redeem ? "confirmed" : "pending",
+          status: item.depositPaid ? "confirmed" : "pending",
           source: "web",
-          notes_internal: redeem
-            ? `Canjeado con ${totalPointsCost} pts del Programa Cerca`
-            : null,
+          notes_internal: item.notesInternal,
         })
         .select("id")
         .single()
@@ -731,50 +957,52 @@ export async function createBooking(
       if (aErr || !a)
         return await rollbackAll(
           supabase, { appointmentIds: createdIds, packPurchaseId: null }, clientId, refund,
-          `No pudimos crear el turno de ${s.name}: ${aErr?.message}`
+          `No pudimos crear el turno de ${item.label}: ${aErr?.message}`
         )
       createdIds.push(a.id)
 
-      const { error: lErr } = await supabase.from("appointment_services").insert({
-        appointment_id: a.id,
-        service_id: s.serviceId,
-        duration_min: s.durationMin,
-        // El snapshot guarda lo que VALE el servicio aunque se haya canjeado
-        // (igual que en el camino normal).
-        price_cents: s.priceCents,
-        zones: computed[s.serviceId].zones,
-        staff_id: staffId,
-        starts_at: sStart.toISOString(),
-      })
+      // Se insertan TODAS las patas del turno (acá hay una sola, pero el
+      // mismo shape que usa el pack: ver `planLooseServices`).
+      const { error: lErr } = await supabase.from("appointment_services").insert(
+        item.legs.map((leg) => ({
+          appointment_id: a.id,
+          service_id: leg.serviceId,
+          duration_min: leg.durationMin,
+          // El snapshot guarda lo que VALE el servicio aunque se haya canjeado
+          // (igual que en el camino normal).
+          price_cents: leg.priceCents,
+          zones: leg.zones,
+          staff_id: leg.staffId,
+          starts_at: new Date(leg.startsAtMs).toISOString(),
+        }))
+      )
       if (lErr)
         return await rollbackAll(
           supabase, { appointmentIds: createdIds, packPurchaseId: null }, clientId, refund,
-          `Servicio del turno de ${s.name}: ${lErr.message}`
+          `Servicio del turno de ${item.label}: ${lErr.message}`
         )
     }
 
     // ── De acá para abajo, todo es best-effort: los turnos YA están creados ──
-    // `slots` ya está ordenado cronológicamente (ver más arriba), así que no
-    // hace falta un array `ordered` aparte para el mail: es el mismo `slots`.
+    // `planned.appointments` ya está ordenado cronológicamente (viene de los
+    // `slots` ordenados en `planLooseServices`), así que no hace falta un
+    // array `ordered` aparte para el mail.
     // Lo que VALEN los turnos: siempre el real, igual que en el camino
     // "juntos" (que le pasa a `sendBookingConfirmation` el `totalCents` sin
     // zonificar). Si canjeó con puntos no debe nada, pero eso lo dice
     // `dueNowCents` — "Total: $0" sería mentira aunque haya canjeado.
-    const realTotal = slots.reduce((a, s) => a + s.priceCents, 0)
+    const realTotal = planned.appointments.reduce((a, item) => a + item.legs[0].priceCents, 0)
     // Misma función pura que usa la pantalla para mostrarle a la clienta
     // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
-    const dueNow = redeem ? 0 : totalDueNowSeparate(slots.map((s) => s.priceCents), payChoice)
+    const dueNow = redeem ? 0 : totalDueNowSeparate(planned.appointments.map((item) => item.legs[0].priceCents), payChoice)
 
     // Google Calendar: un evento por turno. Se cachea el staff (evita repetir
     // la misma consulta cuando varios turnos comparten profesional).
     const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
     try {
       const distinctStaffIds = [...new Set(
-        slots
-          .map((s) => {
-            const h = hintFor(s.serviceId)
-            return h !== "auto" ? h : null
-          })
+        planned.appointments
+          .map((item) => item.staffId)
           .filter((id): id is string => !!id)
       )]
       if (distinctStaffIds.length) {
@@ -792,9 +1020,8 @@ export async function createBooking(
 
     for (let i = 0; i < createdIds.length; i++) {
       try {
-        const s = slots[i]
-        const hint = hintFor(s.serviceId)
-        const staffId = hint !== "auto" ? hint : null
+        const item = planned.appointments[i]
+        const staffId = item.staffId
         const cached = staffId ? staffCache.get(staffId) : undefined
         const staffName = cached?.full_name ?? null
         const staffEmail = cached?.email ?? null
@@ -802,12 +1029,12 @@ export async function createBooking(
         const eventId = await createCalendarEvent({
           appointmentId: createdIds[i],
           clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-          serviceNames: [s.name],
+          serviceNames: [item.label],
           staffName,
           staffEmail,
           staffColorId,
-          startsAt: new Date(s.startsAtMs),
-          endsAt: new Date(s.startsAtMs + s.durationMin * 60_000),
+          startsAt: new Date(item.startsAtMs),
+          endsAt: new Date(item.startsAtMs + item.durationMin * 60_000),
           notes: null,
         })
         if (eventId)
@@ -822,7 +1049,7 @@ export async function createBooking(
       await sendMultiBookingConfirmation({
         to: email,
         firstName: input.client.firstName.trim(),
-        items: slots.map((s) => ({ serviceName: s.name, startsAt: new Date(s.startsAtMs) })),
+        items: planned.appointments.map((item) => ({ serviceName: item.label, startsAt: new Date(item.startsAtMs) })),
         totalCents: realTotal,
         dueNowCents: dueNow,
       })
@@ -833,17 +1060,16 @@ export async function createBooking(
     // Un aviso por turno: cada uno es un turno real, en su día, con su
     // profesional. Un solo aviso con una sola fecha le mentiría a la
     // profesional asignada al segundo o al tercero.
-    for (const s of slots) {
-      const h = hintFor(s.serviceId)
+    for (const item of planned.appointments) {
       try {
         await notifyNewBooking(supabase, {
           clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
           clientPhone: input.client.phone,
-          servicesNames: [s.name],
-          startsAt: new Date(s.startsAtMs),
-          durationMin: s.durationMin,
-          totalCents: redeem ? 0 : s.priceCents,
-          assignedStaffIds: [h !== "auto" ? h : null],
+          servicesNames: [item.label],
+          startsAt: new Date(item.startsAtMs),
+          durationMin: item.durationMin,
+          totalCents: item.totalCents,
+          assignedStaffIds: [item.staffId],
         })
       } catch {
         // ignore — los turnos ya están creados
@@ -876,134 +1102,26 @@ export async function createBooking(
     return { ok: true, appointmentId: createdIds[0], appointmentIds: createdIds }
   }
 
-  // 5) Orden real de los servicios — respetando "va siempre al final" — ANTES
-  // de crear el turno. Tiene que resolverse acá (y no más abajo, donde vivía
-  // antes junto al insert de appointment_services) porque `mainStaffId`
-  // depende de él: la profesional principal tiene que ser la del PRIMER
-  // servicio del orden REAL, no la del primero que mandó la clienta — si el
-  // orden se reordena por "va siempre al final", usar `input.serviceOrder[0]`
-  // le asigna el turno a la profesional equivocada a la hora equivocada.
-  const orderedIds = input.serviceOrder ?? services.map((s) => s.id)
-  const requestedOrder = orderedIds
-    .map((id) => services.find((s) => s.id === id))
-    .filter((s): s is NonNullable<typeof s> => Boolean(s))
-    // `orderLast` (camelCase) es lo que exige la firma pura de service-order.ts;
-    // se agrega acá sin perder ninguno de los campos de `services` que se usan
-    // más abajo (id, computed[s.id], etc).
-    .map((s) => ({ ...s, orderLast: s.order_last }))
-
-  // Si la clienta mandó un `serviceOrder` (pantalla con el solver ya
-  // resuelto) y ese orden viola "va siempre al final", el horario que tiene
-  // en pantalla está desactualizado: `resolvedStaff` fue resuelto contra las
-  // ventanas de tiempo VIEJAS (antes del reordenamiento), así que una
-  // profesional podría quedar escrita en un horario en el que está bloqueada
-  // o ya ocupada. En vez de "repararlo" en silencio reordenando, se rechaza
-  // y que vuelva a elegir. Cuando NO vino `serviceOrder` (se restauró el
-  // estado y se perdió el orden elegido), `orderedIds` es sólo el orden
-  // arbitrario de Postgres: no hay un orden validado que respetar, así que
-  // ahí SÍ corresponde reordenar (ver `sortOrderLast` más abajo) en vez de
-  // rechazar una reserva perfectamente válida.
-  if (input.serviceOrder !== undefined && orderLastViolated(requestedOrder)) {
-    // Los puntos ya se descontaron en el paso 4b. Si rechazamos acá, la clienta
-    // no se lleva NINGÚN turno: hay que devolvérselos (con la lista de turnos
-    // creados vacía, el helper sólo reembolsa).
-    return await rollbackAll(
-      supabase,
-      { appointmentIds: [], packPurchaseId: null },
-      clientId,
-      redeem ? totalPointsCost : 0,
-      "Ese horario ya no es válido. Elegí el horario de nuevo."
-    )
-  }
-
-  // Reordenamiento estable: los servicios marcados "va siempre al final" (ej:
-  // masajes) pasan al final, sin alterar el orden relativo entre ellos ni el
-  // de los demás. Con `order_last` siempre en `false` (producción hoy) esto
-  // es la identidad: mismo orden, mismo `serviceOrder[0]`.
-  const orderedServices = sortOrderLast(requestedOrder)
-
-  // Determine main staff (first service of the REAL order's resolved pro, or proHint)
-  const mainStaffId = input.resolvedStaff
-    ? (orderedServices[0]
-        ? (input.resolvedStaff[orderedServices[0].id] ?? null)
-        : Object.values(input.resolvedStaff)[0] ?? null)
-    : (input.proHint !== "auto" ? input.proHint : null)
-
-  // ── Revalidar CADA pata contra la disponibilidad real (autoritativo) ──────
-  // El modo "juntos" (UN turno con los servicios encadenados) nunca había
-  // vuelto a chequear el horario contra la DB entre que el buscador lo ofreció
-  // y que se confirma acá: sólo confiaba en `resolvedStaff` armado en
-  // pantalla. Dos clientas con la pantalla abierta en el mismo horario
-  // terminaban las dos con turno. Se revalida cada servicio con SU propio
-  // horario escalonado (mismo cálculo que arma `apptServices` más abajo), SU
-  // propia duración y SU propia profesional — mismo criterio que ya usan acá
-  // arriba los modos "pack" y "separados".
-  //
-  // Esto corre DESPUÉS del descuento de puntos (paso 4b), así que cada
-  // `return` de acá tiene que reembolsarlos.
-  {
-    const { data: bhRows, error: bhErr } = await supabase
-      .from("business_hours")
-      .select("day_of_week, is_open, slots")
-    if (bhErr)
-      return await rollbackAll(
-        supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
-        "No pudimos verificar el horario. Probá de nuevo."
-      )
-    const bhByDow = new Map(
-      ((bhRows ?? []) as { day_of_week: number; is_open: boolean; slots: string[] }[])
-        .map((h) => [h.day_of_week, h])
-    )
-
-    let legMs = startsAt.getTime()
-    for (let i = 0; i < orderedServices.length; i++) {
-      const s = orderedServices[i]
-      const c = computed[s.id]
-      const legStart = new Date(legMs)
-      legMs += c.durationMin * 60_000
-      const legProHint = input.resolvedStaff?.[s.id] ?? mainStaffId ?? "auto"
-      const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
-      const bh = bhByDow.get(dayOfWeek)
-      // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
-      // reservables (`bh.slots`): es el inicio del turno, el horario que la
-      // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
-      // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
-      // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
-      // buscador (`checkPerm`) no les exige estar en la grilla, así que
-      // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
-      // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
-      // día abierto (`is_open`).
-      if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
-        return await rollbackAll(
-          supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
-          `El horario de "${s.name}" ya no está disponible. Elegí otro.`
-        )
-      const free = await fetchDayAvailability(dateStr, c.durationMin, legProHint, [timeStr], { serviceId: s.id })
-      if (!free.includes(timeStr))
-        return await rollbackAll(
-          supabase, { appointmentIds: [], packPurchaseId: null }, clientId, redeem ? totalPointsCost : 0,
-          "El horario se ocupó. Elegí otro."
-        )
-    }
-  }
+  // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────────
+  const plannedAppt = planned.appointments[0]
 
   // 5) Create appointment
   const { data: appt, error: apptErr } = await supabase
     .from("appointments")
     .insert({
       client_id: clientId,
-      staff_id: mainStaffId,
+      staff_id: plannedAppt.staffId,
       room_id: room?.id ?? null,
       starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
-      duration_min: totalDuration,
-      total_cents: redeem ? 0 : totalCents,
-      deposit_cents: redeem ? 0 : depositCents,
-      deposit_paid: redeem,
+      duration_min: plannedAppt.durationMin,
+      total_cents: plannedAppt.totalCents,
+      deposit_cents: plannedAppt.depositCents,
+      deposit_paid: plannedAppt.depositPaid,
       paid_cents: 0,
-      status: redeem ? "confirmed" : "pending",
+      status: plannedAppt.depositPaid ? "confirmed" : "pending",
       source: "web",
-      notes_internal: redeem ? `Canjeado con ${totalPointsCost} pts del Programa Cerca` : null,
+      notes_internal: plannedAppt.notesInternal,
     })
     .select("id")
     .single()
@@ -1019,27 +1137,19 @@ export async function createBooking(
       `Turno: ${apptErr?.message}`
     )
 
-  // 6) Link services — respecting sequential order (resolved above) and
-  // per-service staff/starts_at
-  let serviceMs = startsAt.getTime()
-  const apptServices = orderedServices.map((s) => {
-    const c = computed[s.id]
-    const sStartsAt = new Date(serviceMs)
-    serviceMs += c.durationMin * 60_000
-    return {
+  // 6) Link services — se insertan TODAS las patas del plan, ya en el orden
+  // real y escalonadas (resuelto en `planLooseServices`).
+  const { error: linkErr } = await supabase.from("appointment_services").insert(
+    plannedAppt.legs.map((leg) => ({
       appointment_id: appt.id,
-      service_id: s.id,
-      duration_min: c.durationMin,
-      price_cents: c.priceCents,
-      zones: c.zones,
-      staff_id: input.resolvedStaff?.[s.id] ?? mainStaffId,
-      starts_at: sStartsAt.toISOString(),
-    }
-  })
-
-  const { error: linkErr } = await supabase
-    .from("appointment_services")
-    .insert(apptServices)
+      service_id: leg.serviceId,
+      duration_min: leg.durationMin,
+      price_cents: leg.priceCents,
+      zones: leg.zones,
+      staff_id: leg.staffId,
+      starts_at: new Date(leg.startsAtMs).toISOString(),
+    }))
+  )
 
   // El turno quedó sin servicios: se borra (todo o nada) y se devuelven los
   // puntos. Antes quedaba un turno huérfano y la clienta perdía el canje.
@@ -1057,11 +1167,11 @@ export async function createBooking(
     let staffName: string | null = null
     let staffEmail: string | null = null
     let staffColorId: string | null = null
-    if (mainStaffId) {
+    if (plannedAppt.staffId) {
       const { data: staffRow } = await supabase
         .from("staff")
         .select("full_name, email, calendar_color_id")
-        .eq("id", mainStaffId)
+        .eq("id", plannedAppt.staffId)
         .maybeSingle()
       staffName = staffRow?.full_name ?? null
       staffEmail = staffRow?.email ?? null
@@ -1111,7 +1221,7 @@ export async function createBooking(
     startsAt,
     durationMin: totalDuration,
     totalCents,
-    assignedStaffIds: [mainStaffId, ...Object.values(input.resolvedStaff ?? {})],
+    assignedStaffIds: [plannedAppt.staffId, ...Object.values(input.resolvedStaff ?? {})],
   })
 
   // 8) Magic link para portal — solo si:
