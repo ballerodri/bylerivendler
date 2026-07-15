@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { hmToMinutes, minutesToHm, placeOnGrid } from "./grid-schedule"
+import { hmToMinutes, minutesToHm, placeOnGrid, placeOnGridMerged } from "./grid-schedule"
 
 describe("hmToMinutes / minutesToHm", () => {
   it("convierte ida y vuelta manteniendo el cero a la izquierda", () => {
@@ -78,5 +78,59 @@ describe("placeOnGrid — fase 1 (cada turno en su slot de grilla, sin fusión)"
     const full = placeOnGrid([90, 60, 60], GRID, 840) // pack 90 min
     expect(full).not.toBeNull()
     expect(placeOnGrid([60, 60], GRID, full![1])).toEqual(full!.slice(1))
+  })
+})
+
+// Fase 2 — fusión de turnos cortos de la MISMA profesional dentro de 1 hora.
+const it2 = (durationMin: number, staffId: string) => ({ durationMin, staffId })
+
+describe("placeOnGridMerged — fase 2 (fusión misma profesional)", () => {
+  it("misma profesional + entran en 1 hora → comparten la hora (10:00 y 10:20)", () => {
+    // 20 min@A + 30 min@A: 20+30=50 ≤ 60 → funden
+    expect(placeOnGridMerged([it2(20, "A"), it2(30, "A")], GRID, 840)).toEqual([840, 860])
+  })
+
+  it("distinta profesional → el 2º arranca en hora en punto (10:00 y 11:00), nunca 10:20", () => {
+    expect(placeOnGridMerged([it2(20, "A"), it2(30, "B")], GRID, 840)).toEqual([840, 900])
+  })
+
+  it("misma profesional pero NO entran en 1 hora → hora en punto", () => {
+    // 40 min@A + 40 min@A: 80 > 60 → no funden
+    expect(placeOnGridMerged([it2(40, "A"), it2(40, "A")], GRID, 840)).toEqual([840, 900])
+  })
+
+  it("el caso de la captura: dos de 1h de la misma profesional → 11:00 y 12:00 (no entran)", () => {
+    expect(placeOnGridMerged([it2(60, "A"), it2(60, "A")], GRID, 900)).toEqual([900, 960])
+  })
+
+  it("tres cortos de la misma profesional que entran → todos en la misma hora", () => {
+    // 15+20+15 = 50 ≤ 60 → 10:00, 10:15, 10:35
+    expect(placeOnGridMerged([it2(15, "A"), it2(20, "A"), it2(15, "A")], GRID, 840)).toEqual([840, 855, 875])
+  })
+
+  it("funden hasta llenar la hora, el que se pasa salta a la hora siguiente", () => {
+    // 15+20 funden (10:00, 10:15, fin 10:35); +30 → 10:35+30=11:05 > 11:00 → salta 11:00
+    expect(placeOnGridMerged([it2(15, "A"), it2(20, "A"), it2(30, "A")], GRID, 840)).toEqual([840, 855, 900])
+  })
+
+  it("cambia de profesional → nuevo bloque; después la misma vuelve a fundir", () => {
+    // 20@A (10:00), 20@B distinta → 11:00, 20@B misma que el bloque, entra → 11:20
+    expect(placeOnGridMerged([it2(20, "A"), it2(20, "B"), it2(20, "B")], GRID, 840)).toEqual([840, 900, 920])
+  })
+
+  it("sin ítems → lista vacía; se pasa del día → null", () => {
+    expect(placeOnGridMerged([], GRID, 840)).toEqual([])
+    // desde 17:00: 60@A (17:00-18:00), 60@B → primer slot ≥ 18:00 = none (GRID llega a 18:00=1080) → null
+    expect(placeOnGridMerged([it2(60, "A"), it2(60, "B")], GRID, 1080)).toBeNull()
+  })
+
+  it("PROPIEDAD CLAVE: con todas las profesionales distintas == placeOnGrid (Fase 1 es el caso sin fusión)", () => {
+    const durs = [20, 45, 60, 30]
+    const merged = placeOnGridMerged(
+      [it2(20, "A"), it2(45, "B"), it2(60, "C"), it2(30, "D")],
+      GRID,
+      840
+    )
+    expect(merged).toEqual(placeOnGrid(durs, GRID, 840))
   })
 })

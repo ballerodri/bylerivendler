@@ -51,3 +51,59 @@ export function placeOnGrid(
   }
   return starts
 }
+
+/**
+ * FASE 2 — igual que `placeOnGrid` pero CONSCIENTE de la profesional: dos
+ * turnos SEGUIDOS de la MISMA profesional que ENTRAN en 1 hora (dentro del
+ * mismo slot de grilla) **comparten el bloque** (el 2º arranca pegado, en
+ * mitad de la hora); si son de OTRA profesional (o no entran), el turno
+ * arranca en el siguiente slot de la grilla (hora en punto).
+ *
+ * Cada ítem trae su `staffId` YA RESUELTO (id concreto — no "auto"). PURO: la
+ * disponibilidad NO entra acá (se chequea aparte). Determinístico dado el
+ * staff → buscador, creación y pantalla lo reproducen idéntico (regla de oro).
+ *
+ * Propiedad clave: con TODOS los `staffId` distintos NUNCA funde → devuelve
+ * exactamente lo mismo que `placeOnGrid(durations, …)`. La Fase 1 es el caso
+ * "sin fusión".
+ *
+ * "Entra en la hora" = el ítem termina antes del PRIMER slot de grilla
+ * posterior al arranque del bloque (`blockEnd + dur ≤ nextGridSlot(blockStart)`).
+ * `null` si la cadena se pasa del final del día.
+ */
+export function placeOnGridMerged(
+  items: { durationMin: number; staffId: string }[],
+  gridSlots: number[],
+  startSlot: number
+): number[] | null {
+  const starts: number[] = []
+  let blockStart = startSlot
+  let blockStaff = ""
+  let blockEnd = startSlot
+  for (let i = 0; i < items.length; i++) {
+    const { durationMin, staffId } = items[i]
+    if (i === 0) {
+      blockStart = startSlot
+      blockStaff = staffId
+      blockEnd = startSlot + durationMin
+      starts.push(startSlot)
+      continue
+    }
+    // ¿Cabe en el bloque actual? Misma profesional Y termina antes del
+    // siguiente slot de grilla (el borde de la hora del bloque).
+    const nextGrid = gridSlots.find((g) => g > blockStart)
+    const fits = nextGrid !== undefined && blockEnd + durationMin <= nextGrid
+    if (staffId === blockStaff && fits) {
+      starts.push(blockEnd)
+      blockEnd += durationMin
+    } else {
+      const ns = gridSlots.find((g) => g >= blockEnd)
+      if (ns === undefined) return null
+      blockStart = ns
+      blockStaff = staffId
+      blockEnd = ns + durationMin
+      starts.push(ns)
+    }
+  }
+  return starts
+}
