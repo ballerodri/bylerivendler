@@ -2253,16 +2253,23 @@ export function Screen5Confirm({
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const payChoice: PayChoice = state.payChoice ?? "deposit"
-  const separados =
-    !combo && services.length >= 2 && (state.bookingMode ?? "juntos") === "separados"
+  // Elegir "separados" sólo tiene sentido con 2+ servicios sueltos (mismo
+  // `canSeparate` que `Screen2DateTime`); con menos, el modo queda forzado a
+  // "juntos" — así el modo NORMALIZADO acá coincide siempre con el de la
+  // pantalla de fecha, aunque `state.bookingMode` persistido diga otra cosa
+  // (localStorage restaurado/desactualizado).
+  const canSeparateS5 = !combo && services.length >= 2
+  const looseMode = canSeparateS5 ? (state.bookingMode ?? "juntos") : "juntos"
+  const separados = canSeparateS5 && looseMode === "separados"
   // El encadenado (sesión 1 del pack + servicios sueltos en una visita): misma
   // condición que `Screen2DateTime` (`chainPackFirst`), recalculada acá porque
-  // es OTRO componente — no se pasa por props.
+  // es OTRO componente — no se pasa por props. Usa `looseMode` (normalizado),
+  // NO `state.bookingMode` crudo, para que las dos pantallas nunca discrepen.
   const packServiceId = pack?.pack.serviceId ?? null
   const chainPackFirst =
     !!pack &&
     services.length > 0 &&
-    (state.bookingMode ?? "juntos") === "juntos" &&
+    looseMode === "juntos" &&
     !!packServiceId &&
     !services.some((s) => s.id === packServiceId)
 
