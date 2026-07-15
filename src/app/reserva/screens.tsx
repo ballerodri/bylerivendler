@@ -23,6 +23,7 @@ import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
+import { addMinutesHM, sequentialStartTimes } from "@/lib/servicios/visit-timeline"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { totalDueNowSeparate, validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
 import { allowedStaffFor, type StaffServiceMap } from "@/lib/servicios/staff-services"
@@ -2331,17 +2332,36 @@ export function Screen5Confirm({
   const isMultiResolved = services.length > 1 && !!state.serviceOrder && !!state.resolvedStaff
   const orderedItems = (() => {
     if (!isMultiResolved || !state.serviceOrder || !state.selectedTime) return []
-    const [hh, mm] = state.selectedTime.split(":").map(Number)
-    let mins = hh * 60 + mm
-    return state.serviceOrder.map((id) => {
-      const svc = services.find((s) => s.id === id)
-      const staffId = state.resolvedStaff?.[id]
-      const assignedPro = professionals.find((p) => p.id === staffId)
-      const h = Math.floor(mins / 60), m = mins % 60
-      const startTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
-      if (svc) mins += effective(svc).duration
-      return { svc, assignedPro, startTime }
-    }).filter((x): x is { svc: Service; assignedPro: Professional | undefined; startTime: string } => !!x.svc)
+    // Con encadenado, el bloque de servicios sueltos arranca DESPUÉS de la 1ª
+    // sesión del pack (T + D_pack) — el MISMO arranque que pay() manda en
+    // `startsAt`. Sin encadenado el offset es 0 (byte-idéntico a antes).
+    const base = addMinutesHM(state.selectedTime, chainPackFirst ? packDurationMin : 0)
+    const items = state.serviceOrder
+      .map((id) => services.find((s) => s.id === id))
+      .filter((s): s is Service => !!s)
+    const starts = sequentialStartTimes(base, items.map((s) => effective(s).duration))
+    return items.map((svc, i) => ({
+      svc,
+      assignedPro: professionals.find((p) => p.id === state.resolvedStaff?.[svc.id]),
+      startTime: starts[i],
+    }))
+  })()
+
+  // Encadenado: los servicios sueltos como secuencia, arrancando en T + D_pack
+  // (el MISMO arranque que pay() reserva). A diferencia de `orderedItems`,
+  // existe también con UN solo servicio suelto (ahí `isMultiResolved` es false
+  // y `orderedItems` queda vacío). Misma fuente pura, así "QUÉ" y "CUÁNDO"
+  // nunca discrepan.
+  const chainedOrdered = (() => {
+    if (!chainPackFirst || !state.selectedTime) return []
+    const items = (state.serviceOrder ?? services.map((s) => s.id))
+      .map((id) => services.find((s) => s.id === id))
+      .filter((s): s is Service => !!s)
+    const starts = sequentialStartTimes(
+      addMinutesHM(state.selectedTime, packDurationMin),
+      items.map((s) => effective(s).duration)
+    )
+    return items.map((svc, i) => ({ svc, startTime: starts[i] }))
   })()
 
   const [paying, setPaying] = useState(false)
@@ -2536,48 +2556,91 @@ export function Screen5Confirm({
         <div className="summary__row">
           <span className="summary__label">Cuándo</span>
           <div className="summary__value" style={separados ? { flex: 1, marginLeft: 16 } : undefined}>
-            {pack && (
-              <div style={{ marginBottom: services.length > 0 ? 10 : 0 }}>
-                {packSlotsForDisplay.map((iso, i) => {
+            {chainPackFirst ? (
+              // UNA sola secuencia: 1ª sesión del pack en T, los servicios
+              // sueltos pegados desde T + D_pack (el MISMO arranque que pay()
+              // reserva), y debajo las sesiones 2..N del pack (agendadas o
+              // "a agendar después"). Antes se mostraban en dos bloques y los
+              // servicios arrancaban en T → parecían encimados con la sesión 1.
+              <div>
+                <div style={{ marginBottom: chainedOrdered.length > 0 ? 6 : 0 }}>
+                  <strong>Sesión 1 · {pack!.pack.name}</strong>
+                  <small>
+                    {dow} {dateObj && dateObj.getDate()} de{" "}
+                    {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()} · {displayTime}hs · {fmtDuration(packDurationMin)}
+                  </small>
+                </div>
+                {chainedOrdered.map(({ svc, startTime }, i) => (
+                  <div key={svc.id} style={{ marginBottom: i < chainedOrdered.length - 1 ? 6 : 0 }}>
+                    {svc.name}
+                    <small>{startTime}hs · {fmtDuration(effective(svc).duration)}</small>
+                  </div>
+                ))}
+                {packSlotsForDisplay.slice(1).map((iso, i) => {
                   const parts = arPartsFromUtc(new Date(iso))
                   const d = parseYmd(parts.dateStr)
                   const sessionDow = DOW_NAMES[(d.getDay() + 6) % 7]
                   return (
-                    <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
-                      <strong>Sesión {i + 1}</strong>
+                    <div key={iso} style={{ marginTop: 6 }}>
+                      <strong>Sesión {i + 2}</strong>
                       <small>
                         {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)}
                       </small>
                     </div>
                   )
                 })}
-                {pack.pack.sessions > packSlotsForDisplay.length && (
-                  <small>
-                    {`${pack.pack.sessions - packSlotsForDisplay.length} sesión${pack.pack.sessions - packSlotsForDisplay.length > 1 ? "es" : ""} a agendar después`}
+                {pack!.pack.sessions > packSlotsForDisplay.length && (
+                  <small style={{ display: "block", marginTop: 6 }}>
+                    {`${pack!.pack.sessions - packSlotsForDisplay.length} sesión${pack!.pack.sessions - packSlotsForDisplay.length > 1 ? "es" : ""} del pack a agendar después`}
                   </small>
                 )}
               </div>
-            )}
-            {services.length > 0 && (
-              separados ? (
-                services.map((s) => {
-                  const iso = state.serviceSlots?.[s.id]
-                  return (
-                    <div key={s.id} className="breakdown__row">
-                      <span>{s.name}</span>
-                      <span>{iso ? fmtSlotAR(iso) : "—"}</span>
+            ) : (
+              <>
+                {pack && (
+                  <div style={{ marginBottom: services.length > 0 ? 10 : 0 }}>
+                    {packSlotsForDisplay.map((iso, i) => {
+                      const parts = arPartsFromUtc(new Date(iso))
+                      const d = parseYmd(parts.dateStr)
+                      const sessionDow = DOW_NAMES[(d.getDay() + 6) % 7]
+                      return (
+                        <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
+                          <strong>Sesión {i + 1}</strong>
+                          <small>
+                            {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)}
+                          </small>
+                        </div>
+                      )
+                    })}
+                    {pack.pack.sessions > packSlotsForDisplay.length && (
+                      <small>
+                        {`${pack.pack.sessions - packSlotsForDisplay.length} sesión${pack.pack.sessions - packSlotsForDisplay.length > 1 ? "es" : ""} a agendar después`}
+                      </small>
+                    )}
+                  </div>
+                )}
+                {services.length > 0 && (
+                  separados ? (
+                    services.map((s) => {
+                      const iso = state.serviceSlots?.[s.id]
+                      return (
+                        <div key={s.id} className="breakdown__row">
+                          <span>{s.name}</span>
+                          <span>{iso ? fmtSlotAR(iso) : "—"}</span>
+                        </div>
+                      )
+                    })
+                  ) : (
+                    <div>
+                      {dow} {dateObj && dateObj.getDate()} de{" "}
+                      {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
+                      <small>
+                        {displayTime}hs · {fmtDuration(servicesTotalMin)}
+                      </small>
                     </div>
                   )
-                })
-              ) : (
-                <div>
-                  {dow} {dateObj && dateObj.getDate()} de{" "}
-                  {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
-                  <small>
-                    {displayTime}hs · {fmtDuration(servicesTotalMin)}
-                  </small>
-                </div>
-              )
+                )}
+              </>
             )}
           </div>
         </div>
