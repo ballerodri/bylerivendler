@@ -22,6 +22,7 @@ import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
+import type { BlockedInterval } from "@/lib/servicios/slot-overlap"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { addMinutesHM, sequentialStartTimes } from "@/lib/servicios/visit-timeline"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
@@ -1610,6 +1611,16 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
     if (pickingIdx !== null) {
       const idx = pickingIdx
+      // Los servicios sueltos que la clienta ya ocupa ese día: la sesión del
+      // pack no puede pisarlos (es una sola persona, aunque sea otra
+      // profesional). El solapamiento sesión-vs-sesión del pack ya lo evita
+      // `minForPackSession`. Misma regla estricta que el cartel rojo final.
+      const blocked: BlockedInterval[] = state.services
+        .filter((s) => serviceSlots[s.id])
+        .map((s) => {
+          const startMs = new Date(serviceSlots[s.id]).getTime()
+          return { startMs, endMs: startMs + effectiveService(s, zoneSel).duration * 60_000, name: s.name }
+        })
       const PickerBody = () => (
         <>
           <h1 className="headline">Sesión {idx + 1} de {packDetails.sessions}</h1>
@@ -1624,6 +1635,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             proHint={packProHint}
             serviceId={packDetails.serviceId}
             minDate={minForPackSession(idx)}
+            blockedIntervals={blocked}
             onPick={(iso) => setPackSlot(idx, iso)}
             onCancel={backToPackList}
           />
@@ -1725,6 +1737,22 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       const eff = effectiveService(picking, zoneSel)
       const backToList = () => setPickingServiceId(null)
 
+      // Lo que la clienta ya ocupa ese día (no puede estar en dos lugares a la
+      // vez, aunque sea otra profesional): los demás servicios elegidos y todas
+      // las sesiones del pack. Misma regla estricta que el cartel rojo final.
+      const blocked: BlockedInterval[] = [
+        ...state.services
+          .filter((s) => s.id !== picking.id && serviceSlots[s.id])
+          .map((s) => {
+            const startMs = new Date(serviceSlots[s.id]).getTime()
+            return { startMs, endMs: startMs + effectiveService(s, zoneSel).duration * 60_000, name: s.name }
+          }),
+        ...packPicked.map((iso) => {
+          const startMs = new Date(iso).getTime()
+          return { startMs, endMs: startMs + packDurationMin * 60_000, name: pack ? `${pack.name} (pack)` : "el pack" }
+        }),
+      ]
+
       const PickerBody = () => (
         <>
           <h1 className="headline">{picking.name}</h1>
@@ -1735,6 +1763,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             proHint={serviceStaff[picking.id] ?? "auto"}
             serviceId={picking.id}
             minDate={null}
+            blockedIntervals={blocked}
             onPick={(iso) => {
               setState({ ...state, serviceSlots: { ...serviceSlots, [picking.id]: iso } })
               setPickingServiceId(null)
