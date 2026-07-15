@@ -128,7 +128,7 @@ export function Screen1Services({
   // viceversa) — cada handler usa SOLO la constante de lo que efectivamente
   // cambió. El combo es la excepción: es excluyente con ambos, así que
   // `toggleCombo` (y la rama de combo en `switchTab`) usa las dos juntas.
-  const clearedPack = { packSlots: undefined } as const
+  const clearedPack = { packSlots: undefined, packPro: undefined } as const
   const clearedServices = {
     serviceSlots: undefined,
     bookingMode: undefined,
@@ -1087,31 +1087,80 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       </div>
     )
 
-  const ProPicker = () => (
-    <div style={{ marginTop: 24 }}>
-      <p className="eyebrow">
-        {state.services.length > 1 ? "Profesional por tratamiento · opcional" : "Profesional · opcional"}
-      </p>
-      {state.services.length > 1 ? (
-        // Per-service pickers
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {state.services.map((svc) => {
-            const current = serviceStaff[svc.id] ?? "auto"
-            return (
-              <div key={svc.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span style={{ fontSize: 13, color: "var(--ink-mute)", flex: 1 }}>{svc.name}</span>
+  // Ítems "elegibles" del selector de profesional: el pack (si hay uno) va
+  // primero, seguido de cada servicio suelto. El pack usa `packPro` — un
+  // campo PROPIO (ver `BookingState.packPro`): nunca se deriva de `state.pro`
+  // (el proHint global de los servicios sueltos), para que elegir la
+  // profesional del pack no se filtre a los servicios sueltos.
+  const proPickItems: { key: string; serviceId: string; name: string; current: string; onPick: (id: string) => void }[] = [
+    ...(selectedPack
+      ? [{
+          key: "__pack__",
+          serviceId: selectedPack.pack.serviceId,
+          name: selectedPack.pack.serviceName,
+          current: state.packPro ?? "auto",
+          onPick: (id: string) => setState({ ...state, packPro: id === "auto" ? undefined : id }),
+        }]
+      : []),
+    ...state.services.map((svc) => ({
+      key: svc.id,
+      serviceId: svc.id,
+      name: svc.name,
+      current: serviceStaff[svc.id] ?? "auto",
+      onPick: (id: string) => updateServiceStaff(svc.id, id),
+    })),
+  ]
+
+  const ProPicker = () => {
+    if (proPickItems.length === 0) return null
+    return (
+      <div style={{ marginTop: 24 }}>
+        <p className="eyebrow">
+          {proPickItems.length > 1 ? "Profesional por tratamiento · opcional" : "Profesional · opcional"}
+        </p>
+        {proPickItems.length === 1 && !selectedPack ? (
+          // Single picker (original): se preserva TAL CUAL para el caso más
+          // común (un solo servicio suelto, sin pack) — no regresionar su UI.
+          professionals
+            .filter((p) => p.id === "auto" || allowedStaffFor(proPickItems[0].serviceId, staffServices).includes(p.id))
+            .map((p) => {
+              const current = proPickItems[0].current
+              return (
+                <button
+                  key={p.id}
+                  className={`pro-row ${current === p.id ? "is-selected" : ""}`}
+                  onClick={() => proPickItems[0].onPick(p.id)}
+                >
+                  <div className="pro-avatar">{p.initials}</div>
+                  <div>
+                    <div className="pro-name">{p.name}</div>
+                    <div className="pro-role">{p.role}</div>
+                  </div>
+                  <div className="pro-spacer" />
+                  {p.id === "auto" && current !== "auto" && <span className="pro-hint">Recomendado</span>}
+                  {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
+                </button>
+              )
+            })
+        ) : (
+          // Per-item pickers (pill rows): el pack (si lo hay) + cada servicio
+          // suelto, una fila por ítem.
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {proPickItems.map((item) => (
+              <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "var(--ink-mute)", flex: 1 }}>{item.name}</span>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
                   {professionals
-                    .filter((p) => p.id === "auto" || allowedStaffFor(svc.id, staffServices).includes(p.id))
+                    .filter((p) => p.id === "auto" || allowedStaffFor(item.serviceId, staffServices).includes(p.id))
                     .map((p) => (
                     <button
                       key={p.id}
-                      onClick={() => updateServiceStaff(svc.id, p.id)}
+                      onClick={() => item.onPick(p.id)}
                       style={{
                         padding: "4px 10px", borderRadius: 20, fontSize: 12,
-                        border: `1px solid ${current === p.id ? "var(--ink)" : "var(--line)"}`,
-                        background: current === p.id ? "var(--ink)" : "transparent",
-                        color: current === p.id ? "var(--linen)" : "var(--ink-mute)",
+                        border: `1px solid ${item.current === p.id ? "var(--ink)" : "var(--line)"}`,
+                        background: item.current === p.id ? "var(--ink)" : "transparent",
+                        color: item.current === p.id ? "var(--linen)" : "var(--ink-mute)",
                         cursor: "pointer",
                       }}
                     >
@@ -1120,35 +1169,12 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                   ))}
                 </div>
               </div>
-            )
-          })}
-        </div>
-      ) : (
-        // Single picker (original)
-        professionals
-          .filter((p) => p.id === "auto" || allowedStaffFor(state.services[0]?.id ?? "", staffServices).includes(p.id))
-          .map((p) => {
-            const current = serviceStaff[state.services[0]?.id ?? ""] ?? "auto"
-            return (
-              <button
-                key={p.id}
-                className={`pro-row ${current === p.id ? "is-selected" : ""}`}
-                onClick={() => state.services[0] && updateServiceStaff(state.services[0].id, p.id)}
-              >
-                <div className="pro-avatar">{p.initials}</div>
-                <div>
-                  <div className="pro-name">{p.name}</div>
-                  <div className="pro-role">{p.role}</div>
-                </div>
-                <div className="pro-spacer" />
-                {p.id === "auto" && current !== "auto" && <span className="pro-hint">Recomendado</span>}
-                {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
-              </button>
-            )
-          })
-      )}
-    </div>
-  )
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const FooterCTA = () => (
     <div className="footer">
@@ -1189,7 +1215,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // `packReady`/`mixed`): esta sección (`PackSessionsSection`, más abajo) se
   // sigue definiendo ANTES del `if (selectedPack)` para que la rama mezclada
   // pueda componerla junto con `ServiceDatesSection()`.
-  const packProHint = state.pro ?? "auto"
+  const packProHint = state.packPro ?? "auto"
 
   const setPackSlot = (idx: number, iso: string) => {
     const next = [...packPicked]
@@ -1465,7 +1491,12 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       )
     }
 
-    const ListBody = () => <>{PackSessionsSection()}</>
+    const ListBody = () => (
+      <>
+        {PackSessionsSection()}
+        {ProPicker()}
+      </>
+    )
 
     const ListFooterCTA = () => (
       <div className="footer">
@@ -2161,6 +2192,12 @@ export function Screen5Confirm({
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
   const displayTime = state.selectedTime
   const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
+  // Profesional elegida para el PACK (campo propio `packPro`, nunca
+  // `state.pro`: ver la nota en `ProPicker`/`BookingState.packPro`). Sin
+  // elegir ninguna, "auto" resuelve al mismo profesional "Asignación
+  // automática" que ya usan los servicios sueltos (mismo copy en toda la app).
+  const packPro = professionals.find((p) => p.id === (state.packPro ?? "auto"))?.name
+    ?? "Asignación automática"
 
   // Per-service schedule for multi-professional bookings
   const isMultiResolved = services.length > 1 && !!state.serviceOrder && !!state.resolvedStaff
@@ -2280,7 +2317,7 @@ export function Screen5Confirm({
       savedClientId: state.savedClientId,
       comboId: state.combo?.id,
       packId: state.pack?.pack.id,
-      packStaff: pack ? ((state.pro || "auto") as "auto" | string) : undefined,
+      packStaff: pack ? ((state.packPro || "auto") as "auto" | string) : undefined,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
       packSlots: pack ? packSlotsPicked : undefined,
       zoneSelections: Object.fromEntries(
@@ -2339,6 +2376,7 @@ export function Screen5Confirm({
                 {pack.pack.pricingMode === "per_zone" && packZones.length > 0 && (
                   <small>{packZones.map((z) => z.name).join(", ")}</small>
                 )}
+                <small>{packPro}</small>
               </div>
             )}
             {services.length > 0 && (

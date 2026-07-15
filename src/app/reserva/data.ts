@@ -190,6 +190,9 @@ export type BookingState = {
   // Fechas elegidas de las sesiones del pack (ISO UTC, en orden). La [0] es la
   // 1ª sesión (obligatoria); puede haber menos que sessions (el resto se agenda después).
   packSlots?: string[]
+  // La profesional elegida para el pack ("auto" o un staffId). Es SUYA: no se
+  // deriva de `state.pro` (que es el proHint global de los servicios sueltos).
+  packPro?: string
   // Con 2+ servicios: "juntos" = el mismo día, uno después del otro (lo de
   // siempre) · "separados" = cada uno en su fecha. Default: "juntos".
   bookingMode?: "juntos" | "separados"
