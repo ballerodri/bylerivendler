@@ -10,7 +10,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
-import { placeOnGrid, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
+import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
 import { crossOverlapCheck, sumDeposits, sumTotals } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
@@ -581,23 +581,35 @@ async function planLooseServices(
   )
 
   // ── Colocar las patas en la GRILLA del día — MISMA regla que el buscador ──
-  // `placeOnGrid` (la misma función PURA que usa `checkPerm`), con las MISMAS
-  // entradas: la grilla del día (`bh.slots`), el slot de arranque
-  // (`arPartsFromUtc(startsAt).timeStr`) y las duraciones en el orden REAL
-  // (`orderedServices`). El buscador DEVOLVIÓ estos horarios; acá se RECALCULAN
-  // igual, así coinciden por construcción — la "regla de oro": el servidor no
-  // confía en lo que mande el cliente. La 1ª pata arranca en `startsAt` (el
-  // slot que eligió la clienta); cada siguiente cae en el 1er slot de la grilla
-  // ≥ donde terminó la anterior (con hueco si sobra tiempo).
+  // `placeOnGridMerged` (la misma función PURA cuya colocación reproduce el
+  // paso suelto de `checkPerm`), con las MISMAS entradas: la grilla del día
+  // (`bh.slots`), el slot de arranque (`arPartsFromUtc(startsAt).timeStr`), las
+  // duraciones y la profesional YA RESUELTA por el buscador (`resolvedStaff`,
+  // que es lo mismo que devolvió y que el cliente mandó de vuelta) en el orden
+  // REAL (`orderedServices`). El buscador DEVOLVIÓ estos horarios; acá se
+  // RECALCULAN igual, así coinciden por construcción — la "regla de oro": el
+  // servidor no confía en lo que mande el cliente. La 1ª pata arranca en
+  // `startsAt` (el slot que eligió la clienta); cada siguiente FUNDE con el
+  // bloque de la misma profesional si entra en la hora, o cae en el 1er slot de
+  // la grilla ≥ donde terminó el bloque (con hueco si sobra tiempo). El pack va
+  // en un bloque APARTE (lo coloca `planPack`); `startsAt` ya es el 1er slot de
+  // grilla ≥ T + D_pack, así que acá SÓLO se funden los sueltos entre sí — el
+  // pack NUNCA entra en esta lista de ítems, igual que en el buscador.
   const { dateStr: chainDate, timeStr: chainStartHm, dayOfWeek: chainDow } = arPartsFromUtc(startsAt)
   const bh0 = bhByDow.get(chainDow)
   if (!bh0?.is_open)
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
-  // Ascendente, igual que `checkPerm` (que ordena la grilla antes de
-  // `placeOnGrid`): así el servidor coloca las patas IDÉNTICO al buscador.
+  // Ascendente, igual que `checkPerm` (que ordena la grilla antes de la
+  // caminata): así el servidor coloca las patas IDÉNTICO al buscador.
   const gridMin = bh0.slots.map(hmToMinutes).sort((a, b) => a - b)
-  const durations = orderedServices.map((s) => computed[s.id].durationMin)
-  const startsMin = placeOnGrid(durations, gridMin, hmToMinutes(chainStartHm))
+  const startsMin = placeOnGridMerged(
+    orderedServices.map((s) => ({
+      durationMin: computed[s.id].durationMin,
+      staffId: input.resolvedStaff?.[s.id] ?? mainStaffId ?? "auto",
+    })),
+    gridMin,
+    hmToMinutes(chainStartHm)
+  )
   if (!startsMin)
     return { ok: false, error: "Ese horario ya no entra. Elegí otro." }
 
@@ -613,16 +625,19 @@ async function planLooseServices(
     const legProHint = legStaffId ?? "auto"
     const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
     const bh = bhByDow.get(dayOfWeek)
-    // Con la colocación en grilla, TODAS las patas caen en un slot de
-    // `bh.slots`: la 1ª es `startsAt` (que el cliente manda como slot de
-    // grilla) y las 2..n las coloca `placeOnGrid` en slots de la grilla. El
-    // chequeo `bh.slots.includes(timeStr)` es una RED — `placeOnGrid` ya
-    // garantiza el invariante — y ahora corre para TODAS: se sacó la relajación
-    // del 1er tramo con `packChainedFirst` (con grilla nada arranca fuera de
-    // ella; el cliente manda el arranque suelto ya colocado en un slot). Todas
-    // tienen que caer además en un día abierto (`is_open`). La disponibilidad
-    // REAL (`fetchDayAvailability`) sigue corriendo en cada pata, ahora con el
-    // horario de grilla.
+    // Las patas que ARRANCAN un bloque caen en un slot de `bh.slots`: la 1ª es
+    // `startsAt` (que el cliente manda como slot de grilla) y las que abren
+    // bloque nuevo las coloca `placeOnGridMerged` en slots de la grilla. El
+    // chequeo `bh.slots.includes(timeStr)` es una RED que verifica ese
+    // invariante para los arranques de bloque. Todas tienen que caer además en
+    // un día abierto (`is_open`). La disponibilidad REAL
+    // (`fetchDayAvailability`) sigue corriendo en cada pata, con su horario.
+    // OJO (Fase 2, seguimiento): una pata FUNDIDA (2 turnos cortos de la misma
+    // profesional en una hora) arranca a mitad de hora (`blockEnd`), que NO es
+    // un slot de `bh.slots`, así que esta RED la rechazaría. Hoy es seguro
+    // porque con profesionales distintas (caso común) `placeOnGridMerged` no
+    // funde y todo cae en grilla; para reservar realmente un slot fundido esta
+    // RED tiene que aceptar los arranques de fusión (no incluidos en este task).
     const needsGrid = true
     if (!bh?.is_open || (needsGrid && !bh.slots.includes(timeStr)))
       return {
