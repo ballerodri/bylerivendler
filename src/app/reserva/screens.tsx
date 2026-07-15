@@ -1119,15 +1119,14 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const ProPicker = () => {
     if (proPickItems.length === 0) return null
-    return (
-      <div style={{ marginTop: 24 }}>
-        <p className="eyebrow">
-          {proPickItems.length > 1 ? "Profesional por tratamiento · opcional" : "Profesional · opcional"}
-        </p>
-        {proPickItems.length === 1 && !selectedPack ? (
-          // Single picker (original): se preserva TAL CUAL para el caso más
-          // común (un solo servicio suelto, sin pack) — no regresionar su UI.
-          professionals
+
+    // Un solo servicio suelto, sin pack: se preserva TAL CUAL el selector
+    // "lindo" original (el caso más común) — no regresionar su UI.
+    if (proPickItems.length === 1 && !selectedPack) {
+      return (
+        <div style={{ marginTop: 24 }}>
+          <p className="eyebrow">Profesional · opcional</p>
+          {professionals
             .filter((p) => p.id === "auto" || allowedStaffFor(proPickItems[0].serviceId, staffServices).includes(p.id))
             .map((p) => {
               const current = proPickItems[0].current
@@ -1147,38 +1146,81 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                   {current === p.id && <Icon.CheckInk style={{ color: "var(--ink)" }} />}
                 </button>
               )
-            })
-        ) : (
-          // Per-item pickers (pill rows): el pack (si lo hay) + cada servicio
-          // suelto, una fila por ítem.
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {proPickItems.map((item) => (
-              <div key={item.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span style={{ fontSize: 13, color: "var(--ink-mute)", flex: 1 }}>{item.name}</span>
+            })}
+        </div>
+      )
+    }
+
+    // Pack y/o varios servicios. Se calculan las candidatas (quiénes hacen cada
+    // uno) para no mostrar un botón donde no hay nada que elegir.
+    const annotated = proPickItems.map((it) => ({
+      ...it,
+      candidates: professionals.filter(
+        (p) => p.id !== "auto" && allowedStaffFor(it.serviceId, staffServices).includes(p.id)
+      ),
+    }))
+    const proIds = new Set(annotated.flatMap((it) => it.candidates.map((c) => c.id)))
+    const allSingle = annotated.every((it) => it.candidates.length === 1)
+
+    // Si TODO lo hace la misma única persona (el caso típico del salón), una
+    // sola línea — sin repetir el nombre en cada fila.
+    if (allSingle && proIds.size === 1) {
+      const only = professionals.find((p) => proIds.has(p.id))
+      if (only) {
+        return (
+          <div style={{ margin: "20px 0 28px" }}>
+            <p className="eyebrow">Profesional</p>
+            <p style={{ fontSize: 14, marginTop: 8 }}>
+              Te atiende <strong>{only.name}</strong>.
+            </p>
+          </div>
+        )
+      }
+    }
+
+    // Una fila por ítem, con aire y una línea divisoria entre filas. Si un
+    // servicio lo hace una sola persona, se muestra su nombre (sin botón); sólo
+    // donde hay varias aparece la elección Auto / nombres.
+    return (
+      <div style={{ margin: "20px 0 28px" }}>
+        <p className="eyebrow">Profesional por tratamiento · opcional</p>
+        <div style={{ display: "flex", flexDirection: "column", marginTop: 4 }}>
+          {annotated.map((item, i) => (
+            <div
+              key={item.key}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 12, padding: "14px 0",
+                borderTop: i === 0 ? "none" : "1px solid var(--line)",
+              }}
+            >
+              <span style={{ fontSize: 14, color: "var(--ink)", flex: 1 }}>{item.name}</span>
+              {item.candidates.length <= 1 ? (
+                <span style={{ fontSize: 13, color: "var(--ink-mute)", whiteSpace: "nowrap" }}>
+                  {item.candidates[0]?.name ?? "Sin asignar"}
+                </span>
+              ) : (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  {professionals
-                    .filter((p) => p.id === "auto" || allowedStaffFor(item.serviceId, staffServices).includes(p.id))
-                    .map((p) => (
+                  {[{ id: "auto", name: "Auto" }, ...item.candidates.map((c) => ({ id: c.id, name: c.name }))].map((opt) => (
                     <button
-                      key={p.id}
-                      onClick={() => item.onPick(p.id)}
+                      key={opt.id}
+                      onClick={() => item.onPick(opt.id)}
                       style={{
-                        padding: "4px 12px", borderRadius: 20, fontSize: 12,
-                        whiteSpace: "nowrap",
-                        border: `1px solid ${item.current === p.id ? "var(--ink)" : "var(--line)"}`,
-                        background: item.current === p.id ? "var(--ink)" : "transparent",
-                        color: item.current === p.id ? "var(--linen)" : "var(--ink-mute)",
+                        padding: "6px 14px", borderRadius: 20, fontSize: 12, whiteSpace: "nowrap",
+                        border: `1px solid ${item.current === opt.id ? "var(--ink)" : "var(--line)"}`,
+                        background: item.current === opt.id ? "var(--ink)" : "transparent",
+                        color: item.current === opt.id ? "var(--linen)" : "var(--ink-mute)",
                         cursor: "pointer",
                       }}
                     >
-                      {p.id === "auto" ? "Auto" : p.name}
+                      {opt.name}
                     </button>
                   ))}
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
