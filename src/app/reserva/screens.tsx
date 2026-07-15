@@ -13,6 +13,7 @@ import {
   generateAvailability,
   pad2,
   parseYmd,
+  slotsForDate,
   ymd,
 } from "./data"
 import type { BookingState, Category, Combo, Professional, ReservaPack, Service } from "./data"
@@ -25,6 +26,7 @@ import PackSessionPicker from "./_components/pack-session-picker"
 import type { BlockedInterval } from "@/lib/servicios/slot-overlap"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { addMinutesHM, sequentialStartTimes } from "@/lib/servicios/visit-timeline"
+import { placeOnGrid, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { totalDueNowSeparate, validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
 import { allowedStaffFor, type StaffServiceMap } from "@/lib/servicios/staff-services"
@@ -72,6 +74,37 @@ function effectiveService(
     duration: chosen.reduce((a, z) => a + z.durationMin, 0),
     count: chosen.length,
   }
+}
+
+// Horarios "HH:MM" de los servicios sueltos de una visita "juntos", cada uno
+// COLOCADO EN LA GRILLA del día — la MISMA regla que el buscador y el servidor
+// (`placeOnGrid`): cada turno cae en su slot, con huecos posibles (ya NO
+// pegados por minutos). Prefiere lo que YA devolvió el buscador
+// (`resolvedStarts`): es byte-idéntico a lo que el servidor recalcula, así la
+// pantalla, `pay()` y el servidor coinciden por construcción (regla de oro).
+// Sólo si faltan esos horarios (estado viejo restaurado, sin `resolvedStarts`)
+// los recoloca acá con `placeOnGrid` sobre la grilla del día. Con
+// `packDurationMin > 0` (encadenado) el pack va PRIMERO en la grilla (arranca
+// en `selectedTime` = T) y los sueltos caen después; se descarta su tramo y se
+// devuelven sólo los de los servicios sueltos.
+function looseGridStarts(args: {
+  orderedIds: string[]
+  durations: number[]
+  selectedTime: string
+  packDurationMin: number
+  gridMin: number[]
+  resolvedStarts?: Record<string, string>
+}): string[] {
+  const { orderedIds, durations, selectedTime, packDurationMin, gridMin, resolvedStarts } = args
+  if (resolvedStarts && orderedIds.length > 0 && orderedIds.every((id) => resolvedStarts[id] !== undefined))
+    return orderedIds.map((id) => resolvedStarts[id])
+  const chain = packDurationMin > 0 ? [packDurationMin, ...durations] : durations
+  const placed = placeOnGrid(chain, gridMin, hmToMinutes(selectedTime))
+  // Respaldo del respaldo: si la cadena no entra en la grilla (o no hay
+  // grilla), caer a la cuenta pegada — el servidor la va a rechazar igual, pero
+  // así la pantalla no rompe.
+  if (!placed) return sequentialStartTimes(addMinutesHM(selectedTime, packDurationMin), durations)
+  return (packDurationMin > 0 ? placed.slice(1) : placed).map(minutesToHm)
 }
 
 // Modo separados: formatea la fecha/hora elegida de un servicio, en hora AR.
@@ -136,6 +169,7 @@ export function Screen1Services({
     bookingMode: undefined,
     serviceOrder: undefined,
     resolvedStaff: undefined,
+    resolvedStarts: undefined,
     selectedDate: undefined,
     selectedTime: null,
   } as const
@@ -626,6 +660,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       selectedTime: null,
       serviceOrder: undefined,
       resolvedStaff: undefined,
+      resolvedStarts: undefined,
       serviceSlots: Object.keys(slots).length ? slots : undefined,
     })
   }
@@ -735,27 +770,46 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     durationMin: packDurationMin,
     priceCents: 0,
   }))
+  // La grilla horaria del día elegido, en minutos (ascendente): la misma que
+  // usa el servidor (`bh.slots`) para colocar los turnos. Se usa de RESPALDO
+  // en `looseGridStarts` cuando falta `resolvedStarts`.
+  const gridMinForSelectedDate = selectedDate
+    ? slotsForDate(selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b)
+    : []
   // Los servicios sueltos: "separados" ya tiene una fecha por servicio
-  // (`chosenSeparateSlots`, arriba). "Juntos" es UN turno encadenado SIN
-  // huecos, desde `selectedDate`+`selectedTime` hasta la suma de las
-  // duraciones — igual que arma el servidor (`planLooseServices`: un solo
-  // `PlannedAppointment` para toda la cadena) — así que alcanza con UN ítem
-  // que cubra el total: cualquier sesión del pack que se superponga con una
-  // parte de la cadena se superpone con este ítem entero, porque la cadena no
-  // tiene huecos entre servicios.
-  const looseChainStartMs =
-    selectedDate && selectedTime
-      ? combineDateTime(selectedDate, selectedTime).getTime() + (chainPackFirst ? packDurationMin * 60_000 : 0)
-      : 0
-  const looseChainSlot: SlotItem[] =
+  // (`chosenSeparateSlots`, arriba). "Juntos" es una cadena colocada EN LA
+  // GRILLA (cada turno en su slot, con huecos posibles): ya NO un bloque
+  // contiguo. Se arma UN ítem por servicio, cada uno en su horario de grilla
+  // (`looseGridStarts`, que prefiere lo que devolvió el buscador), y se chequea
+  // contra las sesiones del pack (la clienta es una sola). Pre-chequeo
+  // best-effort: el `crossOverlapCheck` del servidor —que usa la ventana real
+  // de la visita, huecos incluidos— es el autoritativo.
+  const looseOrderedForGrid: Service[] =
     bookingMode === "juntos" && selectedDate && selectedTime
-      ? [{
-          serviceId: "juntos",
-          name: state.services.length > 1 ? "Tus servicios" : (state.services[0]?.name ?? "Tus servicios"),
-          startsAtMs: looseChainStartMs,
-          durationMin: state.services.reduce((a, s) => a + effectiveService(s, zoneSel).duration, 0),
+      ? (state.serviceOrder ?? state.services.map((s) => s.id))
+          .map((id) => state.services.find((s) => s.id === id))
+          .filter((s): s is Service => !!s)
+      : []
+  const looseGridHm =
+    looseOrderedForGrid.length > 0 && selectedDate && selectedTime
+      ? looseGridStarts({
+          orderedIds: looseOrderedForGrid.map((s) => s.id),
+          durations: looseOrderedForGrid.map((s) => effectiveService(s, zoneSel).duration),
+          selectedTime,
+          packDurationMin: chainPackFirst ? packDurationMin : 0,
+          gridMin: gridMinForSelectedDate,
+          resolvedStarts: state.resolvedStarts,
+        })
+      : []
+  const looseChainSlot: SlotItem[] =
+    selectedDate
+      ? looseOrderedForGrid.map((s, i) => ({
+          serviceId: s.id,
+          name: s.name,
+          startsAtMs: combineDateTime(selectedDate, looseGridHm[i]).getTime(),
+          durationMin: effectiveService(s, zoneSel).duration,
           priceCents: 0,
-        }]
+        }))
       : []
   const chosenServiceSlots = bookingMode === "separados" ? chosenSeparateSlots : looseChainSlot
   const mixedOverlap =
@@ -798,7 +852,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       if (cancelled) return
       setSeqResult(result)
       if (state.selectedTime && !result.slotsForDate.some((r) => r.time === state.selectedTime)) {
-        setState({ ...state, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined })
+        setState({ ...state, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined, resolvedStarts: undefined })
       }
       setSlotsLoading(false)
     })
@@ -840,6 +894,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         serviceOrder: looseOrder,
         resolvedStaff: looseStaff,
         serviceStaff: { ...serviceStaff, ...looseStaff },
+        // Los horarios que colocó el buscador (serviceId → "HH:MM"): la
+        // pantalla y pay() los usan tal cual (regla de oro). Incluye el tramo
+        // del pack (= T), inofensivo — sólo se leen los de los sueltos.
+        resolvedStarts: result.starts,
         // La sesión 1 del pack queda fijada al arranque de la visita (T). Las
         // sesiones 2..N se conservan (se siguen agendando por separado).
         packSlots: [T, ...restSessions],
@@ -853,6 +911,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       serviceOrder: result.serviceOrder,
       resolvedStaff: result.resolvedStaff,
       serviceStaff: { ...serviceStaff, ...result.resolvedStaff },
+      // Los horarios de grilla que colocó el buscador (regla de oro).
+      resolvedStarts: result.starts,
     })
   }
 
@@ -864,7 +924,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const selectDay = (d: number) => {
     const dateStr = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(d)}`
-    setState({ ...state, selectedDate: dateStr, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined })
+    setState({ ...state, selectedDate: dateStr, selectedTime: null, serviceOrder: undefined, resolvedStaff: undefined, resolvedStarts: undefined })
   }
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
@@ -1089,6 +1149,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       serviceSlots: undefined,
       serviceOrder: undefined,
       resolvedStaff: undefined,
+      resolvedStarts: undefined,
       serviceStaff: undefined,
       selectedDate: undefined,
       selectedTime: null,
@@ -1476,19 +1537,24 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   )
 
   // Encadenado: lo que entra en la visita, en orden — la 1ª sesión del pack
-  // primero, después los servicios sueltos. Antes de elegir horario, sin las
-  // horas; con horario elegido, cada uno en T / T + D_pack / … (la MISMA
-  // cuenta que arma pay() y que muestra la confirmación).
+  // primero (en T), después los servicios sueltos, cada uno en su horario de
+  // GRILLA (con huecos posibles). Antes de elegir horario, sin las horas; con
+  // horario elegido, los MISMOS horarios que colocó el buscador
+  // (`resolvedStarts`) — los que arma pay() y muestra la confirmación.
   const VisitPreview = () => {
     if (!chainPackFirst || !pack) return null
     const orderedLoose = (state.serviceOrder ?? state.services.map((s) => s.id))
       .map((id) => state.services.find((s) => s.id === id))
       .filter((s): s is Service => !!s)
-    const times = state.selectedTime
-      ? sequentialStartTimes(
-          addMinutesHM(state.selectedTime, packDurationMin),
-          orderedLoose.map((s) => effectiveService(s, zoneSel).duration)
-        )
+    const times = state.selectedTime && state.selectedDate
+      ? looseGridStarts({
+          orderedIds: orderedLoose.map((s) => s.id),
+          durations: orderedLoose.map((s) => effectiveService(s, zoneSel).duration),
+          selectedTime: state.selectedTime,
+          packDurationMin,
+          gridMin: gridMinForSelectedDate,
+          resolvedStarts: state.resolvedStarts,
+        })
       : null
     return (
       <div style={{ margin: "20px 0 0" }}>
@@ -2338,7 +2404,8 @@ export function Screen5Confirm({
   totalSteps,
   loyaltyPoints,
   professionals,
-}: ScreenProps & { loyaltyPoints: number; professionals: Professional[]; packs?: ReservaPack[] }) {
+  businessHours,
+}: ScreenProps & { loyaltyPoints: number; professionals: Professional[]; packs?: ReservaPack[]; businessHours: import("./data").BusinessHour[] }) {
   const services = state.services || []
   const combo = state.combo ?? null
   const pack = state.pack ?? null
@@ -2426,17 +2493,25 @@ export function Screen5Confirm({
   // orden y con su horario y profesional. Fuente ÚNICA de "Cuándo" para los
   // servicios de una visita — antes había dos listas (`orderedItems` con
   // profesional pero sólo 2+ servicios, y `chainedOrdered` sin profesional).
-  // Arranque: T + D_pack encadenado, T si no (el MISMO que pay() reserva, vía
-  // `sequentialStartTimes`). En "separados" no aplica (cada servicio tiene su
-  // propia fecha). La profesional sale de `resolvedStaff`; si un servicio no
-  // tiene una resuelta (ej. un solo servicio), cae a `state.pro` → "auto".
+  // Los horarios salen de la GRILLA que colocó el buscador (`resolvedStarts`,
+  // vía `looseGridStarts`): cada turno en su slot, con huecos posibles — los
+  // MISMOS que pay() reserva y que el servidor recalcula. En "separados" no
+  // aplica (cada servicio tiene su propia fecha). La profesional sale de
+  // `resolvedStaff`; si un servicio no tiene una resuelta (ej. un solo
+  // servicio), cae a `state.pro` → "auto".
   const juntosItems = (() => {
-    if (separados || services.length === 0 || !state.selectedTime) return []
-    const base = addMinutesHM(state.selectedTime, chainPackFirst ? packDurationMin : 0)
+    if (separados || services.length === 0 || !state.selectedTime || !state.selectedDate) return []
     const items = (state.serviceOrder ?? services.map((s) => s.id))
       .map((id) => services.find((s) => s.id === id))
       .filter((s): s is Service => !!s)
-    const starts = sequentialStartTimes(base, items.map((s) => effective(s).duration))
+    const starts = looseGridStarts({
+      orderedIds: items.map((s) => s.id),
+      durations: items.map((s) => effective(s).duration),
+      selectedTime: state.selectedTime,
+      packDurationMin: chainPackFirst ? packDurationMin : 0,
+      gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
+      resolvedStarts: state.resolvedStarts,
+    })
     return items.map((svc, i) => ({
       svc,
       startTime: starts[i],
@@ -2503,17 +2578,34 @@ export function Screen5Confirm({
     // y sólo se usa la fecha del pack cuando NO los hay.
     // En separados el servidor usa `serviceSlots`; `startsAt` va igual porque
     // el schema lo exige: mandamos el más temprano de los elegidos.
-    // Con encadenado, el bloque de servicios sueltos arranca cuando termina la
-    // sesión 1 del pack: T + D_pack. Sin encadenado, se conserva el cálculo de
-    // siempre (el arranque de los servicios sueltos, nunca la fecha del pack).
+    // "Juntos" (encadenado o no): el arranque de la cadena es el 1er servicio
+    // suelto COLOCADO EN LA GRILLA (`looseGridStarts[0]`) — lo que devolvió el
+    // buscador (`resolvedStarts`), byte-idéntico a lo que el servidor recalcula.
+    // Sin pack: ese 1er horario es T (el slot elegido). Con pack encadenado: el
+    // 1er slot de la grilla ≥ T + D_pack (con hueco posible). El servidor
+    // exige que `startsAt` caiga en la grilla (`planLooseServices` rechaza el
+    // 1er tramo fuera de grilla) — por eso ya NO se manda el crudo T + D_pack.
+    const juntosOrderedIds = (state.serviceOrder ?? services.map((s) => s.id))
+      .map((id) => services.find((s) => s.id === id))
+      .filter((s): s is Service => !!s)
+      .map((s) => s.id)
+    const juntosFirstHm =
+      !separados && services.length > 0 && state.selectedDate && state.selectedTime
+        ? looseGridStarts({
+            orderedIds: juntosOrderedIds,
+            durations: juntosOrderedIds.map((id) => effective(services.find((s) => s.id === id)!).duration),
+            selectedTime: state.selectedTime,
+            packDurationMin: chainPackFirst ? packDurationMin : 0,
+            gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
+            resolvedStarts: state.resolvedStarts,
+          })[0]
+        : null
     const startsAt =
-      chainPackFirst && state.selectedDate && state.selectedTime
-        ? new Date(combineDateTime(state.selectedDate, state.selectedTime).getTime() + packDurationMin * 60_000)
-        : services.length > 0
-          ? (separados
-              ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
-              : combineDateTime(state.selectedDate!, state.selectedTime!))
-          : new Date(packSlotsPicked[0])
+      services.length === 0
+        ? new Date(packSlotsPicked[0])
+        : separados
+          ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
+          : combineDateTime(state.selectedDate!, juntosFirstHm ?? state.selectedTime!)
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón

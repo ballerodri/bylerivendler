@@ -262,6 +262,7 @@ export default function ReservaFlow({
             loyaltyPoints={currentClient?.loyaltyPoints ?? 0}
             professionals={professionals}
             packs={packs}
+            businessHours={businessHours}
           />
         )
       default:

@@ -831,7 +831,6 @@ export async function createBooking(
   )
   const redeem = !!input.redeemWithPoints
   const startsAt = new Date(input.startsAt)
-  const endsAt = new Date(startsAt.getTime() + totalDuration * 60_000)
 
   // 2) Find or create client. Si ya fue guardada por saveClientEarly usamos
   // ese ID directamente y salteamos la creación.
@@ -1155,6 +1154,15 @@ export async function createBooking(
       // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────
       const plannedAppt = plan[0]
       const apptId = created.appointmentIds[0]
+      // El evento de Calendar y los avisos usan la VENTANA REAL de la visita
+      // (`plannedAppt.durationMin`, la ventana que `planLooseServices` guardó en
+      // el turno portador: desde el arranque hasta el fin de la última pata),
+      // NO la suma de las duraciones (`totalDuration`): con la colocación en
+      // grilla puede haber huecos, así que la suma termina ANTES que la visita
+      // real y el evento/mail mostrarían un fin demasiado temprano. La plata no
+      // se toca. El bloqueo ya está guardado en la fila del turno (`duration_min`).
+      const visitWindowMin = plannedAppt.durationMin
+      const endsAt = new Date(plannedAppt.startsAtMs + visitWindowMin * 60_000)
 
       // Google Calendar event (no bloqueante)
       try {
@@ -1199,7 +1207,7 @@ export async function createBooking(
           firstName: input.client.firstName.trim(),
           servicesNames: services.map((s) => s.name),
           startsAt,
-          durationMin: totalDuration,
+          durationMin: visitWindowMin,
           totalCents,
           appointmentId: apptId,
         })
@@ -1213,7 +1221,7 @@ export async function createBooking(
         clientPhone: input.client.phone,
         servicesNames: services.map((s) => s.name),
         startsAt,
-        durationMin: totalDuration,
+        durationMin: visitWindowMin,
         totalCents,
         assignedStaffIds: [plannedAppt.staffId, ...Object.values(input.resolvedStaff ?? {})],
       })

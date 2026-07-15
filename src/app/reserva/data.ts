@@ -127,6 +127,19 @@ export const parseYmd = (s: string) => {
   return new Date(y, m - 1, d)
 }
 
+/**
+ * Grilla horaria (slots "HH:MM") de un día concreto, según los business hours
+ * (con el mismo fallback que `generateAvailability`). Devuelve `[]` si el día
+ * está cerrado. La usa el cliente para RECOLOCAR los turnos en la grilla —
+ * misma regla que el buscador y el servidor (`placeOnGrid`) — cuando no tiene
+ * los horarios que devolvió el buscador (estado restaurado viejo).
+ */
+export function slotsForDate(dateStr: string, businessHours?: BusinessHour[]): string[] {
+  const hours = businessHours && businessHours.length > 0 ? businessHours : FALLBACK_HOURS
+  const h = hours.find((x) => x.day_of_week === parseYmd(dateStr).getDay())
+  return h?.is_open ? h.slots : []
+}
+
 // Auto-formats a DOB as the user types: "22031988" -> "22/03/1988"
 export const formatDob = (raw: string): string => {
   const digits = raw.replace(/\D/g, "").slice(0, 8)
@@ -186,6 +199,12 @@ export type BookingState = {
   serviceStaff?: Record<string, string>   // serviceId → "auto" | staffId (user preference)
   serviceOrder?: string[]                 // service IDs in execution order (resolved)
   resolvedStaff?: Record<string, string>  // serviceId → actual staffId (resolved after slot pick)
+  // serviceId → "HH:MM" en que ARRANCA ese servicio, ya colocado en la grilla
+  // horaria por el buscador (`SlotResult.starts`). La pantalla y la
+  // confirmación lo muestran tal cual y pay() arma el `startsAt` con él, así
+  // coincide por construcción con lo que el servidor recalcula (regla de oro).
+  resolvedStarts?: Record<string, string>
+
   zoneSelections?: Record<string, string[]>  // serviceId → zoneId[] elegidas (solo pricingMode === "per_zone")
   // Fechas elegidas de las sesiones del pack (ISO UTC, en orden). La [0] es la
   // 1ª sesión (obligatoria); puede haber menos que sessions (el resto se agenda después).
