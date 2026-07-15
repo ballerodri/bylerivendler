@@ -580,13 +580,32 @@ async function planLooseServices(
       .map((h) => [h.day_of_week, h])
   )
 
+  // ── Colocar las patas en la GRILLA del día — MISMA regla que el buscador ──
+  // `placeOnGrid` (la misma función PURA que usa `checkPerm`), con las MISMAS
+  // entradas: la grilla del día (`bh.slots`), el slot de arranque
+  // (`arPartsFromUtc(startsAt).timeStr`) y las duraciones en el orden REAL
+  // (`orderedServices`). El buscador DEVOLVIÓ estos horarios; acá se RECALCULAN
+  // igual, así coinciden por construcción — la "regla de oro": el servidor no
+  // confía en lo que mande el cliente. La 1ª pata arranca en `startsAt` (el
+  // slot que eligió la clienta); cada siguiente cae en el 1er slot de la grilla
+  // ≥ donde terminó la anterior (con hueco si sobra tiempo).
+  const { dateStr: chainDate, timeStr: chainStartHm, dayOfWeek: chainDow } = arPartsFromUtc(startsAt)
+  const bh0 = bhByDow.get(chainDow)
+  if (!bh0?.is_open)
+    return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
+  // Ascendente, igual que `checkPerm` (que ordena la grilla antes de
+  // `placeOnGrid`): así el servidor coloca las patas IDÉNTICO al buscador.
+  const gridMin = bh0.slots.map(hmToMinutes).sort((a, b) => a - b)
+  const durations = orderedServices.map((s) => computed[s.id].durationMin)
+  const startsMin = placeOnGrid(durations, gridMin, hmToMinutes(chainStartHm))
+  if (!startsMin)
+    return { ok: false, error: "Ese horario ya no entra. Elegí otro." }
+
   const legs: PlannedLeg[] = []
-  let legMs = startsAt.getTime()
   for (let i = 0; i < orderedServices.length; i++) {
     const s = orderedServices[i]
     const c = computed[s.id]
-    const legStart = new Date(legMs)
-    legMs += c.durationMin * 60_000
+    const legStart = new Date(slotToUtcMs(chainDate, minutesToHm(startsMin[i])))
     // La profesional de esta pata: la pedida para este servicio, o si no, la
     // principal del turno. Puede quedar en `null` (auto) — el hint para
     // `fetchDayAvailability` (que espera "auto" como centinela) se arma aparte.
@@ -594,21 +613,17 @@ async function planLooseServices(
     const legProHint = legStaffId ?? "auto"
     const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
     const bh = bhByDow.get(dayOfWeek)
-    // Sólo la PRIMERA pata tiene que caer en la grilla de horarios
-    // reservables (`bh.slots`): es el inicio del turno, el horario que la
-    // clienta efectivamente eligió en pantalla. Las patas 2..n arrancan en
-    // `inicio + Σ(duraciones anteriores)` — un horario encadenado que casi
-    // nunca cae en la grilla (duraciones de 45/50/75 min, zonas de 30) — el
-    // buscador (`checkPerm`) no les exige estar en la grilla, así que
-    // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
-    // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
-    // día abierto (`is_open`).
-    // Con `packChainedFirst`, el 1er tramo suelto arranca cuando termina la
-    // sesión 1 del pack (T + D_pack) — un horario que NO está en la grilla a
-    // propósito. `planPack` ya validó que T (el arranque real de la visita)
-    // esté en la grilla. El chequeo de disponibilidad REAL de abajo
-    // (`fetchDayAvailability`) sigue corriendo en TODOS los tramos.
-    const needsGrid = i === 0 && !input.packChainedFirst
+    // Con la colocación en grilla, TODAS las patas caen en un slot de
+    // `bh.slots`: la 1ª es `startsAt` (que el cliente manda como slot de
+    // grilla) y las 2..n las coloca `placeOnGrid` en slots de la grilla. El
+    // chequeo `bh.slots.includes(timeStr)` es una RED — `placeOnGrid` ya
+    // garantiza el invariante — y ahora corre para TODAS: se sacó la relajación
+    // del 1er tramo con `packChainedFirst` (con grilla nada arranca fuera de
+    // ella; el cliente manda el arranque suelto ya colocado en un slot). Todas
+    // tienen que caer además en un día abierto (`is_open`). La disponibilidad
+    // REAL (`fetchDayAvailability`) sigue corriendo en cada pata, ahora con el
+    // horario de grilla.
+    const needsGrid = true
     if (!bh?.is_open || (needsGrid && !bh.slots.includes(timeStr)))
       return {
         ok: false,
@@ -629,10 +644,26 @@ async function planLooseServices(
     })
   }
 
+  // El turno "portador" cubre la VISITA COMPLETA (desde el inicio hasta que
+  // termina la ÚLTIMA pata), NO la suma de las duraciones: con la colocación en
+  // grilla puede haber huecos, así que la ventana real es más larga que la
+  // suma. `durationMin` alimenta el `ends_at` del turno (que así representa el
+  // fin real de la visita), el `crossOverlapCheck` (que así no deja meter otro
+  // turno del mismo pedido en la cola de la visita) y el bloqueo por-portador
+  // del camino admin SIN `serviceId` (`fetchDayAvailability` mira ahí
+  // `appointments.duration_min`, no las patas); en los tres, la ventana es lo
+  // correcto y lo seguro (nunca angosta menos que la visita real). El bloqueo
+  // del camino PÚBLICO es por-pata (`appointment_services` vía `buildBusyLegs`),
+  // no por el portador. La plata (`totalCents`/`depositCents`) NO cambia.
+  const lastLeg = legs[legs.length - 1]
+  const visitWindowMin = lastLeg
+    ? Math.round((lastLeg.startsAtMs + lastLeg.durationMin * 60_000 - startsAt.getTime()) / 60_000)
+    : totalDuration
+
   const appointment: PlannedAppointment = {
     label: orderedServices.map((s) => s.name).join(" + "),
     startsAtMs: startsAt.getTime(),
-    durationMin: totalDuration,
+    durationMin: visitWindowMin,
     staffId: mainStaffId,
     totalCents: redeem ? 0 : totalCents,
     depositCents: redeem ? 0 : depositCents,
