@@ -57,4 +57,26 @@ describe("placeOnGrid — fase 1 (cada turno en su slot de grilla, sin fusión)"
     // 60 min 14:00–15:00; el siguiente arranca justo 15:00
     expect(placeOnGrid([60, 30], GRID, 840)).toEqual([840, 900])
   })
+
+  // INVARIANTE "sin memoria del ancla" — la REGLA DE ORO del encadenado depende
+  // de esto: el buscador coloca la cadena COMPLETA [pack, ...sueltos] desde T,
+  // y el servidor coloca SÓLo los sueltos desde el 1er slot suelto. Los dos
+  // tienen que dar los MISMOS horarios para los sueltos. Como cada turno
+  // depende sólo del fin del anterior (no del ancla), esto se cumple.
+  it("regla de oro: colocar [pack, ...sueltos] desde T == colocar [...sueltos] desde el 1er slot suelto", () => {
+    const packDur = 60
+    const looseDurs = [45, 45, 30]
+    const T = 840 // 14:00
+    const full = placeOnGrid([packDur, ...looseDurs], GRID, T)
+    expect(full).not.toBeNull()
+    const firstLooseStart = full![1]
+    const looseOnly = placeOnGrid(looseDurs, GRID, firstLooseStart)
+    expect(looseOnly).toEqual(full!.slice(1))
+  })
+
+  it("regla de oro también con el pack ocupando varias horas", () => {
+    const full = placeOnGrid([90, 60, 60], GRID, 840) // pack 90 min
+    expect(full).not.toBeNull()
+    expect(placeOnGrid([60, 60], GRID, full![1])).toEqual(full!.slice(1))
+  })
 })
