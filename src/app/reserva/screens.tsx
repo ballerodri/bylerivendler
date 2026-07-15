@@ -1305,9 +1305,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   )
 
   // `pack`/`packPicked` se definen mucho más arriba ahora (junto a
-  // `packReady`/`mixed`): esta sección (`PackSessionsSection`, más abajo) se
-  // sigue definiendo ANTES del `if (selectedPack)` para que la rama mezclada
-  // pueda componerla junto con `ServiceDatesSection()`.
+  // `packReady`/`mixed`): estas secciones (`PackSessionRows`/
+  // `PackSessionsSection`, más abajo) se siguen definiendo ANTES del
+  // `if (selectedPack)` para que la rama mezclada (`MixedBody`) componga
+  // `PackSessionRows()` directamente.
   const packProHint = state.packPro ?? "auto"
 
   const setPackSlot = (idx: number, iso: string) => {
@@ -1335,9 +1336,6 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   const backToPackList = () => setPickingIdx(null)
 
-  // El cuerpo de la lista de sesiones del pack (antes el contenido de
-  // `ListBody`): se usa tal cual en el flujo "sólo pack" y, compuesto con
-  // `ServiceDatesSection()`, en la compra mezclada.
   // Las filas de sesiones del pack. `skipFirstInChain` saltea la sesión 1
   // cuando el encadenado la muestra en `VisitPreview` (así no se duplica); en
   // el flujo "sólo pack" se llama sin flag y muestra las N.
@@ -1415,9 +1413,6 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // `servicesReady`/`mixedOverlap`), por la misma razón que `pack`/
   // `packPicked`.
 
-  // El cuerpo de las fechas de los servicios sueltos (antes el contenido de
-  // `SepBody`): en la mezcla también cubre el modo "juntos" (el calendario de
-  // siempre) — antes innecesario acá porque el pack era excluyente.
   // Las filas de servicios sueltos (una fecha por servicio, modo "separados").
   // Compartidas entre la mezcla (MixedBody) y el standalone (SepBody).
   const ServiceDateRows = () => (
@@ -1505,7 +1500,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
-  // ── Pack + servicios sueltos: las dos secciones en una sola pantalla ──────
+  // ── Pack + servicios sueltos: una sola sección "Tus turnos" ───────────────
   if (mixed && pickingIdx === null && pickingServiceId === null) {
     const MixedBody = () => (
       <>

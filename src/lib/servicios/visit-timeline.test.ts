@@ -15,6 +15,10 @@ describe("addMinutesHM", () => {
     expect(addMinutesHM("13:50", 20)).toBe("14:10")
   })
 
+  it("no aplica módulo de 24h: una cadena que cruza medianoche sigue creciendo (25:30 no 01:30)", () => {
+    expect(addMinutesHM("23:50", 20)).toBe("24:10")
+  })
+
   it("mantiene el cero a la izquierda en horas y minutos", () => {
     expect(addMinutesHM("08:00", 5)).toBe("08:05")
     expect(addMinutesHM("08:03", 2)).toBe("08:05")
