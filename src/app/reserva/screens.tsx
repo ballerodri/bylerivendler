@@ -741,12 +741,16 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // que cubra el total: cualquier sesión del pack que se superponga con una
   // parte de la cadena se superpone con este ítem entero, porque la cadena no
   // tiene huecos entre servicios.
+  const looseChainStartMs =
+    selectedDate && selectedTime
+      ? combineDateTime(selectedDate, selectedTime).getTime() + (chainPackFirst ? packDurationMin * 60_000 : 0)
+      : 0
   const looseChainSlot: SlotItem[] =
     bookingMode === "juntos" && selectedDate && selectedTime
       ? [{
           serviceId: "juntos",
           name: state.services.length > 1 ? "Tus servicios" : (state.services[0]?.name ?? "Tus servicios"),
-          startsAtMs: combineDateTime(selectedDate, selectedTime).getTime(),
+          startsAtMs: looseChainStartMs,
           durationMin: state.services.reduce((a, s) => a + effectiveService(s, zoneSel).duration, 0),
           priceCents: 0,
         }]
@@ -2251,6 +2255,16 @@ export function Screen5Confirm({
   const payChoice: PayChoice = state.payChoice ?? "deposit"
   const separados =
     !combo && services.length >= 2 && (state.bookingMode ?? "juntos") === "separados"
+  // El encadenado (sesión 1 del pack + servicios sueltos en una visita): misma
+  // condición que `Screen2DateTime` (`chainPackFirst`), recalculada acá porque
+  // es OTRO componente — no se pasa por props.
+  const packServiceId = pack?.pack.serviceId ?? null
+  const chainPackFirst =
+    !!pack &&
+    services.length > 0 &&
+    (state.bookingMode ?? "juntos") === "juntos" &&
+    !!packServiceId &&
+    !services.some((s) => s.id === packServiceId)
 
   // La seña es la SUMA de las señas de cada turno (la sesión 1 del pack, que
   // lleva el precio del pack entero, más cada servicio suelto) — NO el 30%
@@ -2372,14 +2386,17 @@ export function Screen5Confirm({
     // y sólo se usa la fecha del pack cuando NO los hay.
     // En separados el servidor usa `serviceSlots`; `startsAt` va igual porque
     // el schema lo exige: mandamos el más temprano de los elegidos.
+    // Con encadenado, el bloque de servicios sueltos arranca cuando termina la
+    // sesión 1 del pack: T + D_pack. Sin encadenado, se conserva el cálculo de
+    // siempre (el arranque de los servicios sueltos, nunca la fecha del pack).
     const startsAt =
-      services.length > 0
-        ? (separados
-            ? new Date(
-                Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime()))
-              )
-            : combineDateTime(state.selectedDate!, state.selectedTime!))
-        : new Date(packSlotsPicked[0])
+      chainPackFirst && state.selectedDate && state.selectedTime
+        ? new Date(combineDateTime(state.selectedDate, state.selectedTime).getTime() + packDurationMin * 60_000)
+        : services.length > 0
+          ? (separados
+              ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
+              : combineDateTime(state.selectedDate!, state.selectedTime!))
+          : new Date(packSlotsPicked[0])
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón
@@ -2417,6 +2434,7 @@ export function Screen5Confirm({
       packStaff: pack ? ((state.packPro || "auto") as "auto" | string) : undefined,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
       packSlots: pack ? packSlotsPicked : undefined,
+      packChainedFirst: chainPackFirst,
       zoneSelections: Object.fromEntries(
         services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
       ),
