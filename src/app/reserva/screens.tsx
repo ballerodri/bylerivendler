@@ -2354,7 +2354,6 @@ export function Screen5Confirm({
   // SUMA de lo que haya de cada uno (0 si no hay).
   const packTotal = pack ? pack.pack.priceCents / 100 : 0
   const servicesTotal = combo ? combo.price : services.reduce((a, s) => a + effective(s).price, 0)
-  const servicesTotalMin = combo ? combo.duration : services.reduce((a, s) => a + effective(s).duration, 0)
   const total = packTotal + servicesTotal
   const totalPointsCost = (pack || combo) ? 0 : services.reduce((a, s) => a + (s.pointsCost ?? 0), 0)
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
@@ -2416,7 +2415,6 @@ export function Screen5Confirm({
   const dateObj = state.selectedDate ? parseYmd(state.selectedDate) : null
   const dow = dateObj ? DOW_NAMES[(dateObj.getDay() + 6) % 7] : ""
   const displayTime = state.selectedTime
-  const pro = professionals.find((p) => p.id === (state.pro || "auto")) ?? professionals[0]
   // Profesional elegida para el PACK (campo propio `packPro`, nunca
   // `state.pro`: ver la nota en `ProPicker`/`BookingState.packPro`). Sin
   // elegir ninguna, "auto" resuelve al mismo profesional "Asignación
@@ -2424,40 +2422,26 @@ export function Screen5Confirm({
   const packPro = professionals.find((p) => p.id === (state.packPro ?? "auto"))?.name
     ?? "Asignación automática"
 
-  // Per-service schedule for multi-professional bookings
-  const isMultiResolved = services.length > 1 && !!state.serviceOrder && !!state.resolvedStaff
-  const orderedItems = (() => {
-    if (!isMultiResolved || !state.serviceOrder || !state.selectedTime) return []
-    // Con encadenado, el bloque de servicios sueltos arranca DESPUÉS de la 1ª
-    // sesión del pack (T + D_pack) — el MISMO arranque que pay() manda en
-    // `startsAt`. Sin encadenado el offset es 0 (byte-idéntico a antes).
+  // Los servicios sueltos en modo "juntos" (encadenado o no, 1 o más), en
+  // orden y con su horario y profesional. Fuente ÚNICA de "Cuándo" para los
+  // servicios de una visita — antes había dos listas (`orderedItems` con
+  // profesional pero sólo 2+ servicios, y `chainedOrdered` sin profesional).
+  // Arranque: T + D_pack encadenado, T si no (el MISMO que pay() reserva, vía
+  // `sequentialStartTimes`). En "separados" no aplica (cada servicio tiene su
+  // propia fecha). La profesional sale de `resolvedStaff`; si un servicio no
+  // tiene una resuelta (ej. un solo servicio), cae a `state.pro` → "auto".
+  const juntosItems = (() => {
+    if (separados || services.length === 0 || !state.selectedTime) return []
     const base = addMinutesHM(state.selectedTime, chainPackFirst ? packDurationMin : 0)
-    const items = state.serviceOrder
+    const items = (state.serviceOrder ?? services.map((s) => s.id))
       .map((id) => services.find((s) => s.id === id))
       .filter((s): s is Service => !!s)
     const starts = sequentialStartTimes(base, items.map((s) => effective(s).duration))
     return items.map((svc, i) => ({
       svc,
-      assignedPro: professionals.find((p) => p.id === state.resolvedStaff?.[svc.id]),
       startTime: starts[i],
+      assignedPro: professionals.find((p) => p.id === (state.resolvedStaff?.[svc.id] ?? state.pro ?? "auto")),
     }))
-  })()
-
-  // Encadenado: los servicios sueltos como secuencia, arrancando en T + D_pack
-  // (el MISMO arranque que pay() reserva). A diferencia de `orderedItems`,
-  // existe también con UN solo servicio suelto (ahí `isMultiResolved` es false
-  // y `orderedItems` queda vacío). Misma fuente pura, así "QUÉ" y "CUÁNDO"
-  // nunca discrepan.
-  const chainedOrdered = (() => {
-    if (!chainPackFirst || !state.selectedTime) return []
-    const items = (state.serviceOrder ?? services.map((s) => s.id))
-      .map((id) => services.find((s) => s.id === id))
-      .filter((s): s is Service => !!s)
-    const starts = sequentialStartTimes(
-      addMinutesHM(state.selectedTime, packDurationMin),
-      items.map((s) => effective(s).duration)
-    )
-    return items.map((svc, i) => ({ svc, startTime: starts[i] }))
   })()
 
   const [paying, setPaying] = useState(false)
@@ -2624,29 +2608,15 @@ export function Screen5Confirm({
                 {pack.pack.pricingMode === "per_zone" && packZones.length > 0 && (
                   <small>{packZones.map((z) => z.name).join(", ")}</small>
                 )}
-                <small>{packPro}</small>
+                <small>{fmtPrice(packTotal)}</small>
               </div>
             )}
-            {services.length > 0 && (
-              isMultiResolved ? (
-                orderedItems.map(({ svc, assignedPro, startTime }) => (
-                  <div key={svc.id} style={{ marginBottom: 8 }}>
-                    {svc.name}
-                    <small>
-                      {startTime}hs · {fmtDuration(effective(svc).duration)} · {fmtPrice(effective(svc).price)}
-                      {assignedPro ? ` · ${assignedPro.name}` : ""}
-                    </small>
-                  </div>
-                ))
-              ) : (
-                services.map((s, i) => (
-                  <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
-                    {s.name}
-                    <small>{fmtDuration(effective(s).duration)} · {fmtPrice(effective(s).price)}</small>
-                  </div>
-                ))
-              )
-            )}
+            {services.map((s, i) => (
+              <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
+                {s.name}
+                <small>{fmtPrice(effective(s).price)}</small>
+              </div>
+            ))}
           </div>
         </div>
         <div className="summary__row">
@@ -2659,17 +2629,17 @@ export function Screen5Confirm({
               // "a agendar después"). Antes se mostraban en dos bloques y los
               // servicios arrancaban en T → parecían encimados con la sesión 1.
               <div>
-                <div style={{ marginBottom: chainedOrdered.length > 0 ? 6 : 0 }}>
+                <div style={{ marginBottom: juntosItems.length > 0 ? 6 : 0 }}>
                   <strong>Sesión 1 · {pack!.pack.name}</strong>
                   <small>
                     {dow} {dateObj && dateObj.getDate()} de{" "}
-                    {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()} · {displayTime}hs · {fmtDuration(packDurationMin)}
+                    {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()} · {displayTime}hs · {fmtDuration(packDurationMin)} · {packPro}
                   </small>
                 </div>
-                {chainedOrdered.map(({ svc, startTime }, i) => (
-                  <div key={svc.id} style={{ marginBottom: i < chainedOrdered.length - 1 ? 6 : 0 }}>
+                {juntosItems.map(({ svc, startTime, assignedPro }, i) => (
+                  <div key={svc.id} style={{ marginBottom: i < juntosItems.length - 1 ? 6 : 0 }}>
                     {svc.name}
-                    <small>{startTime}hs · {fmtDuration(effective(svc).duration)}</small>
+                    <small>{startTime}hs · {fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? packPro}</small>
                   </div>
                 ))}
                 {packSlotsForDisplay.slice(1).map((iso, i) => {
@@ -2680,7 +2650,7 @@ export function Screen5Confirm({
                     <div key={iso} style={{ marginTop: 6 }}>
                       <strong>Sesión {i + 2}</strong>
                       <small>
-                        {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)}
+                        {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)} · {packPro}
                       </small>
                     </div>
                   )
@@ -2703,7 +2673,7 @@ export function Screen5Confirm({
                         <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
                           <strong>Sesión {i + 1}</strong>
                           <small>
-                            {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)}
+                            {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)} · {packPro}
                           </small>
                         </div>
                       )
@@ -2719,20 +2689,31 @@ export function Screen5Confirm({
                   separados ? (
                     services.map((s) => {
                       const iso = state.serviceSlots?.[s.id]
+                      const staffId = state.serviceStaff?.[s.id] ?? "auto"
+                      const svcPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
                       return (
-                        <div key={s.id} className="breakdown__row">
-                          <span>{s.name}</span>
-                          <span>{iso ? fmtSlotAR(iso) : "—"}</span>
+                        <div key={s.id} style={{ marginBottom: 8 }}>
+                          {s.name}
+                          <small>
+                            {iso ? fmtSlotAR(iso) : "—"} · {fmtDuration(effective(s).duration)} · {svcPro.name}
+                          </small>
                         </div>
                       )
                     })
                   ) : (
                     <div>
-                      {dow} {dateObj && dateObj.getDate()} de{" "}
-                      {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
-                      <small>
-                        {displayTime}hs · {fmtDuration(servicesTotalMin)}
-                      </small>
+                      <div style={{ marginBottom: 6 }}>
+                        <strong>
+                          {dow} {dateObj && dateObj.getDate()} de{" "}
+                          {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
+                        </strong>
+                      </div>
+                      {juntosItems.map(({ svc, startTime, assignedPro }, i) => (
+                        <div key={svc.id} style={{ marginBottom: i < juntosItems.length - 1 ? 6 : 0 }}>
+                          {svc.name}
+                          <small>{startTime}hs · {fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? "Asignación automática"}</small>
+                        </div>
+                      ))}
                     </div>
                   )
                 )}
@@ -2740,31 +2721,6 @@ export function Screen5Confirm({
             )}
           </div>
         </div>
-        {separados ? (
-        <div className="summary__row">
-          <span className="summary__label">Profesional</span>
-          <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
-            {services.map((s, i) => {
-              const staffId = state.serviceStaff?.[s.id] ?? "auto"
-              const assignedPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
-              return (
-                <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
-                  {s.name}
-                  <small>{assignedPro.name}</small>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-        ) : !isMultiResolved && (
-        <div className="summary__row">
-          <span className="summary__label">Profesional</span>
-          <div className="summary__value" style={{ fontSize: 14 }}>
-            {pro.name}
-            <small>{pro.role}</small>
-          </div>
-        </div>
-        )}
         <div className="summary__row">
           <span className="summary__label">Dónde</span>
           <div className="summary__value" style={{ fontSize: 14 }}>
