@@ -1762,81 +1762,160 @@ function checkPerm(
   staffMap: StaffServiceMap,
   enforce: boolean,
   dateStr: string,
-  gridSlots: string[]
+  gridSlots: string[],
+  leadServiceId: string | null
 ): { assignment: Record<string, string>; starts: Record<string, string> } | null {
   const assignment: Record<string, string> = {}
   const starts: Record<string, string> = {}
-  // Tracks which professionals are concurrently busy within THIS permutation's
-  // time windows. Since services run sequentially (one ends before the next starts),
-  // the same professional CAN appear in multiple services — no concurrency conflict.
-  // We only block concurrent overlap with EXISTING legs in `legs`.
+  // Los servicios corren en secuencia (uno termina antes de que arranque el
+  // siguiente), así que la MISMA profesional puede aparecer en varios servicios
+  // — no hay conflicto de concurrencia entre ellos. Sólo bloqueamos la
+  // superposición con las patas YA reservadas en `legs`.
 
-  // Colocación en la GRILLA (misma regla PURA que usan createBooking y la
-  // pantalla — la "regla de oro"): el 1er turno arranca en el slot elegido y
-  // cada siguiente cae en el PRIMER slot de la grilla ≥ donde terminó el
-  // anterior (no pegado por minutos). Si la cadena se pasa del final del día,
-  // este slot no sirve. Los chequeos de disponibilidad de más abajo
-  // (`proWorksAtSlot`, `assignableStaff`) corren en ESTOS mismos [sStart,sEnd).
   const gridMin = gridSlots.map(hmToMinutes).sort((a, b) => a - b)
   const startSlotMin = hmToMinutes(arPartsFromUtc(new Date(startMs)).timeStr)
-  const durations = perm.map((i) => services[i].duration)
-  const startsMin = placeOnGrid(durations, gridMin, startSlotMin)
-  if (!startsMin) return null
 
-  for (let p = 0; p < perm.length; p++) {
-    const idx = perm[p]
-    const svc = services[idx]
-    const sStart = slotToUtcMs(dateStr, minutesToHm(startsMin[p]))
-    const sEnd = sStart + svc.duration * 60_000
-    starts[svc.id] = minutesToHm(startsMin[p])
-
-    // ¿Tiene esta profesional una pata CON SU NOMBRE que pise esta ventana?
-    // (No el turno entero: el turno "portador" de una cadena "juntos" sólo
-    // trae el nombre de la PRIMERA profesional — cada pata tiene la suya.)
+  // ── Disponibilidad REAL en la ventana [posMin, posMin+dur) ────────────────
+  // Los MISMOS chequeos de Fase 1 (`proWorksAtSlot` + `overlapsNamed` +
+  // `assignableStaff`), pero calculados en la posición REAL que decide la
+  // caminata (fundida en mitad de hora, o slot de grilla) — no en una posición
+  // precalculada. `overlapsNamed`: ¿esta profesional tiene una pata CON SU
+  // NOMBRE que pise la ventana? (No el turno entero: el turno "portador" de una
+  // cadena "juntos" sólo trae el nombre de la PRIMERA — cada pata tiene la suya.)
+  const windowChecks = (svcId: string, dur: number, posMin: number) => {
+    const sStart = slotToUtcMs(dateStr, minutesToHm(posMin))
+    const sEnd = sStart + dur * 60_000
     const overlapsNamed = (pid: string) =>
       legs.some((l) => l.staffId === pid && sStart < l.endMs && sEnd > l.startMs)
-
     // Las candidatas de ESTE servicio: las que lo hacen (regla estricta) y
-    // siguen activas (una profesional dada de baja no puede atender). Sin la
-    // regla (admin), cualquiera de las activas.
+    // siguen activas. Sin la regla (admin), cualquiera de las activas.
     const candidates = enforce
-      ? allowedStaffFor(svc.id, staffMap).filter((p) => allPros.includes(p))
+      ? allowedStaffFor(svcId, staffMap).filter((p) => allPros.includes(p))
       : allPros
-
-    // Patas (de cualquier servicio) que pisan esta ventana de horario.
     const overlappingLegs = legs.filter((l) => sStart < l.endMs && sEnd > l.startMs)
-
-    // Mismo conjunto de candidatas se use "auto" o un nombre puntual: la
-    // pregunta correcta siempre es "¿está ENTRE las asignables del conjunto
-    // COMPLETO?", nunca "¿sería asignable si fuera la única candidata?" — esa
-    // versión más estricta puede rechazar a la profesional puntual que ESTE
-    // MISMO solver ofrecería para "auto" (ver `assignableStaff`).
+    // Mismo conjunto se use "auto" o un nombre puntual: la pregunta correcta
+    // siempre es "¿está ENTRE las asignables del conjunto COMPLETO?" (ver
+    // `assignableStaff`).
     const withoutNamedOverlap = candidates.filter(
       (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
     )
-
-    // Si la clienta pidió una profesional puntual, tiene que hacer el servicio.
-    if (svc.staffId !== "auto") {
-      if (enforce && !canStaffDoService(svc.staffId, svc.id, staffMap)) return null
-      if (!proWorksAtSlot(svc.staffId, dayOfWeek, sStart, sEnd, blockedMap) || overlapsNamed(svc.staffId))
-        return null
-      // Una pata ANÓNIMA de un servicio que sólo ella hace también la ocupa,
-      // aunque no tenga su nombre puesto (ver `assignableStaff`).
-      if (!assignableStaff(withoutNamedOverlap, overlappingLegs, staffMap, allPros).includes(svc.staffId))
-        return null
-      assignment[svc.id] = svc.staffId
-    } else {
-      // `assignableStaff` descuenta, además, a quien una pata ANÓNIMA
-      // definitivamente ocupa (mismo criterio que `fetchDayAvailability`).
-      const free = assignableStaff(withoutNamedOverlap, overlappingLegs, staffMap, allPros)
-      if (!free.length) return null
-
-      // Preferir a alguien ya asignada antes en esta misma cadena (ej: dos
-      // masajes seguidos con la misma profesional), si sigue libre.
-      const preferred = Object.values(assignment).find((pid) => free.includes(pid))
-      assignment[svc.id] = preferred ?? free[0]
-    }
+    return { sStart, sEnd, overlapsNamed, overlappingLegs, withoutNamedOverlap }
   }
+
+  // ¿`staffId` es asignable a `svcId` en [posMin, posMin+dur)? Misma lógica que
+  // la rama "profesional puntual" de Fase 1: trabaja a esa hora, no pisa una
+  // pata con su nombre, y queda entre las asignables del conjunto COMPLETO
+  // (una pata ANÓNIMA de un servicio que sólo ella hace también la ocupa). NO
+  // chequea `canStaffDoService`: eso lo valida quien llama (la rama puntual y
+  // el pre-chequeo de fusión), igual que hoy.
+  const staffAssignableAt = (svcId: string, dur: number, posMin: number, staffId: string): boolean => {
+    const w = windowChecks(svcId, dur, posMin)
+    if (!proWorksAtSlot(staffId, dayOfWeek, w.sStart, w.sEnd, blockedMap) || w.overlapsNamed(staffId))
+      return false
+    return assignableStaff(w.withoutNamedOverlap, w.overlappingLegs, staffMap, allPros).includes(staffId)
+  }
+
+  // Resuelve la profesional de `svc` en `posMin`, o `null` si no hay ninguna.
+  // Mismos chequeos que Fase 1. `excludeStaff` (si viene) se descarta como
+  // candidata: lo usa el "nuevo bloque" tras una fusión geométricamente posible
+  // pero descartada por disponibilidad, para que la nueva profesional NO sea la
+  // del bloque (si lo fuera, `placeOnGridMerged` fundiría y divergiría).
+  const resolveStaffAt = (svc: ServiceInput, posMin: number, excludeStaff: string | null): string | null => {
+    const dur = svc.duration
+    if (svc.staffId !== "auto") {
+      // Si la clienta pidió una profesional puntual, tiene que hacer el servicio.
+      if (svc.staffId === excludeStaff) return null
+      if (enforce && !canStaffDoService(svc.staffId, svc.id, staffMap)) return null
+      return staffAssignableAt(svc.id, dur, posMin, svc.staffId) ? svc.staffId : null
+    }
+    const w = windowChecks(svc.id, dur, posMin)
+    const pool = excludeStaff ? w.withoutNamedOverlap.filter((p) => p !== excludeStaff) : w.withoutNamedOverlap
+    // `assignableStaff` descuenta a quien una pata ANÓNIMA definitivamente ocupa.
+    const free = assignableStaff(pool, w.overlappingLegs, staffMap, allPros)
+    if (!free.length) return null
+    // Preferir a alguien ya asignada antes en esta misma cadena (ej: dos masajes
+    // seguidos con la misma profesional), si sigue libre.
+    const preferred = Object.values(assignment).find((pid) => free.includes(pid))
+    return preferred ?? free[0]
+  }
+
+  // ── Caminata codiciosa: decide POSICIÓN (fundida o slot de grilla) y
+  // PROFESIONAL a la vez, ítem por ítem, en la posición REAL ──────────────────
+  // Regla de oro: produce `starts`/`assignment` tales que
+  // `placeOnGridMerged(perm con este assignment, gridMin, startSlot)` (con el
+  // pack/lead como su propio bloque) da EXACTAMENTE estos `starts` — porque la
+  // caminata funde justo cuando `placeOnGridMerged` fundiría (misma profesional
+  // + entra en la hora) y, cuando no puede fundir por disponibilidad, asigna
+  // OTRA profesional (así `placeOnGridMerged` tampoco funde). Con profesionales
+  // todas distintas se reduce a Fase 1 (`placeOnGrid`).
+  let blockStartMin = 0
+  let blockStaff: string | null = null
+  let blockEndMin = 0
+  let isLeadBoundary = false
+
+  for (let p = 0; p < perm.length; p++) {
+    const svc = services[perm[p]]
+    const dur = svc.duration
+
+    if (p === 0) {
+      const pos = startSlotMin
+      const staff = resolveStaffAt(svc, pos, null)
+      if (staff === null) return null
+      assignment[svc.id] = staff
+      starts[svc.id] = minutesToHm(pos)
+      blockStartMin = pos
+      blockStaff = staff
+      blockEndMin = pos + dur
+      // El lead (1ª sesión del pack encadenada) es su PROPIO bloque: el 1er
+      // servicio suelto nunca funde con él.
+      isLeadBoundary = leadServiceId != null && svc.id === leadServiceId
+      continue
+    }
+
+    const nextGrid = gridMin.find((g) => g > blockStartMin)
+    // "Entra en la hora del bloque" = termina antes del PRIMER slot de grilla
+    // posterior al arranque del bloque.
+    const fits = nextGrid !== undefined && blockEndMin + dur <= nextGrid
+
+    // ── Intentar FUSIÓN con el bloque actual ──
+    // Misma profesional (o "auto" que la acepta), entra en la hora, no es el
+    // borde del pack, y esa profesional está LIBRE en la ventana fundida
+    // (mismos chequeos reales que la rama puntual, en [blockEndMin, +dur)).
+    if (
+      fits &&
+      !isLeadBoundary &&
+      blockStaff !== null &&
+      (svc.staffId === "auto" || svc.staffId === blockStaff) &&
+      (!enforce || canStaffDoService(blockStaff, svc.id, staffMap)) &&
+      staffAssignableAt(svc.id, dur, blockEndMin, blockStaff)
+    ) {
+      const pos = blockEndMin
+      assignment[svc.id] = blockStaff
+      starts[svc.id] = minutesToHm(pos)
+      blockEndMin += dur
+      isLeadBoundary = false
+      continue
+    }
+
+    // ── NUEVO BLOQUE en el 1er slot de grilla ≥ fin del bloque actual ──
+    const pos = gridMin.find((g) => g >= blockEndMin)
+    if (pos === undefined) return null
+    // Si geométricamente ENTRABA pero no fundimos (profesional ocupada/incapaz),
+    // la nueva profesional NO puede ser la del bloque: si lo fuera,
+    // `placeOnGridMerged` (que sólo mira profesional + geometría) SÍ fundiría y
+    // divergiría de esta caminata. En el borde del pack no se excluye (es un
+    // bloque nuevo de todos modos y el pack va aparte).
+    const excludeStaff = fits && !isLeadBoundary ? blockStaff : null
+    const staff = resolveStaffAt(svc, pos, excludeStaff)
+    if (staff === null) return null
+    assignment[svc.id] = staff
+    starts[svc.id] = minutesToHm(pos)
+    blockStartMin = pos
+    blockStaff = staff
+    blockEndMin = pos + dur
+    isLeadBoundary = false
+  }
+
   return { assignment, starts }
 }
 
@@ -1851,13 +1930,14 @@ function trySlot(
   staffMap: StaffServiceMap,
   enforce: boolean,
   gridSlots: string[],
+  leadServiceId: string | null,
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots)
+    const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots, leadServiceId)
     if (res) {
       return {
         date: dateStr,
@@ -2010,7 +2090,7 @@ export async function fetchSequentialAvailability(
     const dayLegs = buildBusyLegs(dayApptRows)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, bh.slots, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, bh.slots, opts.leadServiceId ?? null, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
