@@ -15,6 +15,7 @@ import {
   type BusinessHour,
 } from "../data"
 import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-overlap"
 
 /**
  * De los slots candidatos de un día, cuáles quedan realmente disponibles:
@@ -46,10 +47,14 @@ export default function PackSessionPicker({
   minDate,
   onPick,
   onCancel,
+  blockedIntervals = [],
 }: {
   businessHours: BusinessHour[]
   durationMin: number
   proHint: string
+  // Tramos que la clienta YA ocupa ese día (en ms UTC). Opcional: sin pasarlo
+  // (o `[]`), el picker se comporta idéntico a hoy — el admin no lo pasa.
+  blockedIntervals?: BlockedInterval[]
   // Requerido (pero nullable): así ningún call site público puede olvidarse
   // de pasarlo y perder la regla en silencio. Con serviceId: se aplica la
   // regla estricta de `staff_services` (caminos públicos, en screens.tsx).
@@ -99,6 +104,20 @@ export default function PackSessionPicker({
   const firstDayOffset = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
   const canPrev = !(viewYear === today.getFullYear() && viewMonth <= today.getMonth())
   const selectedObj = selectedDate ? parseYmd(selectedDate) : null
+
+  // Para cada horario libre que trae el servidor, ¿se pisa con algo que la
+  // clienta ya eligió? (misma regla estricta que `validateSeparateSlots`).
+  const slotStates = selectedDate
+    ? slots.map((t) => ({
+        t,
+        block: overlappingBlock(slotToUtcMs(selectedDate, t), durationMin, blockedIntervals),
+      }))
+    : []
+  // Los bloques que efectivamente pisan algún horario de este día (para la
+  // leyenda). Se deduplican por referencia (los ítems de `blockedIntervals`
+  // son estables), preservando el orden de aparición.
+  const activeBlocks: BlockedInterval[] = []
+  for (const s of slotStates) if (s.block && !activeBlocks.includes(s.block)) activeBlocks.push(s.block)
 
   return (
     <div>
@@ -185,17 +204,42 @@ export default function PackSessionPicker({
                 No hay horarios disponibles ese día. Probá con otro.
               </p>
             ) : (
-              <div className="slots__grid">
-                {slots.map((t) => (
-                  <button
-                    key={t}
-                    className="slot"
-                    onClick={() => onPick(new Date(slotToUtcMs(selectedDate, t)).toISOString())}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
+              <>
+                <div className="slots__grid">
+                  {slotStates.map(({ t, block }) =>
+                    block ? (
+                      <div
+                        key={t}
+                        className="slot"
+                        style={{ opacity: 0.5, cursor: "default" }}
+                        title={`Ya tenés ${block.name} a esta hora`}
+                      >
+                        {t}
+                      </div>
+                    ) : (
+                      <button
+                        key={t}
+                        className="slot"
+                        onClick={() => onPick(new Date(slotToUtcMs(selectedDate, t)).toISOString())}
+                      >
+                        {t}
+                      </button>
+                    )
+                  )}
+                </div>
+                {activeBlocks.length > 0 && (
+                  <p style={{ fontSize: 11, color: "var(--ink-mute)", marginTop: 10 }}>
+                    Los horarios en gris se superponen con:{" "}
+                    {activeBlocks
+                      .map(
+                        (b) =>
+                          `${b.name} (${arPartsFromUtc(new Date(b.startMs)).timeStr}–${arPartsFromUtc(new Date(b.endMs)).timeStr})`
+                      )
+                      .join(", ")}
+                    .
+                  </p>
+                )}
+              </>
             )}
           </>
         )}
