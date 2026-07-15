@@ -1324,7 +1324,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           {ModeChooser()}
           {Cal()}
           {Slots()}
-          {ProPicker()}
+          {/* El selector de profesional se muestra ARRIBA de todo (en MixedBody):
+              esta rama de ServiceDatesSection sólo se usa desde la mezcla. */}
         </>
       )
     }
@@ -1335,7 +1336,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         <p className="lede">Elegí la fecha de cada servicio.</p>
 
         {ModeChooser()}
-        {ProPicker()}
+        {/* En la mezcla, el selector va arriba de todo (MixedBody). Sólo en la
+            pantalla de servicios sueltos (sin pack) se muestra acá. */}
+        {!mixed && ProPicker()}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
           {state.services.map((s) => {
@@ -1378,6 +1381,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   if (mixed && pickingIdx === null && pickingServiceId === null) {
     const MixedBody = () => (
       <>
+        {/* La profesional PRIMERO: filtra los horarios, así que elegirla antes
+            evita elegir fechas y perderlas al cambiar de profesional. */}
+        {ProPicker()}
         {PackSessionsSection()}
         <div style={{ marginTop: 28 }}>{ServiceDatesSection()}</div>
         {/* Misma regla y mismo estilo que el error de superposición de la
@@ -1499,8 +1505,9 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
     const ListBody = () => (
       <>
-        {PackSessionsSection()}
+        {/* La profesional PRIMERO, arriba de la lista de sesiones. */}
         {ProPicker()}
+        {PackSessionsSection()}
       </>
     )
 
@@ -1655,11 +1662,12 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             Horario de Buenos Aires (GMT-3). Los días con punto dorado son hoy.
           </p>
           {ModeChooser()}
+          {/* La profesional PRIMERO: filtra los horarios disponibles. */}
+          {ProPicker()}
           <div className="dcol-2">
             {Cal()}
             <div>
               {Slots()}
-              {ProPicker()}
             </div>
           </div>
         </div>
@@ -1682,9 +1690,10 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           seleccionables.
         </p>
         {ModeChooser()}
+        {/* La profesional PRIMERO: filtra los horarios disponibles. */}
+        {ProPicker()}
         {Cal()}
         {Slots()}
-        {ProPicker()}
       </div>
       {FooterCTA()}
     </div>
