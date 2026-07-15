@@ -1615,6 +1615,11 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       // pack no puede pisarlos (es una sola persona, aunque sea otra
       // profesional). El solapamiento sesión-vs-sesión del pack ya lo evita
       // `minForPackSession`. Misma regla estricta que el cartel rojo final.
+      // Nota de alcance: en una mezcla en modo "juntos", los servicios sueltos
+      // NO tienen `serviceSlots` (van encadenados en `selectedDate/Time`), así
+      // que acá `blocked` queda vacío y una sesión que pise esa visita no se
+      // grisa — el cartel rojo `mixedOverlap` la sigue frenando. El gris cubre
+      // el modo "cada uno en su fecha" (el alcance de la spec).
       const blocked: BlockedInterval[] = state.services
         .filter((s) => serviceSlots[s.id])
         .map((s) => {
