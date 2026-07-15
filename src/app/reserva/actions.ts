@@ -10,6 +10,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { placeOnGrid, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
 import { crossOverlapCheck, sumDeposits, sumTotals } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
@@ -1636,6 +1637,10 @@ export type SlotResult = {
   time: string
   serviceOrder: string[]
   resolvedStaff: Record<string, string>
+  // serviceId → "HH:MM" en que ARRANCA ese servicio, ya colocado en la grilla
+  // horaria (no pegado por minutos). Lo usa el cliente para mostrar y para
+  // armar `startsAt`.
+  starts: Record<string, string>
 }
 
 export type SequentialAvailabilityResult = {
@@ -1716,19 +1721,35 @@ function checkPerm(
   dayOfWeek: number,
   blockedMap: BlockedMap,
   staffMap: StaffServiceMap,
-  enforce: boolean
-): Record<string, string> | null {
+  enforce: boolean,
+  dateStr: string,
+  gridSlots: string[]
+): { assignment: Record<string, string>; starts: Record<string, string> } | null {
   const assignment: Record<string, string> = {}
+  const starts: Record<string, string> = {}
   // Tracks which professionals are concurrently busy within THIS permutation's
   // time windows. Since services run sequentially (one ends before the next starts),
   // the same professional CAN appear in multiple services — no concurrency conflict.
   // We only block concurrent overlap with EXISTING legs in `legs`.
-  let ms = startMs
 
-  for (const idx of perm) {
+  // Colocación en la GRILLA (misma regla PURA que usan createBooking y la
+  // pantalla — la "regla de oro"): el 1er turno arranca en el slot elegido y
+  // cada siguiente cae en el PRIMER slot de la grilla ≥ donde terminó el
+  // anterior (no pegado por minutos). Si la cadena se pasa del final del día,
+  // este slot no sirve. Los chequeos de disponibilidad de más abajo
+  // (`proWorksAtSlot`, `assignableStaff`) corren en ESTOS mismos [sStart,sEnd).
+  const gridMin = gridSlots.map(hmToMinutes).sort((a, b) => a - b)
+  const startSlotMin = hmToMinutes(arPartsFromUtc(new Date(startMs)).timeStr)
+  const durations = perm.map((i) => services[i].duration)
+  const startsMin = placeOnGrid(durations, gridMin, startSlotMin)
+  if (!startsMin) return null
+
+  for (let p = 0; p < perm.length; p++) {
+    const idx = perm[p]
     const svc = services[idx]
-    const sStart = ms
-    const sEnd = ms + svc.duration * 60_000
+    const sStart = slotToUtcMs(dateStr, minutesToHm(startsMin[p]))
+    const sEnd = sStart + svc.duration * 60_000
+    starts[svc.id] = minutesToHm(startsMin[p])
 
     // ¿Tiene esta profesional una pata CON SU NOMBRE que pise esta ventana?
     // (No el turno entero: el turno "portador" de una cadena "juntos" sólo
@@ -1776,9 +1797,8 @@ function checkPerm(
       const preferred = Object.values(assignment).find((pid) => free.includes(pid))
       assignment[svc.id] = preferred ?? free[0]
     }
-    ms = sEnd
   }
-  return assignment
+  return { assignment, starts }
 }
 
 function trySlot(
@@ -1791,19 +1811,21 @@ function trySlot(
   blockedMap: BlockedMap,
   staffMap: StaffServiceMap,
   enforce: boolean,
+  gridSlots: string[],
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
 
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const assignment = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce)
-    if (assignment) {
+    const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots)
+    if (res) {
       return {
         date: dateStr,
         time: slot,
         serviceOrder: perm.map((i) => services[i].id),
-        resolvedStaff: assignment,
+        resolvedStaff: res.assignment,
+        starts: res.starts,
       }
     }
   }
@@ -1949,7 +1971,7 @@ export async function fetchSequentialAvailability(
     const dayLegs = buildBusyLegs(dayApptRows)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, bh.slots, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
