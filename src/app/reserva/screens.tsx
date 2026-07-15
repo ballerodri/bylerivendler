@@ -698,6 +698,15 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   // ¿Compra mezclada? Un pack Y servicios sueltos a la vez.
   const mixed = !!selectedPack && state.services.length > 0
+  // El encadenado (sesión 1 del pack + servicios sueltos en una visita) aplica
+  // sólo en la mezcla, en modo "juntos", y NO si el servicio del pack es
+  // también uno de los sueltos (dos ítems con el mismo id romperían el buscador).
+  const packServiceId = selectedPack?.pack.serviceId ?? null
+  const chainPackFirst =
+    mixed &&
+    bookingMode === "juntos" &&
+    !!packServiceId &&
+    !state.services.some((s) => s.id === packServiceId)
   // La sesión 1 del pack es OBLIGATORIA; el resto se puede agendar después.
   // Lee `packPicked` (la versión DEPURADA de `packSlots`), no el estado
   // crudo — ver el comentario de arriba.
@@ -755,23 +764,31 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // nunca pasa por acá. Si esta clave dependiera del pack, cambiar el
   // profesional de un servicio (mismo pack, mismas zonas) no dispararía el
   // refetch de disponibilidad.
-  const assignmentKey = state.services
-    .map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`)
-    .join("|")
+  const assignmentKey =
+    (chainPackFirst && packServiceId
+      ? `pack:${packServiceId}:${state.packPro ?? "auto"}:${packDurationMin}|`
+      : "") +
+    state.services.map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`).join("|")
 
   useEffect(() => {
     if (!selectedDate) { setSeqResult(null); return }
-    // Sólo los servicios sueltos alimentan este encadenado "juntos" (ver el
-    // comentario de `assignmentKey`): el pack nunca usa `selectedDate`.
-    const serviceInputs = state.services.map((s) => ({
+    const looseInputs = state.services.map((s) => ({
       id: s.id,
       name: s.name,
       duration: effectiveService(s, zoneSel).duration,
       staffId: serviceStaff[s.id] ?? "auto",
     }))
+    // Con encadenado, el servicio del pack va PRIMERO en la cadena, fijado a la
+    // profesional del pack (`packPro`) — así el buscador ofrece sólo horarios
+    // donde entra toda la visita seguida.
+    const packInput = chainPackFirst && packServiceId
+      ? [{ id: packServiceId, name: selectedPack!.pack.serviceName, duration: packDurationMin, staffId: state.packPro ?? "auto" }]
+      : []
+    const serviceInputs = [...packInput, ...looseInputs]
+    if (!serviceInputs.length) { setSeqResult(null); return }
     let cancelled = false
     setSlotsLoading(true)
-    fetchSequentialAvailability(serviceInputs, selectedDate).then((result) => {
+    fetchSequentialAvailability(serviceInputs, selectedDate, 30, chainPackFirst && packServiceId ? { leadServiceId: packServiceId } : {}).then((result) => {
       if (cancelled) return
       setSeqResult(result)
       if (state.selectedTime && !result.slotsForDate.some((r) => r.time === state.selectedTime)) {
@@ -801,6 +818,28 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     const d = parseYmd(result.date)
     setViewYear(d.getFullYear())
     setViewMonth(d.getMonth())
+    if (chainPackFirst && packServiceId) {
+      // La cadena incluye el pack primero. Se saca el pack del orden/staff de
+      // los sueltos, y T (el arranque de la visita) es la fecha de la sesión 1.
+      const looseOrder = result.serviceOrder.filter((id) => id !== packServiceId)
+      const looseStaff: Record<string, string> = {}
+      for (const [id, sid] of Object.entries(result.resolvedStaff))
+        if (id !== packServiceId) looseStaff[id] = sid
+      const T = combineDateTime(result.date, result.time).toISOString()
+      const restSessions = (state.packSlots ?? []).slice(1)
+      setState({
+        ...state,
+        selectedDate: result.date,
+        selectedTime: result.time,
+        serviceOrder: looseOrder,
+        resolvedStaff: looseStaff,
+        serviceStaff: { ...serviceStaff, ...looseStaff },
+        // La sesión 1 del pack queda fijada al arranque de la visita (T). Las
+        // sesiones 2..N se conservan (se siguen agendando por separado).
+        packSlots: [T, ...restSessions],
+      })
+      return
+    }
     setState({
       ...state,
       selectedDate: result.date,
