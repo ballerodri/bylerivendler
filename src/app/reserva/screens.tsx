@@ -1099,10 +1099,18 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     !canSeparate ? null : (
       <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "0 0 20px" }}>
         <strong style={{ fontFamily: "var(--serif)", fontSize: 15 }}>
-          Elegiste {state.services.length} servicios. ¿Cómo los querés?
+          {mixed
+            ? `Elegiste un pack y ${state.services.length} servicios. ¿Cómo los agendás?`
+            : `Elegiste ${state.services.length} servicios. ¿Cómo los querés?`}
         </strong>
         {([
-          { v: "juntos" as const, label: "El mismo día, uno después del otro", note: "Venís una sola vez" },
+          {
+            v: "juntos" as const,
+            label: "El mismo día, uno después del otro",
+            // En la mezcla la 1ª sesión del pack se encadena con los servicios,
+            // pero las demás sesiones son otras visitas: "una sola vez" mentiría.
+            note: mixed ? "La 1ª sesión del pack y tus servicios, juntos" : "Venís una sola vez",
+          },
           { v: "separados" as const, label: "Cada uno en su fecha y horario", note: "Elegís cuándo va cada uno" },
         ]).map((o) => (
           <label
