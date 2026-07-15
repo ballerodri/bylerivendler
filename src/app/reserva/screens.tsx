@@ -1099,7 +1099,13 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           serviceId: selectedPack.pack.serviceId,
           name: selectedPack.pack.serviceName,
           current: state.packPro ?? "auto",
-          onPick: (id: string) => setState({ ...state, packPro: id === "auto" ? undefined : id }),
+          // Cambiar la profesional invalida las fechas ya elegidas: un horario
+          // ofrecido para "Auto" puede no estar libre para esta profesional en
+          // particular. Se limpian, igual que hace `updateServiceStaff` con los
+          // servicios sueltos — si no, el server las rechaza recién al final con
+          // un "se ocupó" confuso.
+          onPick: (id: string) =>
+            setState({ ...state, packPro: id === "auto" ? undefined : id, packSlots: undefined }),
         }]
       : []),
     ...state.services.map((svc) => ({
