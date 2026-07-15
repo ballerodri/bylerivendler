@@ -42,6 +42,11 @@ const BookingInput = z.object({
   // `resolvedStaff`, que pertenece a los servicios sueltos (en una compra
   // mezclada el pack terminaría con la profesional de otro servicio).
   packStaff: z.union([z.literal("auto"), z.string().uuid()]).optional(),
+  // La 1ª sesión del pack va encadenada al inicio de la cadena "juntos": el
+  // bloque de servicios arranca cuando termina esa sesión (fuera de la grilla
+  // de horarios a propósito). `planPack` valida que el arranque real (T) esté
+  // en la grilla; acá se relaja SÓLO el chequeo de grilla del 1er tramo suelto.
+  packChainedFirst: z.boolean().optional(),
   payChoice: z.enum(["deposit", "full"]).optional(),
   // Modo "separados": una fecha por servicio (serviceId → ISO). Si no viene,
   // la reserva es la de siempre: UN turno con los servicios encadenados.
@@ -597,7 +602,13 @@ async function planLooseServices(
     // exigírselo acá rechazaría CUALQUIER combinación multi-servicio que el
     // buscador acaba de ofrecer. Todas las patas sí tienen que caer en un
     // día abierto (`is_open`).
-    if (!bh?.is_open || (i === 0 && !bh.slots.includes(timeStr)))
+    // Con `packChainedFirst`, el 1er tramo suelto arranca cuando termina la
+    // sesión 1 del pack (T + D_pack) — un horario que NO está en la grilla a
+    // propósito. `planPack` ya validó que T (el arranque real de la visita)
+    // esté en la grilla. El chequeo de disponibilidad REAL de abajo
+    // (`fetchDayAvailability`) sigue corriendo en TODOS los tramos.
+    const needsGrid = i === 0 && !input.packChainedFirst
+    if (!bh?.is_open || (needsGrid && !bh.slots.includes(timeStr)))
       return {
         ok: false,
         error: `El horario de "${s.name}" ya no está disponible. Elegí otro.`,
@@ -1803,7 +1814,7 @@ export async function fetchSequentialAvailability(
   services: ServiceInput[],
   fromDate: string,
   daysAhead = 30,
-  opts: { enforceStaffServices?: boolean } = {}
+  opts: { enforceStaffServices?: boolean; leadServiceId?: string } = {}
 ): Promise<SequentialAvailabilityResult> {
   const enforce = opts.enforceStaffServices ?? true
   const empty: SequentialAvailabilityResult = {
@@ -1894,6 +1905,10 @@ export async function fetchSequentialAvailability(
     // chequea sobre TODA la cadena, no sólo el par inmediato.
     if (orderLastViolated(perm.map((i) => ({ orderLast: orderLastIds.has(services[i].id) }))))
       return false
+    // Si hay un ítem inicial fijo (la 1ª sesión del pack encadenada), tiene que
+    // ir SIEMPRE primero: el bloque de servicios sueltos es un turno contiguo,
+    // así que el pack sólo puede ir antes.
+    if (opts.leadServiceId && services[perm[0]]?.id !== opts.leadServiceId) return false
     return true
   }
 

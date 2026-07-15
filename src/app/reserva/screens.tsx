@@ -698,6 +698,15 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
 
   // ¿Compra mezclada? Un pack Y servicios sueltos a la vez.
   const mixed = !!selectedPack && state.services.length > 0
+  // El encadenado (sesión 1 del pack + servicios sueltos en una visita) aplica
+  // sólo en la mezcla, en modo "juntos", y NO si el servicio del pack es
+  // también uno de los sueltos (dos ítems con el mismo id romperían el buscador).
+  const packServiceId = selectedPack?.pack.serviceId ?? null
+  const chainPackFirst =
+    mixed &&
+    bookingMode === "juntos" &&
+    !!packServiceId &&
+    !state.services.some((s) => s.id === packServiceId)
   // La sesión 1 del pack es OBLIGATORIA; el resto se puede agendar después.
   // Lee `packPicked` (la versión DEPURADA de `packSlots`), no el estado
   // crudo — ver el comentario de arriba.
@@ -732,12 +741,16 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // que cubra el total: cualquier sesión del pack que se superponga con una
   // parte de la cadena se superpone con este ítem entero, porque la cadena no
   // tiene huecos entre servicios.
+  const looseChainStartMs =
+    selectedDate && selectedTime
+      ? combineDateTime(selectedDate, selectedTime).getTime() + (chainPackFirst ? packDurationMin * 60_000 : 0)
+      : 0
   const looseChainSlot: SlotItem[] =
     bookingMode === "juntos" && selectedDate && selectedTime
       ? [{
           serviceId: "juntos",
           name: state.services.length > 1 ? "Tus servicios" : (state.services[0]?.name ?? "Tus servicios"),
-          startsAtMs: combineDateTime(selectedDate, selectedTime).getTime(),
+          startsAtMs: looseChainStartMs,
           durationMin: state.services.reduce((a, s) => a + effectiveService(s, zoneSel).duration, 0),
           priceCents: 0,
         }]
@@ -755,23 +768,31 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // nunca pasa por acá. Si esta clave dependiera del pack, cambiar el
   // profesional de un servicio (mismo pack, mismas zonas) no dispararía el
   // refetch de disponibilidad.
-  const assignmentKey = state.services
-    .map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`)
-    .join("|")
+  const assignmentKey =
+    (chainPackFirst && packServiceId
+      ? `pack:${packServiceId}:${state.packPro ?? "auto"}:${packDurationMin}|`
+      : "") +
+    state.services.map((s) => `${s.id}:${serviceStaff[s.id] ?? "auto"}:${(zoneSel[s.id] ?? []).join(",")}`).join("|")
 
   useEffect(() => {
     if (!selectedDate) { setSeqResult(null); return }
-    // Sólo los servicios sueltos alimentan este encadenado "juntos" (ver el
-    // comentario de `assignmentKey`): el pack nunca usa `selectedDate`.
-    const serviceInputs = state.services.map((s) => ({
+    const looseInputs = state.services.map((s) => ({
       id: s.id,
       name: s.name,
       duration: effectiveService(s, zoneSel).duration,
       staffId: serviceStaff[s.id] ?? "auto",
     }))
+    // Con encadenado, el servicio del pack va PRIMERO en la cadena, fijado a la
+    // profesional del pack (`packPro`) — así el buscador ofrece sólo horarios
+    // donde entra toda la visita seguida.
+    const packInput = chainPackFirst && packServiceId
+      ? [{ id: packServiceId, name: selectedPack!.pack.serviceName, duration: packDurationMin, staffId: state.packPro ?? "auto" }]
+      : []
+    const serviceInputs = [...packInput, ...looseInputs]
+    if (!serviceInputs.length) { setSeqResult(null); return }
     let cancelled = false
     setSlotsLoading(true)
-    fetchSequentialAvailability(serviceInputs, selectedDate).then((result) => {
+    fetchSequentialAvailability(serviceInputs, selectedDate, 30, chainPackFirst && packServiceId ? { leadServiceId: packServiceId } : {}).then((result) => {
       if (cancelled) return
       setSeqResult(result)
       if (state.selectedTime && !result.slotsForDate.some((r) => r.time === state.selectedTime)) {
@@ -801,6 +822,28 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     const d = parseYmd(result.date)
     setViewYear(d.getFullYear())
     setViewMonth(d.getMonth())
+    if (chainPackFirst && packServiceId) {
+      // La cadena incluye el pack primero. Se saca el pack del orden/staff de
+      // los sueltos, y T (el arranque de la visita) es la fecha de la sesión 1.
+      const looseOrder = result.serviceOrder.filter((id) => id !== packServiceId)
+      const looseStaff: Record<string, string> = {}
+      for (const [id, sid] of Object.entries(result.resolvedStaff))
+        if (id !== packServiceId) looseStaff[id] = sid
+      const T = combineDateTime(result.date, result.time).toISOString()
+      const restSessions = (state.packSlots ?? []).slice(1)
+      setState({
+        ...state,
+        selectedDate: result.date,
+        selectedTime: result.time,
+        serviceOrder: looseOrder,
+        resolvedStaff: looseStaff,
+        serviceStaff: { ...serviceStaff, ...looseStaff },
+        // La sesión 1 del pack queda fijada al arranque de la visita (T). Las
+        // sesiones 2..N se conservan (se siguen agendando por separado).
+        packSlots: [T, ...restSessions],
+      })
+      return
+    }
     setState({
       ...state,
       selectedDate: result.date,
@@ -1317,26 +1360,36 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                   borderRadius: 10, opacity: blocked ? 0.45 : 1,
                 }}
               >
-                <span style={{ fontSize: 13 }}>
-                  <strong>Sesión {i + 1}</strong>{" "}
-                  {iso
-                    ? new Date(iso).toLocaleString("es-AR", {
-                        weekday: "short", day: "2-digit", month: "short",
-                        hour: "2-digit", minute: "2-digit", hour12: false,
-                        timeZone: "America/Argentina/Buenos_Aires",
-                      })
-                    : i === 0
-                      ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
-                      : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
-                </span>
-                <span style={{ display: "flex", gap: 8 }}>
-                  <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
-                    {iso ? "Cambiar" : "Elegir fecha"}
-                  </button>
-                  {iso && i > 0 && (
-                    <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
-                  )}
-                </span>
+                {i === 0 && chainPackFirst ? (
+                  <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>
+                    {state.selectedDate && state.selectedTime
+                      ? `${fmtSlotAR(combineDateTime(state.selectedDate, state.selectedTime).toISOString())} · en esta visita`
+                      : "— elegí el horario de la visita —"}
+                  </span>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 13 }}>
+                      <strong>Sesión {i + 1}</strong>{" "}
+                      {iso
+                        ? new Date(iso).toLocaleString("es-AR", {
+                            weekday: "short", day: "2-digit", month: "short",
+                            hour: "2-digit", minute: "2-digit", hour12: false,
+                            timeZone: "America/Argentina/Buenos_Aires",
+                          })
+                        : i === 0
+                          ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                          : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
+                    </span>
+                    <span style={{ display: "flex", gap: 8 }}>
+                      <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
+                        {iso ? "Cambiar" : "Elegir fecha"}
+                      </button>
+                      {iso && i > 0 && (
+                        <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
             )
           })}
@@ -2210,8 +2263,25 @@ export function Screen5Confirm({
   const canRedeem = !pack && !combo && loyaltyPoints >= totalPointsCost && totalPointsCost > 0
   const redeeming = !!state.redeemWithPoints && canRedeem
   const payChoice: PayChoice = state.payChoice ?? "deposit"
-  const separados =
-    !combo && services.length >= 2 && (state.bookingMode ?? "juntos") === "separados"
+  // Elegir "separados" sólo tiene sentido con 2+ servicios sueltos (mismo
+  // `canSeparate` que `Screen2DateTime`); con menos, el modo queda forzado a
+  // "juntos" — así el modo NORMALIZADO acá coincide siempre con el de la
+  // pantalla de fecha, aunque `state.bookingMode` persistido diga otra cosa
+  // (localStorage restaurado/desactualizado).
+  const canSeparateS5 = !combo && services.length >= 2
+  const looseMode = canSeparateS5 ? (state.bookingMode ?? "juntos") : "juntos"
+  const separados = canSeparateS5 && looseMode === "separados"
+  // El encadenado (sesión 1 del pack + servicios sueltos en una visita): misma
+  // condición que `Screen2DateTime` (`chainPackFirst`), recalculada acá porque
+  // es OTRO componente — no se pasa por props. Usa `looseMode` (normalizado),
+  // NO `state.bookingMode` crudo, para que las dos pantallas nunca discrepen.
+  const packServiceId = pack?.pack.serviceId ?? null
+  const chainPackFirst =
+    !!pack &&
+    services.length > 0 &&
+    looseMode === "juntos" &&
+    !!packServiceId &&
+    !services.some((s) => s.id === packServiceId)
 
   // La seña es la SUMA de las señas de cada turno (la sesión 1 del pack, que
   // lleva el precio del pack entero, más cada servicio suelto) — NO el 30%
@@ -2333,14 +2403,17 @@ export function Screen5Confirm({
     // y sólo se usa la fecha del pack cuando NO los hay.
     // En separados el servidor usa `serviceSlots`; `startsAt` va igual porque
     // el schema lo exige: mandamos el más temprano de los elegidos.
+    // Con encadenado, el bloque de servicios sueltos arranca cuando termina la
+    // sesión 1 del pack: T + D_pack. Sin encadenado, se conserva el cálculo de
+    // siempre (el arranque de los servicios sueltos, nunca la fecha del pack).
     const startsAt =
-      services.length > 0
-        ? (separados
-            ? new Date(
-                Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime()))
-              )
-            : combineDateTime(state.selectedDate!, state.selectedTime!))
-        : new Date(packSlotsPicked[0])
+      chainPackFirst && state.selectedDate && state.selectedTime
+        ? new Date(combineDateTime(state.selectedDate, state.selectedTime).getTime() + packDurationMin * 60_000)
+        : services.length > 0
+          ? (separados
+              ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
+              : combineDateTime(state.selectedDate!, state.selectedTime!))
+          : new Date(packSlotsPicked[0])
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón
@@ -2378,6 +2451,7 @@ export function Screen5Confirm({
       packStaff: pack ? ((state.packPro || "auto") as "auto" | string) : undefined,
       packZoneIds: state.pack?.pack.pricingMode === "per_zone" ? (state.pack?.zoneIds ?? []) : undefined,
       packSlots: pack ? packSlotsPicked : undefined,
+      packChainedFirst: chainPackFirst,
       zoneSelections: Object.fromEntries(
         services.filter((s) => s.pricingMode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
       ),
