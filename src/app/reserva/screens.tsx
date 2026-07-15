@@ -1338,6 +1338,64 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // El cuerpo de la lista de sesiones del pack (antes el contenido de
   // `ListBody`): se usa tal cual en el flujo "sólo pack" y, compuesto con
   // `ServiceDatesSection()`, en la compra mezclada.
+  // Las filas de sesiones del pack. `skipFirstInChain` saltea la sesión 1
+  // cuando el encadenado la muestra en `VisitPreview` (así no se duplica); en
+  // el flujo "sólo pack" se llama sin flag y muestra las N.
+  const PackSessionRows = ({ skipFirstInChain = false }: { skipFirstInChain?: boolean } = {}) => {
+    if (!pack) return null
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
+        {Array.from({ length: pack.sessions }).map((_, i) => {
+          if (skipFirstInChain && chainPackFirst && i === 0) return null
+          const iso = packPicked[i]
+          const blocked = i > 0 && !packPicked[i - 1]   // no se puede elegir la 3ª sin la 2ª
+          return (
+            <div
+              key={i}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+                borderRadius: 10, opacity: blocked ? 0.45 : 1,
+              }}
+            >
+              {i === 0 && chainPackFirst ? (
+                <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>
+                  {state.selectedDate && state.selectedTime
+                    ? `${fmtSlotAR(combineDateTime(state.selectedDate, state.selectedTime).toISOString())} · en esta visita`
+                    : "— elegí el horario de la visita —"}
+                </span>
+              ) : (
+                <>
+                  <span style={{ fontSize: 13 }}>
+                    <strong>Sesión {i + 1}</strong>{" "}
+                    {iso
+                      ? new Date(iso).toLocaleString("es-AR", {
+                          weekday: "short", day: "2-digit", month: "short",
+                          hour: "2-digit", minute: "2-digit", hour12: false,
+                          timeZone: "America/Argentina/Buenos_Aires",
+                        })
+                      : i === 0
+                        ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                        : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
+                  </span>
+                  <span style={{ display: "flex", gap: 8 }}>
+                    <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
+                      {iso ? "Cambiar" : "Elegir fecha"}
+                    </button>
+                    {iso && i > 0 && (
+                      <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
+                    )}
+                  </span>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  // Flujo "sólo pack": título + lede + las N filas (sin saltar ninguna).
   const PackSessionsSection = () => {
     if (!pack) return null
     return (
@@ -1347,54 +1405,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           {pack.name} · {pack.sessions} sesiones. Elegí al menos la primera; el resto lo podés
           agendar después.
         </p>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
-          {Array.from({ length: pack.sessions }).map((_, i) => {
-            const iso = packPicked[i]
-            const blocked = i > 0 && !packPicked[i - 1]   // no se puede elegir la 3ª sin la 2ª
-            return (
-              <div
-                key={i}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
-                  borderRadius: 10, opacity: blocked ? 0.45 : 1,
-                }}
-              >
-                {i === 0 && chainPackFirst ? (
-                  <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>
-                    {state.selectedDate && state.selectedTime
-                      ? `${fmtSlotAR(combineDateTime(state.selectedDate, state.selectedTime).toISOString())} · en esta visita`
-                      : "— elegí el horario de la visita —"}
-                  </span>
-                ) : (
-                  <>
-                    <span style={{ fontSize: 13 }}>
-                      <strong>Sesión {i + 1}</strong>{" "}
-                      {iso
-                        ? new Date(iso).toLocaleString("es-AR", {
-                            weekday: "short", day: "2-digit", month: "short",
-                            hour: "2-digit", minute: "2-digit", hour12: false,
-                            timeZone: "America/Argentina/Buenos_Aires",
-                          })
-                        : i === 0
-                          ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
-                          : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
-                    </span>
-                    <span style={{ display: "flex", gap: 8 }}>
-                      <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
-                        {iso ? "Cambiar" : "Elegir fecha"}
-                      </button>
-                      {iso && i > 0 && (
-                        <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
-                      )}
-                    </span>
-                  </>
-                )}
-              </div>
-            )
-          })}
-        </div>
+        {PackSessionRows()}
       </>
     )
   }
@@ -1407,70 +1418,90 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   // El cuerpo de las fechas de los servicios sueltos (antes el contenido de
   // `SepBody`): en la mezcla también cubre el modo "juntos" (el calendario de
   // siempre) — antes innecesario acá porque el pack era excluyente.
-  const ServiceDatesSection = () => {
-    if (bookingMode === "juntos") {
-      return (
-        <>
-          {/* Esta rama sólo se usa desde la mezcla (pack + servicios sueltos):
-              el flujo "sólo servicios, juntos" arma su propio encabezado más
-              abajo, sin pasar por acá. Sin este título, la lista de sesiones
-              del pack (arriba) terminaba directo en un calendario sin
-              ningún encabezado que la separe. */}
-          <h1 className="headline">Tus <em>servicios</em></h1>
-          <p className="lede">Elegí el día y el horario para tus tratamientos sueltos.</p>
-          {ModeChooser()}
-          {Cal()}
-          {Slots()}
-          {/* El selector de profesional se muestra ARRIBA de todo (en MixedBody):
-              esta rama de ServiceDatesSection sólo se usa desde la mezcla. */}
-        </>
-      )
-    }
+  // Las filas de servicios sueltos (una fecha por servicio, modo "separados").
+  // Compartidas entre la mezcla (MixedBody) y el standalone (SepBody).
+  const ServiceDateRows = () => (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
+        {state.services.map((s) => {
+          const iso = serviceSlots[s.id]
+          const eff = effectiveService(s, zoneSel)
+          return (
+            <div
+              key={s.id}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+                borderRadius: 10,
+              }}
+            >
+              <span style={{ fontSize: 13 }}>
+                <strong>{s.name}</strong> · {eff.duration} min
+                <br />
+                {iso ? (
+                  fmtSlotAR(iso)
+                ) : (
+                  <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                )}
+              </span>
+              <button className="btn" onClick={() => setPickingServiceId(s.id)}>
+                {iso ? "Cambiar" : "Elegir fecha"}
+              </button>
+            </div>
+          )
+        })}
+      </div>
 
+      {!separateOverlap.ok && (
+        <p style={{ fontSize: 12, color: "#8c463c", margin: "0 0 8px" }}>{separateOverlap.error}</p>
+      )}
+    </>
+  )
+
+  // Standalone "separados" (sin pack): título "Tus turnos" + modo + profesional
+  // + filas. La mezcla NO pasa por acá (arma su propia sección unificada).
+  const ServiceDatesSection = () => (
+    <>
+      <h1 className="headline">Tus <em>turnos</em></h1>
+      <p className="lede">Elegí la fecha de cada servicio.</p>
+
+      {ModeChooser()}
+      {ProPicker()}
+      {ServiceDateRows()}
+    </>
+  )
+
+  // Encadenado: lo que entra en la visita, en orden — la 1ª sesión del pack
+  // primero, después los servicios sueltos. Antes de elegir horario, sin las
+  // horas; con horario elegido, cada uno en T / T + D_pack / … (la MISMA
+  // cuenta que arma pay() y que muestra la confirmación).
+  const VisitPreview = () => {
+    if (!chainPackFirst || !pack) return null
+    const orderedLoose = (state.serviceOrder ?? state.services.map((s) => s.id))
+      .map((id) => state.services.find((s) => s.id === id))
+      .filter((s): s is Service => !!s)
+    const times = state.selectedTime
+      ? sequentialStartTimes(
+          addMinutesHM(state.selectedTime, packDurationMin),
+          orderedLoose.map((s) => effectiveService(s, zoneSel).duration)
+        )
+      : null
     return (
-      <>
-        <h1 className="headline">Tus <em>turnos</em></h1>
-        <p className="lede">Elegí la fecha de cada servicio.</p>
-
-        {ModeChooser()}
-        {/* En la mezcla, el selector va arriba de todo (MixedBody). Sólo en la
-            pantalla de servicios sueltos (sin pack) se muestra acá. */}
-        {!mixed && ProPicker()}
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "16px 0" }}>
-          {state.services.map((s) => {
-            const iso = serviceSlots[s.id]
-            const eff = effectiveService(s, zoneSel)
-            return (
-              <div
-                key={s.id}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
-                  borderRadius: 10,
-                }}
-              >
-                <span style={{ fontSize: 13 }}>
-                  <strong>{s.name}</strong> · {eff.duration} min
-                  <br />
-                  {iso ? (
-                    fmtSlotAR(iso)
-                  ) : (
-                    <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
-                  )}
-                </span>
-                <button className="btn" onClick={() => setPickingServiceId(s.id)}>
-                  {iso ? "Cambiar" : "Elegir fecha"}
-                </button>
-              </div>
-            )
-          })}
+      <div style={{ margin: "20px 0 0" }}>
+        <p className="eyebrow">En esta visita</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6, fontSize: 13 }}>
+          <div>
+            <strong>Sesión 1 · {pack.name}</strong>
+            {state.selectedTime ? ` · ${state.selectedTime}hs` : ""}
+          </div>
+          {orderedLoose.map((svc, i) => (
+            <div key={svc.id}>
+              {svc.name}
+              {times ? ` · ${times[i]}hs` : ""}
+            </div>
+          ))}
         </div>
-
-        {!separateOverlap.ok && (
-          <p style={{ fontSize: 12, color: "#8c463c", margin: "0 0 8px" }}>{separateOverlap.error}</p>
-        )}
-      </>
+      </div>
     )
   }
 
@@ -1478,14 +1509,42 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
   if (mixed && pickingIdx === null && pickingServiceId === null) {
     const MixedBody = () => (
       <>
+        <h1 className="headline">Tus <em>turnos</em></h1>
+        <p className="lede">
+          {bookingMode === "separados"
+            ? "Elegí la fecha de cada servicio y de cada sesión del pack."
+            : "Elegí el horario de la visita: la primera sesión del pack y tus servicios van uno tras otro. Las demás sesiones del pack las agendás cuando quieras."}
+        </p>
+        {ModeChooser()}
         {/* La profesional PRIMERO: filtra los horarios, así que elegirla antes
             evita elegir fechas y perderlas al cambiar de profesional. */}
         {ProPicker()}
-        {PackSessionsSection()}
-        <div style={{ marginTop: 28 }}>{ServiceDatesSection()}</div>
-        {/* Misma regla y mismo estilo que el error de superposición de la
-            pantalla "separados" (`separateOverlap`, en `ServiceDatesSection`)
-            — acá es entre las sesiones del pack y los servicios sueltos. */}
+
+        {bookingMode === "separados" ? (
+          <>
+            {/* Cada uno en su fecha: todas las sesiones del pack y todos los
+                servicios, cada uno con su propia fecha, bajo un solo título. */}
+            <p className="eyebrow" style={{ marginTop: 20 }}>Sesiones del pack</p>
+            {PackSessionRows()}
+            <p className="eyebrow" style={{ marginTop: 20 }}>Servicios</p>
+            {ServiceDateRows()}
+          </>
+        ) : (
+          <>
+            {/* El mismo día, uno tras otro: se elige UN horario (la visita);
+                la 1ª sesión del pack queda pegada a los servicios. */}
+            {Cal()}
+            {Slots()}
+            {VisitPreview()}
+            {/* Las sesiones 2..N del pack (opcionales acá): la 1ª ya va fijada
+                al horario de la visita, la muestra VisitPreview. */}
+            {chainPackFirst && pack && pack.sessions > 1 && (
+              <p className="eyebrow" style={{ marginTop: 20 }}>Las demás sesiones del pack</p>
+            )}
+            {PackSessionRows({ skipFirstInChain: true })}
+          </>
+        )}
+
         {!mixedOverlap.ok && (
           <p style={{ fontSize: 12, color: "#8c463c", margin: "16px 0 0" }}>{mixedOverlap.error}</p>
         )}
