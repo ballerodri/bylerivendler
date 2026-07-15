@@ -1360,26 +1360,36 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                   borderRadius: 10, opacity: blocked ? 0.45 : 1,
                 }}
               >
-                <span style={{ fontSize: 13 }}>
-                  <strong>Sesión {i + 1}</strong>{" "}
-                  {iso
-                    ? new Date(iso).toLocaleString("es-AR", {
-                        weekday: "short", day: "2-digit", month: "short",
-                        hour: "2-digit", minute: "2-digit", hour12: false,
-                        timeZone: "America/Argentina/Buenos_Aires",
-                      })
-                    : i === 0
-                      ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
-                      : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
-                </span>
-                <span style={{ display: "flex", gap: 8 }}>
-                  <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
-                    {iso ? "Cambiar" : "Elegir fecha"}
-                  </button>
-                  {iso && i > 0 && (
-                    <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
-                  )}
-                </span>
+                {i === 0 && chainPackFirst ? (
+                  <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>
+                    {state.selectedDate && state.selectedTime
+                      ? `${fmtSlotAR(combineDateTime(state.selectedDate, state.selectedTime).toISOString())} · en esta visita`
+                      : "— elegí el horario de la visita —"}
+                  </span>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 13 }}>
+                      <strong>Sesión {i + 1}</strong>{" "}
+                      {iso
+                        ? new Date(iso).toLocaleString("es-AR", {
+                            weekday: "short", day: "2-digit", month: "short",
+                            hour: "2-digit", minute: "2-digit", hour12: false,
+                            timeZone: "America/Argentina/Buenos_Aires",
+                          })
+                        : i === 0
+                          ? <span style={{ color: "var(--ink-mute)" }}>— falta elegir la fecha —</span>
+                          : <span style={{ color: "var(--ink-mute)" }}>— la agendo después —</span>}
+                    </span>
+                    <span style={{ display: "flex", gap: 8 }}>
+                      <button className="btn" disabled={blocked} onClick={() => setPickingIdx(i)}>
+                        {iso ? "Cambiar" : "Elegir fecha"}
+                      </button>
+                      {iso && i > 0 && (
+                        <button className="btn" onClick={() => clearPackFrom(i)}>Quitar</button>
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
             )
           })}
