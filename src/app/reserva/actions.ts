@@ -1803,7 +1803,7 @@ export async function fetchSequentialAvailability(
   services: ServiceInput[],
   fromDate: string,
   daysAhead = 30,
-  opts: { enforceStaffServices?: boolean } = {}
+  opts: { enforceStaffServices?: boolean; leadServiceId?: string } = {}
 ): Promise<SequentialAvailabilityResult> {
   const enforce = opts.enforceStaffServices ?? true
   const empty: SequentialAvailabilityResult = {
@@ -1894,6 +1894,10 @@ export async function fetchSequentialAvailability(
     // chequea sobre TODA la cadena, no sólo el par inmediato.
     if (orderLastViolated(perm.map((i) => ({ orderLast: orderLastIds.has(services[i].id) }))))
       return false
+    // Si hay un ítem inicial fijo (la 1ª sesión del pack encadenada), tiene que
+    // ir SIEMPRE primero: el bloque de servicios sueltos es un turno contiguo,
+    // así que el pack sólo puede ir antes.
+    if (opts.leadServiceId && services[perm[0]]?.id !== opts.leadServiceId) return false
     return true
   }
 
