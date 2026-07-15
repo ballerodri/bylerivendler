@@ -1,4 +1,4 @@
-import { fetchCatalog, fetchCombos, fetchCurrentClient, fetchProfessionals, fetchBusinessHours, countActivePacks, fetchReservaPacks, fetchStaffServices, type AuthProfile } from "./queries"
+import { fetchCatalog, fetchCombos, fetchCurrentClient, fetchProfessionals, fetchBusinessHours, fetchReservaPacks, fetchStaffServices, type AuthProfile } from "./queries"
 import ReservaFlow from "./flow"
 import { createClient } from "@/lib/supabase/server"
 import "./reserva.css"
@@ -6,13 +6,12 @@ import "./reserva.css"
 export const dynamic = "force-dynamic"
 
 export default async function ReservaPage() {
-  const [categories, combos, professionals, staffServices, businessHours, packsCount, reservaPacks, supabase] = await Promise.all([
+  const [categories, combos, professionals, staffServices, businessHours, reservaPacks, supabase] = await Promise.all([
     fetchCatalog(),
     fetchCombos(),
     fetchProfessionals(),
     fetchStaffServices(),
     fetchBusinessHours(),
-    countActivePacks(),
     fetchReservaPacks(),
     createClient(),
   ])
@@ -37,24 +36,6 @@ export default async function ReservaPage() {
 
   return (
     <>
-      {packsCount > 0 && (
-        <a
-          href="/packs"
-          style={{
-            display: "block",
-            textAlign: "center",
-            background: "#2b2623",
-            color: "#f2ede6",
-            padding: "10px 16px",
-            fontSize: 13,
-            textDecoration: "none",
-            fontFamily: "Helvetica, Arial, sans-serif",
-            letterSpacing: "0.03em",
-          }}
-        >
-          ✨ Mirá nuestros <strong>packs de sesiones</strong> con precio especial →
-        </a>
-      )}
       <ReservaFlow
         categories={categories}
         combos={combos}
