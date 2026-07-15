@@ -2629,12 +2629,19 @@ export function Screen5Confirm({
               // "a agendar después"). Antes se mostraban en dos bloques y los
               // servicios arrancaban en T → parecían encimados con la sesión 1.
               <div>
-                <div style={{ marginBottom: juntosItems.length > 0 ? 6 : 0 }}>
-                  <strong>Sesión 1 · {pack!.pack.name}</strong>
-                  <small>
+                {/* El día de la visita, UNA vez como encabezado: la sesión 1 y
+                    los servicios cuelgan de acá (mismo día, sin repetir la
+                    fecha en cada línea). Las sesiones 2..N son otros días y
+                    llevan su propia fecha, más abajo. */}
+                <div style={{ marginBottom: 6 }}>
+                  <strong>
                     {dow} {dateObj && dateObj.getDate()} de{" "}
-                    {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()} · {displayTime}hs · {fmtDuration(packDurationMin)} · {packPro}
-                  </small>
+                    {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
+                  </strong>
+                </div>
+                <div style={{ marginBottom: juntosItems.length > 0 ? 6 : 0 }}>
+                  Sesión 1 · {pack!.pack.name}
+                  <small>{displayTime}hs · {fmtDuration(packDurationMin)} · {packPro}</small>
                 </div>
                 {juntosItems.map(({ svc, startTime, assignedPro }, i) => (
                   <div key={svc.id} style={{ marginBottom: i < juntosItems.length - 1 ? 6 : 0 }}>
