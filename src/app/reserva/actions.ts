@@ -597,7 +597,14 @@ async function planLooseServices(
   // pack NUNCA entra en esta lista de ítems, igual que en el buscador.
   const { dateStr: chainDate, timeStr: chainStartHm, dayOfWeek: chainDow } = arPartsFromUtc(startsAt)
   const bh0 = bhByDow.get(chainDow)
-  if (!bh0?.is_open)
+  // El ARRANQUE de la cadena (`startsAt`) es la ÚNICA entrada externa que la
+  // clienta elige libremente: acá se exige, UNA vez, que caiga en un slot de la
+  // grilla de un día abierto. Todo lo que viene después son SALIDAS de
+  // `placeOnGridMerged` (correctas por construcción), así que las patas ya no se
+  // vuelven a exigir en grilla — una pata FUNDIDA cae a mitad de hora a
+  // propósito (Fase 2). No se confía en horarios de pata que mande el cliente:
+  // se recalculan acá con `placeOnGridMerged` desde este arranque validado.
+  if (!bh0?.is_open || !bh0.slots.includes(chainStartHm))
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
   // Ascendente, igual que `checkPerm` (que ordena la grilla antes de la
   // caminata): así el servidor coloca las patas IDÉNTICO al buscador.
@@ -625,21 +632,16 @@ async function planLooseServices(
     const legProHint = legStaffId ?? "auto"
     const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(legStart)
     const bh = bhByDow.get(dayOfWeek)
-    // Las patas que ARRANCAN un bloque caen en un slot de `bh.slots`: la 1ª es
-    // `startsAt` (que el cliente manda como slot de grilla) y las que abren
-    // bloque nuevo las coloca `placeOnGridMerged` en slots de la grilla. El
-    // chequeo `bh.slots.includes(timeStr)` es una RED que verifica ese
-    // invariante para los arranques de bloque. Todas tienen que caer además en
-    // un día abierto (`is_open`). La disponibilidad REAL
-    // (`fetchDayAvailability`) sigue corriendo en cada pata, con su horario.
-    // OJO (Fase 2, seguimiento): una pata FUNDIDA (2 turnos cortos de la misma
-    // profesional en una hora) arranca a mitad de hora (`blockEnd`), que NO es
-    // un slot de `bh.slots`, así que esta RED la rechazaría. Hoy es seguro
-    // porque con profesionales distintas (caso común) `placeOnGridMerged` no
-    // funde y todo cae en grilla; para reservar realmente un slot fundido esta
-    // RED tiene que aceptar los arranques de fusión (no incluidos en este task).
-    const needsGrid = true
-    if (!bh?.is_open || (needsGrid && !bh.slots.includes(timeStr)))
+    // Cada posición de pata la RECALCULA `placeOnGridMerged` (función PURA de
+    // confianza) desde `startsAt` (ya validado en grilla arriba), el staff
+    // resuelto y las duraciones: las patas que ARRANCAN bloque caen en un slot
+    // de grilla, las FUNDIDAS caen a mitad de hora (`blockEnd`) — A PROPÓSITO
+    // (Fase 2). Por eso acá NO se vuelve a exigir grilla por-pata: eso
+    // rechazaría las fundidas, que son justamente el objetivo de la Fase 2.
+    // Sólo queda exigir día abierto (`is_open`). La disponibilidad REAL
+    // (`fetchDayAvailability`) —el chequeo de verdad— sigue corriendo en cada
+    // pata con su horario, así que la fusión se reserva sólo si está libre.
+    if (!bh?.is_open)
       return {
         ok: false,
         error: `El horario de "${s.name}" ya no está disponible. Elegí otro.`,
