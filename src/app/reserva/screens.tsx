@@ -1163,14 +1163,15 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
                       key={p.id}
                       onClick={() => item.onPick(p.id)}
                       style={{
-                        padding: "4px 10px", borderRadius: 20, fontSize: 12,
+                        padding: "4px 12px", borderRadius: 20, fontSize: 12,
+                        whiteSpace: "nowrap",
                         border: `1px solid ${item.current === p.id ? "var(--ink)" : "var(--line)"}`,
                         background: item.current === p.id ? "var(--ink)" : "transparent",
                         color: item.current === p.id ? "var(--linen)" : "var(--ink-mute)",
                         cursor: "pointer",
                       }}
                     >
-                      {p.id === "auto" ? "Auto" : p.initials}
+                      {p.id === "auto" ? "Auto" : p.name}
                     </button>
                   ))}
                 </div>
