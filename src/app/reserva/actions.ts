@@ -4,8 +4,8 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingConfirmation, sendPackConfirmation, sendMultiBookingConfirmation, sendMixedBookingConfirmation } from "@/lib/email/booking-emails"
-import { notifyNewBooking } from "@/lib/email/notify-booking"
+import { notifyNewPurchase } from "@/lib/email/notify-booking"
+import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -386,10 +386,9 @@ async function planLooseServices(
   totalPointsCost: number,
   // La duración y el precio del turno "juntos" (ya con el combo aplicado, si
   // corresponde): los computa `createBooking` UNA sola vez, antes de llamar
-  // acá, porque son los mismos valores que usan después el mail de
-  // confirmación y `notifyNewBooking`. Pasarlos en vez de re-derivarlos acá
-  // evita una segunda lectura del combo (podría desactivarse entre una y
-  // otra) y una segunda cuenta de la plata.
+  // acá. Pasarlos en vez de re-derivarlos acá evita una segunda lectura del
+  // combo (podría desactivarse entre una y otra) y una segunda cuenta de la
+  // plata.
   totalDuration: number,
   totalCents: number,
   // Compra mezclada encadenada (pack + servicios "juntos", Fase 3): el fin
@@ -1054,6 +1053,11 @@ export async function createBooking(
   //    de verdad y la clienta aterriza en la confirmación correcta).
   const ordered = [...plan].sort((a, b) => a.startsAtMs - b.startsAtMs)
 
+  // UN id de grupo para la compra ENTERA: todos sus turnos lo comparten. Es la
+  // llave del mail único de confirmación a la clienta (sale cuando el salón
+  // confirma el ÚLTIMO turno pendiente del grupo).
+  const bookingGroupId = crypto.randomUUID()
+
   for (const p of ordered) {
     const { data: appt, error: apptErr } = await supabase
       .from("appointments")
@@ -1072,6 +1076,7 @@ export async function createBooking(
         source: "web",
         pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
         notes_internal: p.notesInternal,
+        booking_group_id: bookingGroupId,
       })
       .select("id")
       .single()
@@ -1098,21 +1103,29 @@ export async function createBooking(
   }
 
   // ── FASE D: avisos (best-effort, los turnos ya existen) ────────────────────
-  if (hasPack && !hasServices) {
-    // Pack solo → sendPackConfirmation + Calendar (una sesión por evento —
-    // antes esta rama nunca los creaba; ahora se comporta igual que un pack
-    // comprado mezclado con servicios) + notifyNewBooking.
-    const pp = packPlan!
+
+  // Canje con puntos: los turnos NACIERON `confirmed`, así que el mail único de
+  // confirmación a la clienta sale ahora mismo. `sendGroupConfirmationEmail`
+  // revisa el grupo y reclama el anti-duplicado por su cuenta.
+  if (redeem) {
     try {
-      await sendPackConfirmation({
-        to: email,
-        firstName: input.client.firstName.trim(),
-        packName: pp.pack.name,
-        sessionsTotal: pp.pack.sessions,
-        startsAtList: pp.slotDates,
-        totalCents: pp.pack.totalPriceCents,
-      })
-    } catch {}
+      await sendGroupConfirmationEmail(supabase, bookingGroupId)
+    } catch {
+      // no bloquea: los turnos ya están confirmados.
+    }
+  }
+
+  // Lo que hay que transferir AHORA para el aviso al equipo: cada camino
+  // conserva SU cuenta de siempre (la MISMA que le pasaba a su mail viejo) —
+  // acá sólo se elige cuál, no se inventa una fórmula nueva.
+  let dueNowCents = 0
+
+  if (hasPack && !hasServices) {
+    // Pack solo → Calendar (una sesión por evento — antes esta rama nunca los
+    // creaba; ahora se comporta igual que un pack comprado mezclado con
+    // servicios). La seña es la del plan del pack: la lleva entera la sesión 1
+    // (las 2..N van en $0), así que la suma ES esa seña.
+    dueNowCents = sumDeposits(plan)
 
     await createCalendarEventsForAppointments(
       supabase,
@@ -1125,34 +1138,12 @@ export async function createBooking(
         durationMin: p.durationMin,
       }))
     )
-
-    try {
-      await notifyNewBooking(supabase, {
-        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-        clientPhone: input.client.phone,
-        servicesNames: [`${pp.pack.name} (pack · ${pp.slotDates.length} de ${pp.pack.sessions} sesiones agendadas)`],
-        startsAt: pp.slotDates[0],
-        durationMin: pp.appointments[0].durationMin,
-        totalCents: pp.pack.totalPriceCents,
-        assignedStaffIds: [pp.appointments[0].staffId],
-      })
-    } catch {
-      // no bloqueante: el pack y sus turnos ya están confirmados.
-    }
   } else if (hasServices && !hasPack) {
-    // Servicios solos → lo de hoy: "separados" (Calendar por turno + mail
-    // múltiple + aviso por turno) o "juntos" (un turno, un mail, un aviso).
+    // Servicios solos → "separados" (Calendar por turno) o "juntos" (un turno).
     if (looseMode === "separados") {
-      // Lo que VALEN los turnos: siempre el real, igual que en el camino
-      // "juntos". `item.legs.reduce(...)` en vez de `item.legs[0]`: correcto
-      // hoy (un turno "separados" tiene una sola pata), pero así no puede
-      // desaparecer una pata en silencio si eso cambiara.
-      const realTotal = plan.reduce(
-        (a, item) => a + item.legs.reduce((la, l) => la + l.priceCents, 0), 0
-      )
       // Misma función pura que usa la pantalla para mostrarle a la clienta
       // cuánto transferir: si difiriera de lo que se guardó, no coincidiría.
-      const dueNow = redeem ? 0 : totalDueNowSeparate(
+      dueNowCents = redeem ? 0 : totalDueNowSeparate(
         plan.map((item) => item.legs.reduce((la, l) => la + l.priceCents, 0)),
         payChoice
       )
@@ -1170,48 +1161,18 @@ export async function createBooking(
           durationMin: item.durationMin,
         }))
       )
-
-      // UN solo mail, con UNA sola seña.
-      try {
-        await sendMultiBookingConfirmation({
-          to: email,
-          firstName: input.client.firstName.trim(),
-          items: plan.map((item) => ({ serviceName: item.label, startsAt: new Date(item.startsAtMs) })),
-          totalCents: realTotal,
-          dueNowCents: dueNow,
-        })
-      } catch {
-        // ignore — la reserva ya está; el equipo puede reenviar manualmente.
-      }
-
-      // Un aviso por turno: cada uno es un turno real, en su día, con su
-      // profesional. Un solo aviso con una sola fecha le mentiría a la
-      // profesional asignada al segundo o al tercero.
-      for (const item of plan) {
-        try {
-          await notifyNewBooking(supabase, {
-            clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-            clientPhone: input.client.phone,
-            servicesNames: [item.label],
-            startsAt: new Date(item.startsAtMs),
-            durationMin: item.durationMin,
-            totalCents: item.totalCents,
-            assignedStaffIds: [item.staffId],
-          })
-        } catch {
-          // ignore — los turnos ya están creados
-        }
-      }
     } else {
       // ── Servicios "juntos" (o un solo servicio, o un combo): UN turno ──────
       const plannedAppt = plan[0]
       const apptId = created.appointmentIds[0]
-      // El evento de Calendar y los avisos usan la VENTANA REAL de la visita
+      // La seña del turno portador (con canje el plan ya la dejó en $0).
+      dueNowCents = plannedAppt.depositCents
+      // El evento de Calendar usa la VENTANA REAL de la visita
       // (`plannedAppt.durationMin`, la ventana que `planLooseServices` guardó en
       // el turno portador: desde el arranque hasta el fin de la última pata),
       // NO la suma de las duraciones (`totalDuration`): con la colocación en
       // grilla puede haber huecos, así que la suma termina ANTES que la visita
-      // real y el evento/mail mostrarían un fin demasiado temprano. La plata no
+      // real y el evento mostraría un fin demasiado temprano. La plata no
       // se toca. El bloqueo ya está guardado en la fila del turno (`duration_min`).
       const visitWindowMin = plannedAppt.durationMin
       const endsAt = new Date(plannedAppt.startsAtMs + visitWindowMin * 60_000)
@@ -1251,65 +1212,11 @@ export async function createBooking(
       } catch {
         // Non-fatal: el turno ya está creado
       }
-
-      // Email de confirmación con los detalles del turno (no bloqueante).
-      try {
-        await sendBookingConfirmation({
-          to: email,
-          firstName: input.client.firstName.trim(),
-          servicesNames: services.map((s) => s.name),
-          startsAt,
-          durationMin: visitWindowMin,
-          totalCents,
-          appointmentId: apptId,
-          // Con 2+ servicios, el mail muestra la hora real de CADA pata (con
-          // la grilla puede haber huecos y una sola hora engaña).
-          legs: plannedAppt.legs.map((l) => ({
-            serviceName: l.name,
-            startsAt: new Date(l.startsAtMs),
-            durationMin: l.durationMin,
-          })),
-        })
-      } catch {
-        // ignore — la reserva ya está; el equipo puede reenviar manualmente.
-      }
-
-      // Aviso a Leri + profesional(es) asignado(s) de la nueva reserva (no bloqueante).
-      await notifyNewBooking(supabase, {
-        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-        clientPhone: input.client.phone,
-        servicesNames: services.map((s) => s.name),
-        startsAt,
-        durationMin: visitWindowMin,
-        totalCents,
-        assignedStaffIds: [plannedAppt.staffId, ...Object.values(input.resolvedStaff ?? {})],
-      })
     }
   } else {
     // ── Mezcla: un pack + servicios sueltos, en la misma reserva, con UNA
-    // sola seña. UN mail nuevo con todo.
-    const pp = packPlan!
-    const looseItems = ordered.filter((p) => !p.isPackSession)
-
-    try {
-      await sendMixedBookingConfirmation({
-        to: email,
-        firstName: input.client.firstName.trim(),
-        packName: pp.pack.name,
-        packSessionsTotal: pp.pack.sessions,
-        packStartsAtList: pp.slotDates,
-        // Una fila POR SERVICIO con la hora real de su pata (no una sola fila
-        // con la hora del turno portador): con la grilla puede haber huecos
-        // (10:20 · 12:00 · 13:00) y una sola hora engañaba en el mail.
-        services: looseItems.flatMap((p) =>
-          p.legs.map((l) => ({ serviceName: l.name, startsAt: new Date(l.startsAtMs) }))
-        ),
-        totalCents: sumTotals(plan),
-        dueNowCents: sumDeposits(plan),
-      })
-    } catch {
-      // ignore — la reserva ya está; el equipo puede reenviar manualmente.
-    }
+    // sola seña: la SUMA de las señas de cada turno del plan.
+    dueNowCents = sumDeposits(plan)
 
     // Google Calendar: un evento por turno (mismo helper que "separados" y
     // "pack solo" — antes vivía duplicado acá).
@@ -1324,41 +1231,46 @@ export async function createBooking(
         durationMin: p.durationMin,
       }))
     )
+  }
 
-    // notifyNewBooking: UN aviso agregado para el pack — mismo formato que
-    // "pack solo" (nombre + precio TOTAL del pack + cuántas sesiones se
-    // agendaron), nunca uno por sesión (las sesiones 2..N no tienen precio
-    // propio: mandarían "$0") — más UN aviso por cada servicio suelto, con
-    // SU fecha, SU duración, SU profesional y SU precio.
-    try {
-      await notifyNewBooking(supabase, {
-        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-        clientPhone: input.client.phone,
-        servicesNames: [`${pp.pack.name} (pack · ${pp.slotDates.length} de ${pp.pack.sessions} sesiones agendadas)`],
-        startsAt: pp.slotDates[0],
-        durationMin: pp.appointments[0].durationMin,
-        totalCents: pp.pack.totalPriceCents,
-        assignedStaffIds: [pp.appointments[0].staffId],
-      })
-    } catch {
-      // no bloqueante: el pack y sus turnos ya están confirmados.
-    }
+  // UN solo aviso al equipo por la compra ENTERA, itemizado: una fila por
+  // tratamiento agendado. Un turno "juntos" con 2+ patas se abre en una fila
+  // POR PATA (la hora real de cada servicio, su duración y su profesional —
+  // con la grilla puede haber huecos y una sola hora engaña). Las sesiones de
+  // pack van numeradas con el nombre del pack (su `label` del plan — "Sesión i
+  // del pack" — no lo trae). `ordered` ya está en orden cronológico, igual que
+  // las sesiones del plan del pack, así que el contador numera bien.
+  let packSessionN = 0
+  const purchaseRows = ordered.flatMap((p) => {
+    if (p.legs.length > 1)
+      return p.legs.map((l) => ({
+        startsAt: new Date(l.startsAtMs),
+        label: l.name,
+        durationMin: l.durationMin,
+        staffId: l.staffId,
+      }))
+    return [
+      {
+        startsAt: new Date(p.startsAtMs),
+        label: p.isPackSession
+          ? `Sesión ${++packSessionN} · ${packPlan!.pack.name}`
+          : p.label,
+        durationMin: p.durationMin,
+        staffId: p.staffId,
+      },
+    ]
+  })
 
-    for (const p of looseItems) {
-      try {
-        await notifyNewBooking(supabase, {
-          clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-          clientPhone: input.client.phone,
-          servicesNames: [p.label],
-          startsAt: new Date(p.startsAtMs),
-          durationMin: p.durationMin,
-          totalCents: p.totalCents,
-          assignedStaffIds: [p.staffId],
-        })
-      } catch {
-        // ignore — los turnos ya están creados
-      }
-    }
+  try {
+    await notifyNewPurchase(supabase, {
+      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      clientPhone: input.client.phone,
+      rows: purchaseRows,
+      totalCents: sumTotals(plan),
+      dueNowCents,
+    })
+  } catch {
+    // no bloquea: los turnos ya existen y el equipo los ve igual en la agenda.
   }
 
   // Magic link para portal — solo si:

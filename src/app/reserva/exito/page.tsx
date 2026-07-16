@@ -14,6 +14,7 @@ type ApptRow = {
   duration_min: number
   total_cents: number
   deposit_cents: number
+  status: string
   pack_purchase_id: string | null
   client: { first_name: string | null } | null
   appointment_services: {
@@ -43,7 +44,7 @@ export default async function ReservaExitoPage({
   const { data } = await admin
     .from("appointments")
     .select(
-      "id, starts_at, duration_min, total_cents, deposit_cents, pack_purchase_id, client:clients(first_name), appointment_services(starts_at, duration_min, service:services(name))"
+      "id, starts_at, duration_min, total_cents, deposit_cents, status, pack_purchase_id, client:clients(first_name), appointment_services(starts_at, duration_min, service:services(name))"
     )
     .in("id", ids)
     .order("starts_at", { ascending: true })
@@ -54,6 +55,11 @@ export default async function ReservaExitoPage({
   const appt = appts[0]
   const firstName = appt.client?.first_name ?? ""
   const dueNowCents = appts.reduce((acc, a) => acc + a.deposit_cents, 0)
+  // Con turnos pendientes (falta la seña) el mail de confirmación sale recién
+  // cuando el salón confirma el último — la nota de abajo no puede prometer
+  // "te enviamos los detalles" que todavía no salieron. Con todo confirmado
+  // (canje con puntos), el mail ya salió y la nota de siempre es la correcta.
+  const allConfirmed = appts.every((a) => a.status === "confirmed")
 
   return (
     <div
@@ -111,8 +117,17 @@ export default async function ReservaExitoPage({
           )}
         </h1>
         <p className="success__note" style={{ marginBottom: 32 }}>
-          Te enviamos los detalles por email. Vas a recibir un recordatorio
-          24 horas antes de tu turno.
+          {allConfirmed ? (
+            <>
+              Te enviamos los detalles por email. Vas a recibir un recordatorio
+              24 horas antes de tu turno.
+            </>
+          ) : (
+            <>
+              Cuando confirmemos tu seña te mandamos la confirmación por email.
+              Vas a recibir también un recordatorio 24 horas antes de tu turno.
+            </>
+          )}
         </p>
 
         {/* Card with appointment details — una por turno. OJO: este componente
