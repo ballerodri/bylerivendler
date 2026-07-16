@@ -8,8 +8,10 @@ const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null
 
-const FROM = "By Leri Vendler <turnos@bylerivendler.com>"
-const SITE = "https://bylerivendler.com"
+// Exportados para que confirm-purchase.ts arme su mail con el MISMO remitente,
+// la misma cáscara y los mismos helpers (un solo look para todos los mails).
+export const FROM = "By Leri Vendler <turnos@bylerivendler.com>"
+export const SITE = "https://bylerivendler.com"
 
 export type BookingEmailData = {
   to: string
@@ -27,7 +29,7 @@ export type BookingEmailData = {
   legs?: { serviceName: string; startsAt: Date; durationMin: number }[]
 }
 
-function fmtDateAR(d: Date): string {
+export function fmtDateAR(d: Date): string {
   return d.toLocaleString("es-AR", {
     weekday: "long",
     day: "numeric",
@@ -43,7 +45,7 @@ function fmtPrice(cents: number): string {
   return "$" + (cents / 100).toLocaleString("es-AR")
 }
 
-function shell(title: string, body: string): string {
+export function shell(title: string, body: string): string {
   return `<!doctype html>
 <html lang="es-AR">
 <head>
@@ -170,6 +172,61 @@ export async function sendNewBookingAlert(data: {
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">${data.servicesNames.map((n) => escape(n)).join("<br>")}</p>
       <p style="font-size:13px;color:#7a6e64;margin:0 0 ${data.clientPhone ? "16px" : "0"};">${data.durationMin} min · ${fmtPrice(data.totalCents)}</p>
+      ${data.clientPhone ? `<p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Contacto</p><p style="font-family:Georgia,serif;font-size:15px;margin:0;">${escape(data.clientPhone)}</p>` : ""}
+    </div>
+    ${ctaButtons(SITE + "/admin/turnos", "Ver en la agenda")}
+  `
+  try {
+    await resend.emails.send({ from: FROM, to, subject, html: shell(subject, body) })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * Aviso ÚNICO al equipo por COMPRA: una clienta puede reservar varios turnos
+ * de una (pack + servicios sueltos) y hoy eso disparaba varios mails. Acá va
+ * todo itemizado en uno solo: una fila por tratamiento agendado, ordenadas
+ * por fecha, con el total y la seña que hay que esperar por transferencia.
+ */
+export async function sendNewPurchaseAlert(data: {
+  to: string[]
+  clientName: string
+  clientPhone?: string | null
+  rows: { startsAt: Date; label: string; durationMin: number; staffName: string | null }[]
+  totalCents: number
+  dueNowCents: number
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) return { ok: false, error: "Resend no configurado" }
+  const to = data.to.filter(Boolean)
+  if (!to.length) return { ok: false, error: "Sin destinatarios" }
+  if (!data.rows.length) return { ok: false, error: "Sin turnos" }
+
+  const rows = [...data.rows].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+  const subject =
+    rows.length > 1
+      ? `Nueva reserva · ${data.clientName} · ${rows.length} tratamientos`
+      : `Nueva reserva · ${data.clientName} · ${fmtDateAR(rows[0].startsAt)}`
+
+  const rowsHtml = rows
+    .map(
+      (r) =>
+        `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 6px;">${fmtDateAR(r.startsAt)} — ${escape(r.label)} <span style="font-size:13px;color:#7a6e64;">· ${r.durationMin} min · ${escape(r.staffName ?? "A asignar")}</span></p>`
+    )
+    .join("")
+
+  const body = `
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Nueva reserva</p>
+    <h1 style="font-family:Georgia,serif;font-size:30px;font-weight:400;line-height:1.15;margin:0 0 16px;">
+      Reservó <em style="color:#b68a5f;">${escape(data.clientName)}</em>
+    </h1>
+    <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
+      <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Turno${rows.length > 1 ? "s" : ""}</p>
+      ${rowsHtml}
+      <div style="height:8px;"></div>
+      <p style="font-size:13px;color:#7a6e64;margin:0 0 ${data.dueNowCents > 0 ? "4px" : data.clientPhone ? "16px" : "0"};">Total: <strong>${fmtPrice(data.totalCents)}</strong></p>
+      ${data.dueNowCents > 0 ? `<p style="font-size:13px;color:#7a6e64;margin:0 0 ${data.clientPhone ? "16px" : "0"};">Seña a transferir: <strong>${fmtPrice(data.dueNowCents)}</strong></p>` : ""}
       ${data.clientPhone ? `<p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Contacto</p><p style="font-family:Georgia,serif;font-size:15px;margin:0;">${escape(data.clientPhone)}</p>` : ""}
     </div>
     ${ctaButtons(SITE + "/admin/turnos", "Ver en la agenda")}
@@ -342,7 +399,7 @@ export async function sendBookingReschedule(
   }
 }
 
-function ctaButtons(primaryHref: string, primaryLabel: string): string {
+export function ctaButtons(primaryHref: string, primaryLabel: string): string {
   return `
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${primaryHref}" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 32px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">
@@ -352,7 +409,7 @@ function ctaButtons(primaryHref: string, primaryLabel: string): string {
   `
 }
 
-function calChip(calHref: string): string {
+export function calChip(calHref: string): string {
   return `
     <a href="${calHref}" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:6px 12px;border:1px solid #dadce0;border-radius:999px;text-decoration:none;font-size:12px;color:#3c4043;font-family:Helvetica,Arial,sans-serif;background:#f8f9fa;">
       <img src="https://ssl.gstatic.com/calendar/images/dynamiclogo_2020q4/calendar_31_2x.png" alt="" width="14" height="14" style="display:inline-block;vertical-align:middle;">
@@ -361,7 +418,11 @@ function calChip(calHref: string): string {
   `
 }
 
-function gcalLink(data: BookingEmailData): string {
+// Sólo usa estos tres campos: el tipo angosto deja que confirm-purchase.ts lo
+// llame sin inventar un BookingEmailData entero.
+export function gcalLink(
+  data: Pick<BookingEmailData, "servicesNames" | "startsAt" | "durationMin">
+): string {
   const fmt = (d: Date) =>
     d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")
   const endsAt = new Date(data.startsAt.getTime() + data.durationMin * 60_000)
@@ -373,7 +434,7 @@ function gcalLink(data: BookingEmailData): string {
 }
 
 // Minimal HTML escape for user-provided strings inside email content.
-function escape(s: string): string {
+export function escape(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
