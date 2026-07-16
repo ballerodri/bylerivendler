@@ -620,7 +620,16 @@ async function planLooseServices(
   // pata FUNDIDA cae a mitad de hora a propósito (Fase 2). No se confía en
   // horarios de pata que mande el cliente: se recalculan acá con
   // `placeOnGridMerged` desde este arranque validado.
-  if (!bh0?.is_open || !(bh0.slots.includes(chainStartHm) || startsAt.getTime() === packChainEndMs))
+  // Tope del día para el arranque pegado (espejo del buscador): el pegado al
+  // pack tiene que ARRANCAR dentro de la última hora reservable (último slot
+  // + 60). `placeOnGridMerged` aplica ese tope a los pegados i≥1, pero acá el
+  // 1er suelto entra como ítem 0 (anclado sin chequeo) — sin esto, un
+  // `startsAt` artesanal igual a `packChainEndMs` podría caer DESPUÉS del
+  // cierre y el buscador jamás lo ofrecería.
+  const lastGridMin = bh0?.is_open ? Math.max(...bh0.slots.map(hmToMinutes)) : -1
+  const chainedStartOk =
+    startsAt.getTime() === packChainEndMs && hmToMinutes(chainStartHm) < lastGridMin + 60
+  if (!bh0?.is_open || !(bh0.slots.includes(chainStartHm) || chainedStartOk))
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
   // Ascendente, igual que `checkPerm` (que ordena la grilla antes de la
   // caminata): así el servidor coloca las patas IDÉNTICO al buscador.
