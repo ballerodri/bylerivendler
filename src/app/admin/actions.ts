@@ -10,6 +10,7 @@ import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
+import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { fetchDayAvailability, chooseStaffForSlot } from "@/app/reserva/actions"
 
@@ -63,7 +64,7 @@ export async function updateAppointmentStatus(
   // exactamente una vez.
   const { data: prev } = await admin
     .from("appointments")
-    .select("status, client_id, google_event_id, pack_purchase_id")
+    .select("status, client_id, google_event_id, pack_purchase_id, booking_group_id")
     .eq("id", appointmentId)
     .maybeSingle()
 
@@ -109,6 +110,19 @@ export async function updateAppointmentStatus(
     .eq("id", appointmentId)
 
   if (error) return { ok: false, error: error.message }
+
+  // Al confirmar un turno de una compra web: si era el ÚLTIMO pendiente del
+  // grupo, sale el mail único a la clienta. Toda la lógica (chequear que no
+  // quede nada pendiente, anti-duplicado) vive en sendGroupConfirmationEmail;
+  // acá sólo se avisa. Fire-and-forget: el estado YA cambió en la base y un
+  // mail que falla no puede des-confirmar el turno ni romper esta acción.
+  if (parsed.data === "confirmed" && prev?.booking_group_id) {
+    try {
+      await sendGroupConfirmationEmail(admin, prev.booking_group_id)
+    } catch {
+      // best-effort: la confirmación vale igual sin mail
+    }
+  }
 
   // Al cancelar: borrar el evento de Google Calendar (no bloqueante)
   if (parsed.data === "cancelled" && prev?.google_event_id) {
@@ -1689,10 +1703,14 @@ export async function confirmPackSessions(
 
   const { data: pending } = await admin
     .from("appointments")
-    .select("id, client_id")
+    .select("id, client_id, booking_group_id")
     .eq("pack_purchase_id", packPurchaseId)
     .eq("status", "pending")
-  const rows = (pending ?? []) as { id: string; client_id: string }[]
+  const rows = (pending ?? []) as {
+    id: string
+    client_id: string
+    booking_group_id: string | null
+  }[]
   if (!rows.length) return { ok: true, confirmed: 0 }
 
   const { error } = await admin
@@ -1700,6 +1718,21 @@ export async function confirmPackSessions(
     .update({ status: "confirmed" })
     .in("id", rows.map((r) => r.id))
   if (error) return { ok: false, error: error.message }
+
+  // Con las sesiones ya confirmadas, avisar a la clienta si su compra quedó
+  // completa. Las sesiones de un mismo pack comparten booking_group_id
+  // (normalmente uno solo), pero se dedupe por las dudas para no llamar de
+  // más. Fire-and-forget: sendGroupConfirmationEmail ya decide si corresponde
+  // mandar (sin pendientes + anti-duplicado) y un mail que falla no puede
+  // deshacer la confirmación que ya está escrita.
+  const groupIds = [...new Set(rows.map((r) => r.booking_group_id).filter(Boolean))] as string[]
+  for (const gid of groupIds) {
+    try {
+      await sendGroupConfirmationEmail(admin, gid)
+    } catch {
+      // best-effort: la confirmación vale igual sin mail
+    }
+  }
 
   revalidatePath(`/admin/clientas/${rows[0].client_id}`)
   revalidatePath("/admin/turnos")
