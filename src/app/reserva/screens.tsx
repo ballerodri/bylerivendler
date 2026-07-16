@@ -25,7 +25,7 @@ import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import type { BlockedInterval } from "@/lib/servicios/slot-overlap"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
-import { addMinutesHM, sequentialStartTimes } from "@/lib/servicios/visit-timeline"
+import { sequentialStartTimes } from "@/lib/servicios/visit-timeline"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { totalDueNowSeparate, validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
@@ -89,34 +89,56 @@ function effectiveService(
 // de `state.resolvedStaff`) que usa el servidor — así reproduce la MISMA
 // fusión. Con todas las profesionales distintas `placeOnGridMerged` no funde y
 // da lo mismo que la Fase 1 (`placeOnGrid`). Con `packDurationMin > 0`
-// (encadenado) el pack va en su PROPIO bloque (aparte, como en el buscador y el
-// servidor): los sueltos arrancan en el 1er slot de grilla ≥ T + D_pack (el
-// MISMO `startsAt` que manda pay()), NO como un ítem más de la fusión.
+// (encadenado, Fase 3) el pack abre la cadena pero va en su PROPIO bloque: si
+// su profesional (`packStaffId`) es concreta y coincide con la del 1er suelto,
+// éste arranca PEGADO a la sesión 1 (T + D_pack, mitad de hora OK); si no, en
+// el 1er slot de grilla ≥ T + D_pack — siempre el MISMO `startsAt` que manda
+// pay().
 function looseGridStarts(args: {
   orderedIds: string[]
   durations: number[]
   selectedTime: string
   packDurationMin: number
+  packStaffId: string
   gridMin: number[]
   staffByService: Record<string, string>
   resolvedStarts?: Record<string, string>
 }): string[] {
-  const { orderedIds, durations, selectedTime, packDurationMin, gridMin, staffByService, resolvedStarts } = args
+  const { orderedIds, durations, selectedTime, packDurationMin, packStaffId, gridMin, staffByService, resolvedStarts } = args
   if (resolvedStarts && orderedIds.length > 0 && orderedIds.every((id) => resolvedStarts[id] !== undefined))
     return orderedIds.map((id) => resolvedStarts[id])
-  // Arranque de los sueltos: sin pack, el slot elegido (T); con pack encadenado,
-  // el 1er slot de grilla ≥ T + D_pack — igual que el `startsAt` que manda pay()
-  // y desde donde el servidor coloca los sueltos (el pack va en su bloque
-  // aparte, nunca en `items`).
+  // Arranque de los sueltos: sin pack, el slot elegido (T). Con pack encadenado
+  // y la profesional del pack CONCRETA, se camina [pack, ...sueltos] desde T
+  // con `placeOnGridMerged` — la MISMA caminata del buscador y el servidor
+  // (Fase 3): el 1er suelto de la MISMA profesional que el pack arranca PEGADO
+  // a la sesión 1 (T + D_pack, aunque caiga a mitad de hora); el de OTRA, en el
+  // 1er slot de grilla ≥ T + D_pack — y el tope del día (último slot + 60) lo
+  // aplica la propia caminata. Después se descarta el tramo del pack (va en su
+  // bloque aparte, nunca entre los sueltos). Con el pack en "auto" no se puede
+  // saber si la profesional coincide → grilla, conservador (el camino normal,
+  // `resolvedStarts`, ya trae el pegado que resolvió el buscador).
   const T = hmToMinutes(selectedTime)
-  const looseStart = packDurationMin > 0 ? gridMin.find((g) => g >= T + packDurationMin) : T
   const items = orderedIds.map((id, i) => ({ durationMin: durations[i], staffId: staffByService[id] ?? "auto" }))
-  const placed = looseStart !== undefined ? placeOnGridMerged(items, gridMin, looseStart) : null
+  const packConcrete = packDurationMin > 0 && packStaffId !== "auto"
+  const looseStart = packDurationMin > 0 ? gridMin.find((g) => g >= T + packDurationMin) : T
+  const walked = packConcrete
+    ? placeOnGridMerged([{ durationMin: packDurationMin, staffId: packStaffId }, ...items], gridMin, T)
+    : looseStart !== undefined
+      ? placeOnGridMerged(items, gridMin, looseStart)
+      : null
+  const placed = packConcrete && walked ? walked.slice(1) : walked
+  if (placed) return placed.map(minutesToHm)
   // Respaldo del respaldo: si la cadena no entra en la grilla (o no hay
-  // grilla), caer a la cuenta pegada — el servidor la va a rechazar igual, pero
-  // así la pantalla no rompe.
-  if (!placed) return sequentialStartTimes(addMinutesHM(selectedTime, packDurationMin), durations)
-  return placed.map(minutesToHm)
+  // grilla), caer a una cuenta pegada — así la pantalla no rompe. OJO (Fase 3):
+  // el crudo T + D_pack ya NO es un valor que el servidor rechace siempre — lo
+  // ACEPTA cuando es exactamente el fin de la sesión 1 (`packChainEndMs`). Por
+  // eso sólo se emite como arranque cuando el pegado APLICA de verdad (misma
+  // profesional concreta que el pack); si no, el arranque cae en hora en punto
+  // (el slot hallado, o la hora siguiente al fin del pack), que el servidor
+  // rechaza si no está en su grilla.
+  const pegado = packConcrete && items[0]?.staffId === packStaffId
+  const anchorMin = pegado ? T + packDurationMin : looseStart ?? Math.ceil((T + packDurationMin) / 60) * 60
+  return sequentialStartTimes(minutesToHm(anchorMin), durations)
 }
 
 // Modo separados: formatea la fecha/hora elegida de un servicio, en hora AR.
@@ -819,6 +841,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           durations: looseOrderedForGrid.map((s) => effectiveService(s, zoneSel).duration),
           selectedTime,
           packDurationMin: chainPackFirst ? packDurationMin : 0,
+          packStaffId: state.packPro ?? "auto",
           gridMin: gridMinForSelectedDate,
           staffByService: state.resolvedStaff ?? {},
           resolvedStarts: state.resolvedStarts,
@@ -1575,6 +1598,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           durations: orderedLoose.map((s) => effectiveService(s, zoneSel).duration),
           selectedTime: state.selectedTime,
           packDurationMin,
+          packStaffId: state.packPro ?? "auto",
           gridMin: gridMinForSelectedDate,
           staffByService: state.resolvedStaff ?? {},
           resolvedStarts: state.resolvedStarts,
@@ -2533,6 +2557,7 @@ export function Screen5Confirm({
       durations: items.map((s) => effective(s).duration),
       selectedTime: state.selectedTime,
       packDurationMin: chainPackFirst ? packDurationMin : 0,
+      packStaffId: state.packPro ?? "auto",
       gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
       staffByService: state.resolvedStaff ?? {},
       resolvedStarts: state.resolvedStarts,
@@ -2604,12 +2629,15 @@ export function Screen5Confirm({
     // En separados el servidor usa `serviceSlots`; `startsAt` va igual porque
     // el schema lo exige: mandamos el más temprano de los elegidos.
     // "Juntos" (encadenado o no): el arranque de la cadena es el 1er servicio
-    // suelto COLOCADO EN LA GRILLA (`looseGridStarts[0]`) — lo que devolvió el
-    // buscador (`resolvedStarts`), byte-idéntico a lo que el servidor recalcula.
-    // Sin pack: ese 1er horario es T (el slot elegido). Con pack encadenado: el
-    // 1er slot de la grilla ≥ T + D_pack (con hueco posible). El servidor
-    // exige que `startsAt` caiga en la grilla (`planLooseServices` rechaza el
-    // 1er tramo fuera de grilla) — por eso ya NO se manda el crudo T + D_pack.
+    // suelto COLOCADO por `looseGridStarts[0]` — lo que devolvió el buscador
+    // (`resolvedStarts`), byte-idéntico a lo que el servidor recalcula.
+    // Sin pack: ese 1er horario es T (el slot elegido). Con pack encadenado
+    // (Fase 3): si el 1er suelto es de la MISMA profesional que el pack, el
+    // crudo T + D_pack (PEGADO a la sesión 1, mitad de hora a propósito) — el
+    // servidor lo acepta porque es exactamente el fin de la sesión 1
+    // (`packChainEndMs`, dentro de la última hora reservable); si es de OTRA,
+    // el 1er slot de la grilla ≥ T + D_pack (con hueco posible). Cualquier
+    // otro arranque fuera de grilla `planLooseServices` lo sigue rechazando.
     const juntosOrderedIds = (state.serviceOrder ?? services.map((s) => s.id))
       .map((id) => services.find((s) => s.id === id))
       .filter((s): s is Service => !!s)
@@ -2621,6 +2649,7 @@ export function Screen5Confirm({
             durations: juntosOrderedIds.map((id) => effective(services.find((s) => s.id === id)!).duration),
             selectedTime: state.selectedTime,
             packDurationMin: chainPackFirst ? packDurationMin : 0,
+            packStaffId: state.packPro ?? "auto",
             gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
             staffByService: state.resolvedStaff ?? {},
             resolvedStarts: state.resolvedStarts,
