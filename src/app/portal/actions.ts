@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { sendBookingCancellation, sendBookingReschedule } from "@/lib/email/booking-emails"
+import { sendPurchaseCancellation, sendBookingReschedule } from "@/lib/email/booking-emails"
 import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { fetchDayAvailability } from "@/app/reserva/actions"
@@ -19,8 +19,16 @@ function adminClient() {
   )
 }
 
-export async function cancelMyAppointment(
-  appointmentId: string
+/**
+ * Cancela de una vez TODOS los turnos cancelables de una compra — el link
+ * único "Cancelar turnos" del portal. Sale UN solo mail con una línea por
+ * turno (antes era un mail por turno, y la clienta recibía tres iguales).
+ *
+ * La propiedad se chequea con TODO o NADA: si UNO solo de los ids no existe
+ * o no es de la clienta logueada, no se cancela ninguno.
+ */
+export async function cancelMyAppointments(
+  appointmentIds: string[]
 ): Promise<CancelResult> {
   const supabase = await createSsrClient()
   const {
@@ -28,20 +36,26 @@ export async function cancelMyAppointment(
   } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Sesión expirada" }
 
+  // Sanidad: sin vacíos, sin repetidos y con un tope defensivo (una compra
+  // real tiene un puñado de turnos; más que eso huele a abuso del endpoint).
+  const ids = [...new Set(appointmentIds.filter((id) => typeof id === "string" && id.trim() !== ""))]
+  if (!ids.length || ids.length > 20) {
+    return { ok: false, error: "No podés cancelar estos turnos" }
+  }
+
   const admin = adminClient()
 
-  // Verificar que el turno pertenezca a la clienta autenticada.
-  const { data: appt } = await admin
+  // Verificar que TODOS los turnos existan y pertenezcan a la clienta
+  // autenticada — mismo chequeo de dueño que el resto de las acciones del
+  // portal, pero sobre el lote entero.
+  const { data } = await admin
     .from("appointments")
     .select(
       `id, status, starts_at, duration_min, total_cents, google_event_id,
        client:clients(id, user_id, email, first_name),
        appointment_services(service:services(name))`
     )
-    .eq("id", appointmentId)
-    .maybeSingle()
-
-  if (!appt) return { ok: false, error: "Turno no encontrado" }
+    .in("id", ids)
 
   type ApptShape = {
     id: string
@@ -58,43 +72,55 @@ export async function cancelMyAppointment(
     } | null
     appointment_services: { service: { name: string } | null }[]
   }
-  const a = appt as unknown as ApptShape
+  const appts = (data ?? []) as unknown as ApptShape[]
 
-  if (!a.client || a.client.user_id !== user.id) {
-    return { ok: false, error: "No podés cancelar este turno" }
+  if (
+    appts.length !== ids.length ||
+    appts.some((a) => !a.client || a.client.user_id !== user.id)
+  ) {
+    return { ok: false, error: "No podés cancelar estos turnos" }
   }
 
-  if (a.status === "cancelled" || a.status === "completed" || a.status === "no_show") {
-    return { ok: false, error: "Este turno ya no se puede cancelar" }
+  // Cancelable = todavía vivo. Los que ya no se pueden tocar (cancelados,
+  // completados, no_show) se saltean sin cortar el resto.
+  const cancellable = appts.filter(
+    (a) => a.status !== "cancelled" && a.status !== "completed" && a.status !== "no_show"
+  )
+  if (!cancellable.length) {
+    return { ok: false, error: "Estos turnos ya no se pueden cancelar" }
   }
 
   const { error } = await admin
     .from("appointments")
     .update({ status: "cancelled" })
-    .eq("id", appointmentId)
+    .in("id", cancellable.map((a) => a.id))
   if (error) return { ok: false, error: error.message }
 
-  // Email de aviso a la clienta (no bloqueante).
+  // UN solo email de aviso a la clienta, con todos los turnos (no bloqueante).
   try {
-    const services = a.appointment_services
-      .map((as) => as.service?.name)
-      .filter((n): n is string => Boolean(n))
-    await sendBookingCancellation({
-      to: a.client.email,
-      firstName: a.client.first_name ?? "",
-      servicesNames: services,
-      startsAt: new Date(a.starts_at),
-      durationMin: a.duration_min,
-      totalCents: a.total_cents,
-      appointmentId: a.id,
+    const c = cancellable[0].client!
+    await sendPurchaseCancellation({
+      to: c.email,
+      firstName: c.first_name ?? "",
+      items: cancellable
+        .slice()
+        .sort((x, y) => new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime())
+        .map((a) => ({
+          startsAt: new Date(a.starts_at),
+          servicesNames: a.appointment_services
+            .map((as) => as.service?.name)
+            .filter((n): n is string => Boolean(n)),
+        })),
     })
   } catch {
     // ignore
   }
 
-  // Borrar evento de Google Calendar (no bloqueante)
-  if (a.google_event_id) {
-    deleteCalendarEvent(a.google_event_id).catch(() => {})
+  // Borrar los eventos de Google Calendar (no bloqueante)
+  for (const a of cancellable) {
+    if (a.google_event_id) {
+      deleteCalendarEvent(a.google_event_id).catch(() => {})
+    }
   }
 
   revalidatePath("/portal")

@@ -273,28 +273,16 @@ export default async function PortalPage() {
                             : "Canjeada con puntos"}
                         </small>
                       </div>
-                      {cancellables.map((a) => {
-                        const firstRow = rows.find((r) => r.apptId === a.id)
-                        // Con varios días en la compra, la hora sola es
-                        // ambigua: el link dice también el día.
-                        const cuando = firstRow
-                          ? multiDay
-                            ? `del ${firstRow.dateStr.slice(8, 10)}/${firstRow.dateStr.slice(5, 7)} a las ${firstRow.hm}`
-                            : `de las ${firstRow.hm}`
-                          : ""
-                        return (
-                          <small key={a.id} style={{ marginTop: 6 }}>
-                            <CancelButton
-                              appointmentId={a.id}
-                              label={
-                                group.length > 1 && cuando
-                                  ? `Cancelar turno ${cuando}`
-                                  : undefined
-                              }
-                            />
-                          </small>
-                        )
-                      })}
+                      {/* UN solo link por compra: cancela todos los turnos
+                          que todavía se pueden cancelar, con UN solo mail. */}
+                      {cancellables.length > 0 && (
+                        <small style={{ marginTop: 6 }}>
+                          <CancelButton
+                            appointmentIds={cancellables.map((a) => a.id)}
+                            plural={cancellables.length > 1}
+                          />
+                        </small>
+                      )}
                     </div>
                   </div>
                 )

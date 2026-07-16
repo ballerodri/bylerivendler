@@ -164,21 +164,44 @@ export async function sendNewPurchaseAlert(data: {
   }
 }
 
-export async function sendBookingCancellation(
-  data: BookingEmailData
-): Promise<{ ok: boolean; error?: string }> {
+/**
+ * UN solo mail cuando la clienta cancela desde el portal: una línea por turno
+ * cancelado (una compra puede tener varios). Reemplaza al viejo
+ * sendBookingCancellation, que salía una vez POR turno.
+ */
+export async function sendPurchaseCancellation(data: {
+  to: string
+  firstName: string
+  items: { startsAt: Date; servicesNames: string[] }[]
+}): Promise<{ ok: boolean; error?: string }> {
   if (!resend) return { ok: false, error: "Resend no configurado" }
+  if (!data.items.length) return { ok: false, error: "Sin turnos" }
 
-  const formattedDate = fmtDateAR(data.startsAt)
-  const subject = `Tu turno fue cancelado · ${formattedDate}`
+  const plural = data.items.length > 1
+  const subject = plural
+    ? "Tus turnos fueron cancelados"
+    : `Tu turno fue cancelado · ${fmtDateAR(data.items[0].startsAt)}`
+
+  const itemsHtml = data.items
+    .map(
+      (i) =>
+        `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 6px;"><strong>${fmtDateAR(i.startsAt)}</strong> — ${i.servicesNames.map((n) => escape(n)).join(", ")}</p>`
+    )
+    .join("")
 
   const body = `
-    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Turno cancelado</p>
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Turno${plural ? "s" : ""} cancelado${plural ? "s" : ""}</p>
     <h1 style="font-family:Georgia,serif;font-size:32px;font-weight:400;line-height:1.1;letter-spacing:-0.01em;margin:0 0 16px;">
-      Listo, ${data.firstName}.
+      Listo, ${escape(data.firstName)}.
     </h1>
+    <p style="font-size:15px;line-height:1.6;color:#4a423d;margin:0 0 16px;">
+      Cancelamos ${plural ? "tus turnos" : "tu turno"}:
+    </p>
+    <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
+      ${itemsHtml}
+    </div>
     <p style="font-size:15px;line-height:1.6;color:#4a423d;margin:0 0 24px;">
-      Cancelamos tu turno del <strong>${formattedDate}</strong>. Si querés reprogramarlo, podés reservar uno nuevo cuando gustes.
+      Si querés reprogramar, podés reservar de nuevo cuando gustes.
     </p>
     <div style="text-align:center;margin-bottom:24px;">
       <a href="${SITE}/reserva" style="display:inline-block;background:#2b2623;color:#f2ede6;padding:14px 28px;border-radius:999px;text-decoration:none;font-size:13px;letter-spacing:0.12em;text-transform:uppercase;font-weight:500;font-family:Helvetica,Arial,sans-serif;">

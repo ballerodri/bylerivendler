@@ -1,16 +1,16 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { cancelMyAppointment } from "./actions"
+import { cancelMyAppointments } from "./actions"
 
+/** UN solo link por compra: cancela de una vez TODOS los turnos que la
+ *  tarjeta todavía deja cancelar (y a la clienta le llega UN solo mail). */
 export default function CancelButton({
-  appointmentId,
-  label,
+  appointmentIds,
+  plural,
 }: {
-  appointmentId: string
-  /** Con varios turnos en la misma tarjeta (una compra), el link dice CUÁL
-   *  cancela ("Cancelar turno de las 10:30"). Sin label: "Cancelar turno". */
-  label?: string
+  appointmentIds: string[]
+  plural: boolean
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -18,14 +18,16 @@ export default function CancelButton({
   const onClick = () => {
     if (
       !window.confirm(
-        "¿Cancelar este turno? Si faltan menos de 24 horas no es reembolsable la seña."
+        plural
+          ? "¿Cancelar estos turnos? Si faltan menos de 24 horas no es reembolsable la seña."
+          : "¿Cancelar este turno? Si faltan menos de 24 horas no es reembolsable la seña."
       )
     ) {
       return
     }
     setError(null)
     startTransition(async () => {
-      const r = await cancelMyAppointment(appointmentId)
+      const r = await cancelMyAppointments(appointmentIds)
       if (!r.ok) setError(r.error)
     })
   }
@@ -47,7 +49,7 @@ export default function CancelButton({
           padding: 0,
         }}
       >
-        {pending ? "Cancelando…" : label ?? "Cancelar turno"}
+        {pending ? "Cancelando…" : plural ? "Cancelar turnos" : "Cancelar turno"}
       </button>
       {error && (
         <div
