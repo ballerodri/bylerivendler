@@ -1952,20 +1952,30 @@ function trySlot(
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
 
+  // Entre TODOS los órdenes válidos, se elige el que agrupa mejor por
+  // profesional: menos cambios de profesional entre turnos consecutivos = la
+  // clienta se atiende con una y después con otra, sin ir y volver (y de paso
+  // habilita más fusiones de la Fase 2). Es sólo una PREFERENCIA sobre órdenes
+  // ya válidos: si hay uno válido, siempre se devuelve (no se pierde ningún
+  // horario), y el orden elegido viaja al cliente y al servidor por igual
+  // (`serviceOrder`) — no afecta la regla de oro.
+  let best: SlotResult | null = null
+  let bestSwitches = Infinity
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
     const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots, leadServiceId)
-    if (res) {
-      return {
-        date: dateStr,
-        time: slot,
-        serviceOrder: perm.map((i) => services[i].id),
-        resolvedStaff: res.assignment,
-        starts: res.starts,
-      }
+    if (!res) continue
+    const orderedIds = perm.map((i) => services[i].id)
+    let switches = 0
+    for (let k = 1; k < orderedIds.length; k++)
+      if (res.assignment[orderedIds[k]] !== res.assignment[orderedIds[k - 1]]) switches++
+    if (switches < bestSwitches) {
+      bestSwitches = switches
+      best = { date: dateStr, time: slot, serviceOrder: orderedIds, resolvedStaff: res.assignment, starts: res.starts }
+      if (switches === 0) break // no se puede agrupar mejor
     }
   }
-  return null
+  return best
 }
 
 export async function fetchSequentialAvailability(
