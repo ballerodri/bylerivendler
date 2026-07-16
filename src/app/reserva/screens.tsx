@@ -21,6 +21,7 @@ import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
 import { createBooking, saveClientEarly, fetchSequentialAvailability, joinWaitlist } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
+import { TRANSFER_ALIAS, TRANSFER_BANK, TRANSFER_HOLDER } from "@/lib/payment-info"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import PackSessionPicker from "./_components/pack-session-picker"
 import type { BlockedInterval } from "@/lib/servicios/slot-overlap"
@@ -3030,8 +3031,8 @@ export function Screen5Confirm({
           <strong style={{ display: "block", marginBottom: 4, fontFamily: "var(--serif)", fontSize: 15 }}>
             {payChoice === "full" ? "Pago por transferencia" : "Seña por transferencia"}
           </strong>
-          Alias <strong>leri.vendler</strong> · BBVA Argentina<br />
-          A nombre de <strong>Vendler Daiana</strong>
+          Alias <strong>{TRANSFER_ALIAS}</strong> · {TRANSFER_BANK}<br />
+          A nombre de <strong>{TRANSFER_HOLDER}</strong>
         </div>
 
         <div

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { DOW_NAMES, MONTH_NAMES, fmtDuration, fmtPrice } from "../data"
 import { buildItinerary } from "@/lib/servicios/purchase-itinerary"
+import { TRANSFER_ALIAS, TRANSFER_BANK, TRANSFER_HOLDER } from "@/lib/payment-info"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import "../reserva.css"
 
@@ -239,10 +240,11 @@ export default async function ReservaExitoPage({
           </div>
         </div>
 
-        {/* Con varios turnos, la seña es UNA sola: hay que decirlo. Si no hay
-            nada que transferir (canjeó con puntos), no hay comprobante que
-            mandar ni turno que "confirmar": ya está confirmado. */}
-        {appts.length > 1 && dueNowCents > 0 && (
+        {/* Con algo que transferir, los datos completos: cuánto, a dónde y a
+            nombre de quién (pedido de la usuaria — antes solo decía que era
+            "una sola transferencia"). Si no hay nada que transferir (canjeó
+            con puntos), no hay comprobante que mandar. */}
+        {dueNowCents > 0 && (
           <div
             className="success__card"
             style={{ textAlign: "left", marginBottom: 24 }}
@@ -250,7 +252,14 @@ export default async function ReservaExitoPage({
             <div className="success__when">
               <strong>A transferir ahora: {fmtPrice(dueNowCents / 100)}</strong>
               <br />
-              Es <strong>una sola transferencia</strong> por los {appts.length} turnos.
+              Alias <strong>{TRANSFER_ALIAS}</strong> · {TRANSFER_BANK}
+              <br />
+              A nombre de <strong>{TRANSFER_HOLDER}</strong>
+              <br />
+              <span style={{ color: "var(--muted, #7a6e64)" }}>
+                Una sola transferencia por toda tu compra. Mandanos el
+                comprobante por WhatsApp y confirmamos tus turnos.
+              </span>
             </div>
           </div>
         )}

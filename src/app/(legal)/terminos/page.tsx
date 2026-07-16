@@ -1,3 +1,5 @@
+import { TRANSFER_ALIAS, TRANSFER_BANK, TRANSFER_HOLDER } from "@/lib/payment-info"
+
 export const metadata = {
   title: "Términos del servicio · By Leri Vendler",
   description:
@@ -66,8 +68,8 @@ export default function TerminosPage() {
         </p>
         <p>
           La seña se acredita por <strong>transferencia bancaria</strong> al
-          alias <strong>leri.vendler</strong> (BBVA Argentina, a nombre de
-          Vendler Daiana). Te pedimos enviar el comprobante por WhatsApp para
+          alias <strong>{TRANSFER_ALIAS}</strong> ({TRANSFER_BANK}, a nombre de{" "}
+          {TRANSFER_HOLDER}). Te pedimos enviar el comprobante por WhatsApp para
           confirmar tu turno.
         </p>
 
