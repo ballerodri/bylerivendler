@@ -26,7 +26,7 @@ import PackSessionPicker from "./_components/pack-session-picker"
 import type { BlockedInterval } from "@/lib/servicios/slot-overlap"
 import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { addMinutesHM, sequentialStartTimes } from "@/lib/servicios/visit-timeline"
-import { placeOnGrid, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
+import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
 import { totalDueNowSeparate, validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
 import { allowedStaffFor, type StaffServiceMap } from "@/lib/servicios/staff-services"
@@ -78,33 +78,45 @@ function effectiveService(
 
 // Horarios "HH:MM" de los servicios sueltos de una visita "juntos", cada uno
 // COLOCADO EN LA GRILLA del día — la MISMA regla que el buscador y el servidor
-// (`placeOnGrid`): cada turno cae en su slot, con huecos posibles (ya NO
-// pegados por minutos). Prefiere lo que YA devolvió el buscador
-// (`resolvedStarts`): es byte-idéntico a lo que el servidor recalcula, así la
-// pantalla, `pay()` y el servidor coinciden por construcción (regla de oro).
-// Sólo si faltan esos horarios (estado viejo restaurado, sin `resolvedStarts`)
-// los recoloca acá con `placeOnGrid` sobre la grilla del día. Con
-// `packDurationMin > 0` (encadenado) el pack va PRIMERO en la grilla (arranca
-// en `selectedTime` = T) y los sueltos caen después; se descarta su tramo y se
-// devuelven sólo los de los servicios sueltos.
+// (`placeOnGridMerged`, con la profesional YA RESUELTA): cada turno cae en su
+// slot, con huecos posibles, PERO dos turnos SEGUIDOS de la misma profesional
+// que entran en la hora COMPARTEN el bloque (fusión, Fase 2). Prefiere lo que
+// YA devolvió el buscador (`resolvedStarts`): es byte-idéntico a lo que el
+// servidor recalcula, así la pantalla, `pay()` y el servidor coinciden por
+// construcción (regla de oro). Sólo si faltan esos horarios (estado viejo
+// restaurado, sin `resolvedStarts`) los recoloca acá con `placeOnGridMerged`
+// sobre la grilla del día, usando el MISMO staff resuelto (`staffByService`,
+// de `state.resolvedStaff`) que usa el servidor — así reproduce la MISMA
+// fusión. Con todas las profesionales distintas `placeOnGridMerged` no funde y
+// da lo mismo que la Fase 1 (`placeOnGrid`). Con `packDurationMin > 0`
+// (encadenado) el pack va en su PROPIO bloque (aparte, como en el buscador y el
+// servidor): los sueltos arrancan en el 1er slot de grilla ≥ T + D_pack (el
+// MISMO `startsAt` que manda pay()), NO como un ítem más de la fusión.
 function looseGridStarts(args: {
   orderedIds: string[]
   durations: number[]
   selectedTime: string
   packDurationMin: number
   gridMin: number[]
+  staffByService: Record<string, string>
   resolvedStarts?: Record<string, string>
 }): string[] {
-  const { orderedIds, durations, selectedTime, packDurationMin, gridMin, resolvedStarts } = args
+  const { orderedIds, durations, selectedTime, packDurationMin, gridMin, staffByService, resolvedStarts } = args
   if (resolvedStarts && orderedIds.length > 0 && orderedIds.every((id) => resolvedStarts[id] !== undefined))
     return orderedIds.map((id) => resolvedStarts[id])
-  const chain = packDurationMin > 0 ? [packDurationMin, ...durations] : durations
-  const placed = placeOnGrid(chain, gridMin, hmToMinutes(selectedTime))
+  // Arranque de los sueltos: sin pack, el slot elegido (T); con pack encadenado,
+  // el 1er slot de grilla ≥ T + D_pack — igual que el `startsAt` que manda pay()
+  // y desde donde el servidor coloca los sueltos (el pack va en su bloque
+  // aparte, nunca en `items`).
+  const T = hmToMinutes(selectedTime)
+  const looseStart = packDurationMin > 0 ? gridMin.find((g) => g >= T + packDurationMin) : T
+  const items = orderedIds.map((id, i) => ({ durationMin: durations[i], staffId: staffByService[id] ?? "auto" }))
+  const placed = looseStart !== undefined ? placeOnGridMerged(items, gridMin, looseStart) : null
   // Respaldo del respaldo: si la cadena no entra en la grilla (o no hay
   // grilla), caer a la cuenta pegada — el servidor la va a rechazar igual, pero
   // así la pantalla no rompe.
   if (!placed) return sequentialStartTimes(addMinutesHM(selectedTime, packDurationMin), durations)
-  return (packDurationMin > 0 ? placed.slice(1) : placed).map(minutesToHm)
+  return placed.map(minutesToHm)
 }
 
 // Modo separados: formatea la fecha/hora elegida de un servicio, en hora AR.
@@ -798,6 +810,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           selectedTime,
           packDurationMin: chainPackFirst ? packDurationMin : 0,
           gridMin: gridMinForSelectedDate,
+          staffByService: state.resolvedStaff ?? {},
           resolvedStarts: state.resolvedStarts,
         })
       : []
@@ -1553,6 +1566,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
           selectedTime: state.selectedTime,
           packDurationMin,
           gridMin: gridMinForSelectedDate,
+          staffByService: state.resolvedStaff ?? {},
           resolvedStarts: state.resolvedStarts,
         })
       : null
@@ -2510,6 +2524,7 @@ export function Screen5Confirm({
       selectedTime: state.selectedTime,
       packDurationMin: chainPackFirst ? packDurationMin : 0,
       gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
+      staffByService: state.resolvedStaff ?? {},
       resolvedStarts: state.resolvedStarts,
     })
     return items.map((svc, i) => ({
@@ -2597,6 +2612,7 @@ export function Screen5Confirm({
             selectedTime: state.selectedTime,
             packDurationMin: chainPackFirst ? packDurationMin : 0,
             gridMin: slotsForDate(state.selectedDate, businessHours).map(hmToMinutes).sort((a, b) => a - b),
+            staffByService: state.resolvedStaff ?? {},
             resolvedStarts: state.resolvedStarts,
           })[0]
         : null
