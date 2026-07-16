@@ -1763,11 +1763,14 @@ export async function confirmPurchase(
   if (ids.length) {
     // pending → confirmed nunca pisa la guarda de reactivación de packs:
     // esa aplica sólo al SALIR de cancelled/no_show (ver updateAppointmentStatus),
-    // y acá sólo se tocan pendientes.
+    // y acá sólo se tocan pendientes. El `.eq("status","pending")` re-chequea
+    // en el UPDATE mismo: si la clienta canceló uno de estos turnos entre el
+    // select de arriba y este write, no se lo resucita a "confirmed".
     const { error } = await admin
       .from("appointments")
       .update({ status: "confirmed" })
       .in("id", ids)
+      .eq("status", "pending")
     if (error) return { ok: false, error: error.message }
   }
 

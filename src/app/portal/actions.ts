@@ -48,7 +48,7 @@ export async function cancelMyAppointments(
   // Verificar que TODOS los turnos existan y pertenezcan a la clienta
   // autenticada — mismo chequeo de dueño que el resto de las acciones del
   // portal, pero sobre el lote entero.
-  const { data } = await admin
+  const { data, error: selErr } = await admin
     .from("appointments")
     .select(
       `id, status, starts_at, duration_min, total_cents, google_event_id,
@@ -56,6 +56,10 @@ export async function cancelMyAppointments(
        appointment_services(service:services(name))`
     )
     .in("id", ids)
+  // Una falla de la base NO es "no son tuyos": se avisa como error transitorio.
+  if (selErr) {
+    return { ok: false, error: "No pudimos cancelar. Probá de nuevo en un momento." }
+  }
 
   type ApptShape = {
     id: string
