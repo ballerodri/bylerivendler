@@ -2688,6 +2688,18 @@ export function Screen5Confirm({
     }
   }
 
+  // Opción 3 "recibo/itinerario": la hora en columna alineada (izquierda, con
+  // `tabular-nums` para que 14:00/15:00 queden a la par) y el precio en columna
+  // a la derecha. `as const` para que los literales de CSS tipen bien.
+  const hourCell = {
+    fontFamily: "var(--sans)", fontWeight: 600, fontSize: 13, color: "var(--gold)",
+    fontVariantNumeric: "tabular-nums", minWidth: 46, whiteSpace: "nowrap", flexShrink: 0,
+  } as const
+  const priceCell = {
+    fontFamily: "var(--sans)", fontSize: 13.5, color: "var(--ink-soft)",
+    fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", flexShrink: 0,
+  } as const
+
   const Body = () => (
     <>
       <p className="eyebrow">{stepLabel(stepNumber, "Confirmación")}</p>
@@ -2701,7 +2713,8 @@ export function Screen5Confirm({
       </p>
 
       <div className="summary">
-        <div className="summary__row">
+        {/* QUÉ — recibo: nombre a la izquierda, precio alineado a la derecha */}
+        <div className="summary__row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
           <span className="summary__label">
             {pack && services.length > 0
               ? `Pack y tratamiento${services.length > 1 ? "s" : ""}`
@@ -2709,60 +2722,65 @@ export function Screen5Confirm({
                 ? "Pack"
                 : `Tratamiento${services.length > 1 ? "s" : ""}`}
           </span>
-          <div className="summary__value" style={{ flex: 1, marginLeft: 16 }}>
+          <div className="summary__value" style={{ textAlign: "left" }}>
             {pack && (
-              <div style={{ marginBottom: services.length > 0 ? 8 : 0 }}>
-                {pack.pack.name} · {pack.pack.sessions} sesiones
-                {pack.pack.pricingMode === "per_zone" && packZones.length > 0 && (
-                  <small>{packZones.map((z) => z.name).join(", ")}</small>
-                )}
-                <small>{fmtPrice(packTotal)}</small>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: services.length > 0 ? 8 : 0 }}>
+                <span>
+                  {pack.pack.name} · {pack.pack.sessions} sesiones
+                  {pack.pack.pricingMode === "per_zone" && packZones.length > 0 && (
+                    <small>{packZones.map((z) => z.name).join(", ")}</small>
+                  )}
+                </span>
+                <span style={priceCell}>{fmtPrice(packTotal)}</span>
               </div>
             )}
             {services.map((s, i) => (
-              <div key={s.id} style={{ marginBottom: i < services.length - 1 ? 6 : 0 }}>
-                {s.name}
-                <small>{fmtPrice(effective(s).price)}</small>
+              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: i < services.length - 1 ? 6 : 0 }}>
+                <span>{s.name}</span>
+                <span style={priceCell}>{fmtPrice(effective(s).price)}</span>
               </div>
             ))}
           </div>
         </div>
-        <div className="summary__row">
+
+        {/* CUÁNDO — itinerario: el día como título, las horas en columna
+            alineada. Las sesiones 2..N del pack y "cada uno en su fecha" son
+            otros días → llevan su propia fecha (no van en la columna de horas). */}
+        <div className="summary__row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
           <span className="summary__label">Cuándo</span>
-          <div className="summary__value" style={separados ? { flex: 1, marginLeft: 16 } : undefined}>
+          <div className="summary__value" style={{ textAlign: "left" }}>
             {chainPackFirst ? (
-              // UNA sola secuencia: 1ª sesión del pack en T, los servicios
-              // sueltos pegados desde T + D_pack (el MISMO arranque que pay()
-              // reserva), y debajo las sesiones 2..N del pack (agendadas o
-              // "a agendar después"). Antes se mostraban en dos bloques y los
-              // servicios arrancaban en T → parecían encimados con la sesión 1.
               <div>
-                {/* El día de la visita, UNA vez como encabezado: la sesión 1 y
-                    los servicios cuelgan de acá (mismo día, sin repetir la
-                    fecha en cada línea). Las sesiones 2..N son otros días y
-                    llevan su propia fecha, más abajo. */}
-                <div style={{ marginBottom: 6 }}>
+                <div style={{ marginBottom: 8 }}>
                   <strong>
                     {dow} {dateObj && dateObj.getDate()} de{" "}
                     {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
                   </strong>
                 </div>
-                <div style={{ marginBottom: juntosItems.length > 0 ? 6 : 0 }}>
-                  Sesión 1 · {pack!.pack.name}
-                  <small>{displayTime}hs · {fmtDuration(packDurationMin)} · {packPro}</small>
-                </div>
-                {juntosItems.map(({ svc, startTime, assignedPro }, i) => (
-                  <div key={svc.id} style={{ marginBottom: i < juntosItems.length - 1 ? 6 : 0 }}>
-                    {svc.name}
-                    <small>{startTime}hs · {fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? packPro}</small>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <span style={hourCell}>{displayTime}</span>
+                    <span style={{ flex: 1 }}>
+                      Sesión 1 · {pack!.pack.name}
+                      <small>{fmtDuration(packDurationMin)} · {packPro}</small>
+                    </span>
                   </div>
-                ))}
+                  {juntosItems.map(({ svc, startTime, assignedPro }) => (
+                    <div key={svc.id} style={{ display: "flex", gap: 12 }}>
+                      <span style={hourCell}>{startTime}</span>
+                      <span style={{ flex: 1 }}>
+                        {svc.name}
+                        <small>{fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? packPro}</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
                 {packSlotsForDisplay.slice(1).map((iso, i) => {
                   const parts = arPartsFromUtc(new Date(iso))
                   const d = parseYmd(parts.dateStr)
                   const sessionDow = DOW_NAMES[(d.getDay() + 6) % 7]
                   return (
-                    <div key={iso} style={{ marginTop: 6 }}>
+                    <div key={iso} style={{ marginTop: 8 }}>
                       <strong>Sesión {i + 2}</strong>
                       <small>
                         {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)} · {packPro}
@@ -2771,7 +2789,7 @@ export function Screen5Confirm({
                   )
                 })}
                 {pack!.pack.sessions > packSlotsForDisplay.length && (
-                  <small style={{ display: "block", marginTop: 6 }}>
+                  <small style={{ display: "block", marginTop: 8 }}>
                     {`${pack!.pack.sessions - packSlotsForDisplay.length} sesión${pack!.pack.sessions - packSlotsForDisplay.length > 1 ? "es" : ""} del pack a agendar después`}
                   </small>
                 )}
@@ -2779,13 +2797,13 @@ export function Screen5Confirm({
             ) : (
               <>
                 {pack && (
-                  <div style={{ marginBottom: services.length > 0 ? 10 : 0 }}>
+                  <div style={{ marginBottom: services.length > 0 ? 12 : 0, display: "flex", flexDirection: "column", gap: 8 }}>
                     {packSlotsForDisplay.map((iso, i) => {
                       const parts = arPartsFromUtc(new Date(iso))
                       const d = parseYmd(parts.dateStr)
                       const sessionDow = DOW_NAMES[(d.getDay() + 6) % 7]
                       return (
-                        <div key={iso} style={{ marginBottom: i < packSlotsForDisplay.length - 1 ? 6 : 0 }}>
+                        <div key={iso}>
                           <strong>Sesión {i + 1}</strong>
                           <small>
                             {sessionDow} {d.getDate()} de {MONTH_NAMES[d.getMonth()].toLowerCase()} · {parts.timeStr}hs · {fmtDuration(packDurationMin)} · {packPro}
@@ -2802,33 +2820,40 @@ export function Screen5Confirm({
                 )}
                 {services.length > 0 && (
                   separados ? (
-                    services.map((s) => {
-                      const iso = state.serviceSlots?.[s.id]
-                      const staffId = state.serviceStaff?.[s.id] ?? "auto"
-                      const svcPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
-                      return (
-                        <div key={s.id} style={{ marginBottom: 8 }}>
-                          {s.name}
-                          <small>
-                            {iso ? fmtSlotAR(iso) : "—"} · {fmtDuration(effective(s).duration)} · {svcPro.name}
-                          </small>
-                        </div>
-                      )
-                    })
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {services.map((s) => {
+                        const iso = state.serviceSlots?.[s.id]
+                        const staffId = state.serviceStaff?.[s.id] ?? "auto"
+                        const svcPro = professionals.find((p) => p.id === staffId) ?? professionals[0]
+                        return (
+                          <div key={s.id}>
+                            {s.name}
+                            <small>
+                              {iso ? fmtSlotAR(iso) : "—"} · {fmtDuration(effective(s).duration)} · {svcPro.name}
+                            </small>
+                          </div>
+                        )
+                      })}
+                    </div>
                   ) : (
                     <div>
-                      <div style={{ marginBottom: 6 }}>
+                      <div style={{ marginBottom: 8 }}>
                         <strong>
                           {dow} {dateObj && dateObj.getDate()} de{" "}
                           {dateObj && MONTH_NAMES[dateObj.getMonth()].toLowerCase()}
                         </strong>
                       </div>
-                      {juntosItems.map(({ svc, startTime, assignedPro }, i) => (
-                        <div key={svc.id} style={{ marginBottom: i < juntosItems.length - 1 ? 6 : 0 }}>
-                          {svc.name}
-                          <small>{startTime}hs · {fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? "Asignación automática"}</small>
-                        </div>
-                      ))}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {juntosItems.map(({ svc, startTime, assignedPro }) => (
+                          <div key={svc.id} style={{ display: "flex", gap: 12 }}>
+                            <span style={hourCell}>{startTime}</span>
+                            <span style={{ flex: 1 }}>
+                              {svc.name}
+                              <small>{fmtDuration(effective(svc).duration)} · {assignedPro?.name ?? "Asignación automática"}</small>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )
                 )}
@@ -2836,9 +2861,11 @@ export function Screen5Confirm({
             )}
           </div>
         </div>
-        <div className="summary__row">
+
+        {/* DÓNDE */}
+        <div className="summary__row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
           <span className="summary__label">Dónde</span>
-          <div className="summary__value" style={{ fontSize: 14 }}>
+          <div className="summary__value" style={{ textAlign: "left", fontSize: 14 }}>
             By Leri Vendler
             <small>
               <a
