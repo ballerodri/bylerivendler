@@ -3,6 +3,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
+import ConfirmPurchaseButton from "../_components/confirm-purchase-button"
 import PaidBadge from "../_components/paid-badge"
 import { fmtPrice } from "../../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
@@ -24,6 +25,7 @@ type ApptRow = {
   total_cents: number
   paid_cents: number
   pack_purchase_id: string | null
+  booking_group_id: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: ApptService[]
 }
@@ -68,7 +70,7 @@ export default async function AdminTurnosPage({
 
   let q = admin.from("appointments").select(
     `
-      id, starts_at, status, duration_min, total_cents, paid_cents, pack_purchase_id,
+      id, starts_at, status, duration_min, total_cents, paid_cents, pack_purchase_id, booking_group_id,
       client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
@@ -122,6 +124,264 @@ export default async function AdminTurnosPage({
       .map((p) => ({ id: p.id, label: `${p.pack_name} · quedan ${p.sessions_total - p.sessions_used}` }))
   }
 
+  // ── Agrupar por COMPRA ────────────────────────────────────────────────────
+  // Agrupamos los turnos que comparten booking_group_id para que la seña se
+  // confirme UNA sola vez (botón "Confirmar compra") y el mail único a la
+  // clienta salga sí o sí — confirmando turno por turno era fácil dejar el
+  // último colgado y el mail no salía nunca. La PLATA queda POR TURNO (cada
+  // turno factura su propia Factura C), así que no se suma nada: cada
+  // sub-bloque muestra su precio y sus cobros.
+  //
+  // Una profesional (isProfessionalOnly) ve la agenda SIN agrupar: sólo ve
+  // sus propios turnos, y una tarjeta parcial con un botón que confirma
+  // turnos invisibles de otras profesionales sería confuso.
+  const groups: ApptRow[][] = staffProfile?.isProfessionalOnly
+    ? appts.map((a) => [a])
+    : groupPurchases(appts)
+
+  /** UNA fila de turno, tal cual fue siempre (turnos sueltos o sin grupo). */
+  function renderTurno(a: ApptRow) {
+    const date = new Date(a.starts_at)
+    const dateLabel = date.toLocaleDateString("es-AR", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+      timeZone: TZ,
+    })
+    const time = fmtTime(a.starts_at)
+    const svcItems = a.appointment_services
+      .slice()
+      .sort((x, y) => {
+        if (!x.starts_at) return 0
+        if (!y.starts_at) return 0
+        return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+      })
+    const isMulti = svcItems.length > 1 && svcItems.some((s) => s.starts_at)
+
+    return (
+      <div key={a.id} className="adm-list-row adm-list-row--turnos">
+        <div className="adm-time" style={{ fontSize: 15 }}>
+          {dateLabel}
+          <div style={{ fontFamily: "var(--sans)", fontSize: 13, color: "var(--ink-mute)" }}>
+            {time}
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="adm-name">
+            {a.client ? (
+              <Link href={`/admin/clientas/${a.client.id}`}>
+                {a.client.first_name} {a.client.last_name}
+              </Link>
+            ) : "—"}
+          </div>
+          {isMulti ? (
+            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+              {svcItems.map((as, i) => (
+                <div key={i} style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                  {as.starts_at && (
+                    <span style={{ fontVariantNumeric: "tabular-nums", marginRight: 4 }}>
+                      {fmtTime(as.starts_at)}
+                    </span>
+                  )}
+                  {as.service?.name}
+                  {as.staff?.full_name && (
+                    <span style={{ color: "var(--ink-mute)" }}> · {as.staff.full_name}</span>
+                  )}
+                </div>
+              ))}
+              <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
+                {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
+                <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
+              </div>
+            </div>
+          ) : (
+            <div className="adm-sub" style={{ fontSize: 13 }}>
+              {svcItems.map((s) => s.service?.name).filter(Boolean).join(", ")}
+              {svcItems[0]?.staff?.full_name && (
+                <> · {svcItems[0].staff.full_name}</>
+              )}
+              {" · "}{a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
+              <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
+            </div>
+          )}
+        </div>
+        <div>
+          <span className={`adm-pill adm-pill--${a.status}`}>
+            {STATUS_LABEL[a.status] ?? a.status}
+          </span>
+          {facturadasSet.has(a.id) && (
+            <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
+          )}
+        </div>
+        <div className="adm-actions">
+          {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
+          {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
+            const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
+            const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
+            const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
+            const link = clientWhatsappLink(a.client!.phone, msg)
+            return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
+          })()}
+          <StatusActions
+            appointmentId={a.id}
+            currentStatus={a.status}
+            totalCents={a.total_cents}
+            paidCents={a.paid_cents}
+            matchingPacks={packsForAppt(a)}
+            packLinked={!!a.pack_purchase_id}
+            professionals={professionals}
+            services={svcItems
+              .filter((s) => s.service)
+              .map((s) => ({
+                serviceId: s.service!.id,
+                serviceName: s.service!.name,
+                staffId: s.staff?.id ?? null,
+                staffName: s.staff?.full_name ?? null,
+              }))}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  /** UNA tarjeta por COMPRA (2+ turnos que comparten booking_group_id):
+   *  clienta una sola vez, un sub-bloque por turno con SU plata y SUS
+   *  acciones, y un solo "Confirmar compra" a la derecha. */
+  function renderCompra(group: ApptRow[]) {
+    // Dentro del grupo SIEMPRE ascendente por horario: con range=past la
+    // consulta viene descendente y la compra se leería al revés.
+    const sorted = [...group].sort(
+      (x, y) => new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+    )
+    const first = sorted[0]
+    const dateLabel = new Date(first.starts_at).toLocaleDateString("es-AR", {
+      weekday: "short",
+      day: "2-digit",
+      month: "short",
+      timeZone: TZ,
+    })
+    const allSameStatus = sorted.every((a) => a.status === first.status)
+    const groupHasPending = sorted.some((a) => a.status === "pending")
+
+    return (
+      <div key={first.booking_group_id ?? first.id} className="adm-list-row adm-list-row--turnos">
+        <div className="adm-time" style={{ fontSize: 15 }}>
+          {dateLabel}
+          <div style={{ fontFamily: "var(--sans)", fontSize: 13, color: "var(--ink-mute)" }}>
+            {fmtTime(first.starts_at)}
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="adm-name">
+            {first.client ? (
+              <Link href={`/admin/clientas/${first.client.id}`}>
+                {first.client.first_name} {first.client.last_name}
+              </Link>
+            ) : "—"}
+          </div>
+          {sorted.map((a) => {
+            const time = fmtTime(a.starts_at)
+            const svcItems = a.appointment_services
+              .slice()
+              .sort((x, y) => {
+                if (!x.starts_at) return 0
+                if (!y.starts_at) return 0
+                return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
+              })
+            const isMulti = svcItems.length > 1 && svcItems.some((s) => s.starts_at)
+            return (
+              <div key={a.id} style={{ marginTop: 8 }}>
+                {isMulti ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {svcItems.map((as, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                        {as.starts_at && (
+                          <span style={{ fontVariantNumeric: "tabular-nums", marginRight: 4 }}>
+                            {fmtTime(as.starts_at)}
+                          </span>
+                        )}
+                        {as.service?.name}
+                        {as.staff?.full_name && (
+                          <span style={{ color: "var(--ink-mute)" }}> · {as.staff.full_name}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                    <span style={{ fontVariantNumeric: "tabular-nums", marginRight: 4 }}>
+                      {time}
+                    </span>
+                    {svcItems.map((s) => s.service?.name).filter(Boolean).join(", ")}
+                    {svcItems[0]?.staff?.full_name && (
+                      <span style={{ color: "var(--ink-mute)" }}> · {svcItems[0].staff.full_name}</span>
+                    )}
+                  </div>
+                )}
+                {/* La plata de ESTE turno: no se suma nada porque la factura
+                    (ARCA) es por turno — cada uno con su precio y sus cobros. */}
+                <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
+                  {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
+                  <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
+                  {facturadasSet.has(a.id) && (
+                    <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
+                  )}
+                  {!allSameStatus && (
+                    <span className={`adm-pill adm-pill--${a.status}`} style={{ marginLeft: 6 }}>
+                      {STATUS_LABEL[a.status] ?? a.status}
+                    </span>
+                  )}
+                </div>
+                <div className="adm-actions" style={{ justifyContent: "flex-start", marginTop: 4 }}>
+                  {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
+                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
+                    const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
+                    const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
+                    const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
+                    const link = clientWhatsappLink(a.client!.phone, msg)
+                    return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
+                  })()}
+                  <StatusActions
+                    appointmentId={a.id}
+                    currentStatus={a.status}
+                    totalCents={a.total_cents}
+                    paidCents={a.paid_cents}
+                    matchingPacks={packsForAppt(a)}
+                    packLinked={!!a.pack_purchase_id}
+                    professionals={professionals}
+                    services={svcItems
+                      .filter((s) => s.service)
+                      .map((s) => ({
+                        serviceId: s.service!.id,
+                        serviceName: s.service!.name,
+                        staffId: s.staff?.id ?? null,
+                        staffName: s.staff?.full_name ?? null,
+                      }))}
+                    hideConfirmButton={groupHasPending}
+                  />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div>
+          {/* Un solo pill cuando toda la compra está pareja; si no, cada
+              sub-bloque ya mostró el suyo. */}
+          {allSameStatus && (
+            <span className={`adm-pill adm-pill--${first.status}`}>
+              {STATUS_LABEL[first.status] ?? first.status}
+            </span>
+          )}
+        </div>
+        <div className="adm-actions">
+          {groupHasPending && first.booking_group_id && (
+            <ConfirmPurchaseButton bookingGroupId={first.booking_group_id} />
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <p className="adm-eyebrow">Agenda</p>
@@ -162,111 +422,30 @@ export default async function AdminTurnosPage({
         </div>
       ) : (
         <div className="adm-card">
-          {appts.map((a) => {
-            const date = new Date(a.starts_at)
-            const dateLabel = date.toLocaleDateString("es-AR", {
-              weekday: "short",
-              day: "2-digit",
-              month: "short",
-              timeZone: TZ,
-            })
-            const time = fmtTime(a.starts_at)
-            const svcItems = a.appointment_services
-              .slice()
-              .sort((x, y) => {
-                if (!x.starts_at) return 0
-                if (!y.starts_at) return 0
-                return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
-              })
-            const isMulti = svcItems.length > 1 && svcItems.some((s) => s.starts_at)
-
-            return (
-              <div key={a.id} className="adm-list-row adm-list-row--turnos">
-                <div className="adm-time" style={{ fontSize: 15 }}>
-                  {dateLabel}
-                  <div style={{ fontFamily: "var(--sans)", fontSize: 13, color: "var(--ink-mute)" }}>
-                    {time}
-                  </div>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="adm-name">
-                    {a.client ? (
-                      <Link href={`/admin/clientas/${a.client.id}`}>
-                        {a.client.first_name} {a.client.last_name}
-                      </Link>
-                    ) : "—"}
-                  </div>
-                  {isMulti ? (
-                    <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                      {svcItems.map((as, i) => (
-                        <div key={i} style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-                          {as.starts_at && (
-                            <span style={{ fontVariantNumeric: "tabular-nums", marginRight: 4 }}>
-                              {fmtTime(as.starts_at)}
-                            </span>
-                          )}
-                          {as.service?.name}
-                          {as.staff?.full_name && (
-                            <span style={{ color: "var(--ink-mute)" }}> · {as.staff.full_name}</span>
-                          )}
-                        </div>
-                      ))}
-                      <div style={{ fontSize: 13, color: "var(--ink-mute)", marginTop: 2 }}>
-                        {a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
-                        <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="adm-sub" style={{ fontSize: 13 }}>
-                      {svcItems.map((s) => s.service?.name).filter(Boolean).join(", ")}
-                      {svcItems[0]?.staff?.full_name && (
-                        <> · {svcItems[0].staff.full_name}</>
-                      )}
-                      {" · "}{a.duration_min} min · <strong style={{ color: "var(--ink)" }}>{fmtPrice(a.total_cents / 100)}</strong>
-                      <PaidBadge paidCents={a.paid_cents} totalCents={a.total_cents} status={a.status} />
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <span className={`adm-pill adm-pill--${a.status}`}>
-                    {STATUS_LABEL[a.status] ?? a.status}
-                  </span>
-                  {facturadasSet.has(a.id) && (
-                    <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
-                  )}
-                </div>
-                <div className="adm-actions">
-                  {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
-                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
-                    const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
-                    const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
-                    const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
-                    const link = clientWhatsappLink(a.client!.phone, msg)
-                    return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
-                  })()}
-                  <StatusActions
-                    appointmentId={a.id}
-                    currentStatus={a.status}
-                    totalCents={a.total_cents}
-                    paidCents={a.paid_cents}
-                    matchingPacks={packsForAppt(a)}
-                    packLinked={!!a.pack_purchase_id}
-                    professionals={professionals}
-                    services={svcItems
-                      .filter((s) => s.service)
-                      .map((s) => ({
-                        serviceId: s.service!.id,
-                        serviceName: s.service!.name,
-                        staffId: s.staff?.id ?? null,
-                        staffName: s.staff?.full_name ?? null,
-                      }))}
-                  />
-                </div>
-              </div>
-            )
-          })}
+          {groups.map((group) =>
+            group.length === 1 ? renderTurno(group[0]) : renderCompra(group)
+          )}
         </div>
       )}
     </>
   )
+}
+
+/** Agrupa los turnos por compra (booking_group_id); sin grupo, cada uno va
+ *  solo. El orden de las tarjetas = primera aparición (la lista ya viene
+ *  ordenada por la consulta). Mismo criterio que el portal. */
+function groupPurchases(appts: ApptRow[]): ApptRow[][] {
+  const groups: ApptRow[][] = []
+  const byGroup = new Map<string, ApptRow[]>()
+  for (const a of appts) {
+    const key = a.booking_group_id ?? a.id
+    let arr = byGroup.get(key)
+    if (!arr) {
+      arr = []
+      byGroup.set(key, arr)
+      groups.push(arr)
+    }
+    arr.push(a)
+  }
+  return groups
 }

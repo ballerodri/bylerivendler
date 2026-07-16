@@ -1740,6 +1740,54 @@ export async function confirmPackSessions(
   return { ok: true, confirmed: rows.length }
 }
 
+/**
+ * Confirma de una vez TODOS los turnos pendientes de una COMPRA (los que
+ * comparten `booking_group_id`) — el botón "Confirmar compra" de la agenda.
+ * Así la seña se verifica UNA vez y no hace falta ir confirmando turno por
+ * turno para que a la clienta le llegue su mail.
+ */
+export async function confirmPurchase(
+  bookingGroupId: string
+): Promise<{ ok: boolean; error?: string; confirmed?: number }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pending, error: selErr } = await admin
+    .from("appointments")
+    .select("id")
+    .eq("booking_group_id", bookingGroupId)
+    .eq("status", "pending")
+  if (selErr) return { ok: false, error: selErr.message }
+  const ids = ((pending ?? []) as { id: string }[]).map((r) => r.id)
+
+  if (ids.length) {
+    // pending → confirmed nunca pisa la guarda de reactivación de packs:
+    // esa aplica sólo al SALIR de cancelled/no_show (ver updateAppointmentStatus),
+    // y acá sólo se tocan pendientes.
+    const { error } = await admin
+      .from("appointments")
+      .update({ status: "confirmed" })
+      .in("id", ids)
+    if (error) return { ok: false, error: error.message }
+  }
+
+  // SIEMPRE se avisa (aun con 0 pendientes): el chequeo "no queda nada
+  // pendiente" y el anti-duplicado viven en sendGroupConfirmationEmail, no
+  // acá. Llamar con 0 pendientes cubre el caso "el último se confirmó turno
+  // por turno pero el mail falló y quedó sin reclamar" — este botón lo
+  // reintenta. Fire-and-forget: la confirmación YA está escrita en la base
+  // y un mail que falla no puede deshacerla ni romper esta acción.
+  try {
+    await sendGroupConfirmationEmail(admin, bookingGroupId)
+  } catch {
+    // best-effort: la confirmación vale igual sin mail
+  }
+
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  return { ok: true, confirmed: ids.length }
+}
+
 // ─── Reasignar profesional (por servicio) ─────────────────────────────────────
 
 /**

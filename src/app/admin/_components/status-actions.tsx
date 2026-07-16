@@ -121,6 +121,7 @@ export default function StatusActions({
   packLinked = false,
   professionals,
   services,
+  hideConfirmButton = false,
 }: {
   appointmentId: string
   currentStatus: string
@@ -130,6 +131,11 @@ export default function StatusActions({
   packLinked?: boolean
   professionals?: { id: string; full_name: string }[]
   services?: { serviceId: string; serviceName: string; staffId: string | null; staffName: string | null }[]
+  /** En la agenda agrupada por compra, el "Confirmar" por turno se esconde:
+   *  lo reemplaza el botón "Confirmar compra" del grupo. El resto (menú ⋯
+   *  con Cancelar/Reagendar/etc.) queda igual, y los otros estados
+   *  (Iniciar/Completar/Facturar) no se tocan. */
+  hideConfirmButton?: boolean
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -364,7 +370,7 @@ export default function StatusActions({
             {packLinked ? "Cubierta por la factura del pack" : "Turno en $0 — no se factura"}
           </span>
         )
-      ) : primaryAction ? (
+      ) : primaryAction && !(hideConfirmButton && primaryAction.status === "confirmed") ? (
         <button
           className={`adm-btn ${primaryAction.variant === "primary" ? "adm-btn--primary" : ""}`}
           disabled={pending}
