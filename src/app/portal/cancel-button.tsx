@@ -5,8 +5,12 @@ import { cancelMyAppointment } from "./actions"
 
 export default function CancelButton({
   appointmentId,
+  label,
 }: {
   appointmentId: string
+  /** Con varios turnos en la misma tarjeta (una compra), el link dice CUÁL
+   *  cancela ("Cancelar turno de las 10:30"). Sin label: "Cancelar turno". */
+  label?: string
 }) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -43,7 +47,7 @@ export default function CancelButton({
           padding: 0,
         }}
       >
-        {pending ? "Cancelando…" : "Cancelar turno"}
+        {pending ? "Cancelando…" : label ?? "Cancelar turno"}
       </button>
       {error && (
         <div

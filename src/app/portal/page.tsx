@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { buildItinerary, spansMultipleDays } from "@/lib/servicios/purchase-itinerary"
 import LogoutButton from "./logout-button"
 import CancelButton from "./cancel-button"
 import "../reserva/reserva.css"
@@ -19,6 +20,7 @@ type ApptService = {
   service: { name: string } | null
   staff: { full_name: string } | null
   starts_at: string | null
+  duration_min: number | null
 }
 
 type AppointmentRow = {
@@ -27,6 +29,9 @@ type AppointmentRow = {
   status: string
   duration_min: number
   total_cents: number
+  booking_group_id: string | null
+  pack_purchase_id: string | null
+  pack: { pack_name: string } | null
   appointment_services: ApptService[]
 }
 
@@ -58,8 +63,9 @@ export default async function PortalPage() {
       admin
         .from("appointments")
         .select(`
-          id, starts_at, status, duration_min, total_cents,
-          appointment_services(starts_at, service:services(name), staff:staff(full_name))
+          id, starts_at, status, duration_min, total_cents, booking_group_id, pack_purchase_id,
+          pack:pack_purchases(pack_name),
+          appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))
         `)
         .eq("client_id", client.id)
         .order("starts_at", { ascending: true }),
@@ -87,6 +93,8 @@ export default async function PortalPage() {
     ? `Hola, ${client.first_name}.`
     : "Te esperamos."
   const subtitle = user.email ?? ""
+  // Un solo "ahora" para decidir qué turnos siguen siendo cancelables.
+  const nowMs = new Date().getTime()
 
   return (
     <div className="blv" style={{ minHeight: "100vh", padding: "32px 20px" }}>
@@ -179,65 +187,88 @@ export default async function PortalPage() {
               Tus turnos
             </h2>
             <div className="summary">
-              {appointments.map((a) => {
-                const startsAt = new Date(a.starts_at)
-                const now = new Date()
-                const isUpcoming = startsAt.getTime() > now.getTime()
-                const cancellable =
-                  isUpcoming &&
-                  (a.status === "pending" || a.status === "confirmed")
-                const svcItems = (a.appointment_services ?? [])
-                  .slice()
-                  .sort((x, y) => {
-                    if (!x.starts_at || !y.starts_at) return 0
-                    return new Date(x.starts_at).getTime() - new Date(y.starts_at).getTime()
-                  })
-                const isMulti = svcItems.length > 1
+              {/* UNA tarjeta por COMPRA (los turnos que comparten
+                  booking_group_id), con el itinerario unificado — la usuaria
+                  no quiere la división pack/tratamientos. Turnos viejos o
+                  agendados después por el salón (sin grupo) salen solos,
+                  como siempre. */}
+              {groupPurchases(appointments).map((group) => {
+                const first = group[0]
+                // El nombre del pack sólo cuando el grupo ES una compra
+                // (con grupo): una sesión suelta agendada después no sabe
+                // su número real → mejor el nombre del servicio.
+                const packName = first.booking_group_id
+                  ? group.find((a) => a.pack)?.pack?.pack_name ?? null
+                  : null
+                const rows = buildItinerary(
+                  group.map((a) => ({
+                    id: a.id,
+                    startsAt: a.starts_at,
+                    durationMin: a.duration_min,
+                    packPurchaseId: a.pack_purchase_id,
+                    legs: (a.appointment_services ?? []).map((s) => ({
+                      startsAt: s.starts_at,
+                      durationMin: s.duration_min,
+                      serviceName: s.service?.name ?? null,
+                      staffName: s.staff?.full_name ?? null,
+                    })),
+                  })),
+                  packName
+                )
+                const multiDay = spansMultipleDays(rows)
+                const statuses = [...new Set(group.map((a) => a.status))]
+                const totalCents = group.reduce((acc, a) => acc + a.total_cents, 0)
+                const cancellables = group.filter(
+                  (a) =>
+                    new Date(a.starts_at).getTime() > nowMs &&
+                    (a.status === "pending" || a.status === "confirmed")
+                )
                 return (
-                <div key={a.id} className="summary__row">
-                  <span className="summary__label">
-                    {startsAt.toLocaleString("es-AR", {
-                      weekday: "long",
-                      day: "numeric",
-                      month: "long",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      timeZone: "America/Argentina/Buenos_Aires",
-                    })}
-                  </span>
-                  <div className="summary__value" style={{ fontSize: 13 }}>
-                    {labelStatus(a.status)}
-                    {isMulti ? (
+                  <div key={first.booking_group_id ?? first.id} className="summary__row">
+                    <span className="summary__label">
+                      {new Date(first.starts_at).toLocaleString("es-AR", {
+                        weekday: "long",
+                        day: "numeric",
+                        month: "long",
+                        timeZone: "America/Argentina/Buenos_Aires",
+                      })}
+                    </span>
+                    <div className="summary__value" style={{ fontSize: 13 }}>
+                      {statuses.map(labelStatus).join(" / ")}
                       <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                        {svcItems.map((s, i) => (
-                          <small key={i} style={{ color: "var(--ink-soft)" }}>
-                            {s.starts_at && (
-                              <span style={{ marginRight: 4 }}>
-                                {new Date(s.starts_at).toLocaleTimeString("es-AR", {
-                                  hour: "2-digit", minute: "2-digit",
-                                  timeZone: "America/Argentina/Buenos_Aires",
-                                })}
-                              </span>
-                            )}
-                            {s.service?.name}
-                            {s.staff?.full_name && <> · {s.staff.full_name}</>}
+                        {rows.map((r) => (
+                          <small key={r.apptId + r.hm + r.label} style={{ color: "var(--ink-soft)" }}>
+                            <span style={{ marginRight: 4, fontVariantNumeric: "tabular-nums" }}>
+                              {multiDay
+                                ? `${r.dateStr.slice(8, 10)}/${r.dateStr.slice(5, 7)} · ${r.hm}`
+                                : r.hm}
+                            </span>
+                            {r.label}
+                            {r.staffName && <> · {r.staffName}</>}
                           </small>
                         ))}
-                        <small>{a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}</small>
+                        <small>
+                          {totalCents > 0
+                            ? `Total · $${(totalCents / 100).toLocaleString("es-AR")}`
+                            : "Canjeada con puntos"}
+                        </small>
                       </div>
-                    ) : (
-                      <small>
-                        {svcItems[0]?.service?.name && <>{svcItems[0].service!.name} · </>}
-                        {a.duration_min} min · ${(a.total_cents / 100).toLocaleString("es-AR")}
-                      </small>
-                    )}
-                    {cancellable && (
-                      <small style={{ marginTop: 6 }}>
-                        <CancelButton appointmentId={a.id} />
-                      </small>
-                    )}
+                      {cancellables.map((a) => (
+                        <small key={a.id} style={{ marginTop: 6 }}>
+                          <CancelButton
+                            appointmentId={a.id}
+                            label={
+                              group.length > 1
+                                ? `Cancelar turno de las ${
+                                    rows.find((r) => r.apptId === a.id)?.hm ?? ""
+                                  }`
+                                : undefined
+                            }
+                          />
+                        </small>
+                      ))}
+                    </div>
                   </div>
-                </div>
                 )
               })}
             </div>
@@ -306,6 +337,25 @@ export default async function PortalPage() {
       </div>
     </div>
   )
+}
+
+/** Agrupa los turnos por compra (booking_group_id); sin grupo, cada uno va
+ *  solo. El orden de las tarjetas = el del primer turno de cada compra (la
+ *  lista ya viene ordenada por fecha). */
+function groupPurchases(appointments: AppointmentRow[]): AppointmentRow[][] {
+  const groups: AppointmentRow[][] = []
+  const byGroup = new Map<string, AppointmentRow[]>()
+  for (const a of appointments) {
+    const key = a.booking_group_id ?? a.id
+    let arr = byGroup.get(key)
+    if (!arr) {
+      arr = []
+      byGroup.set(key, arr)
+      groups.push(arr)
+    }
+    arr.push(a)
+  }
+  return groups
 }
 
 function labelStatus(s: string) {

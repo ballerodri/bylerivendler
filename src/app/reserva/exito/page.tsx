@@ -2,7 +2,7 @@ import Link from "next/link"
 import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { DOW_NAMES, MONTH_NAMES, fmtDuration, fmtPrice } from "../data"
-import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { buildItinerary } from "@/lib/servicios/purchase-itinerary"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import "../reserva.css"
 
@@ -17,10 +17,12 @@ type ApptRow = {
   status: string
   pack_purchase_id: string | null
   client: { first_name: string | null } | null
+  pack: { pack_name: string; sessions_total: number } | null
   appointment_services: {
     starts_at: string | null
     duration_min: number | null
     service: { name: string } | null
+    staff: { full_name: string } | null
   }[]
 }
 
@@ -44,7 +46,7 @@ export default async function ReservaExitoPage({
   const { data } = await admin
     .from("appointments")
     .select(
-      "id, starts_at, duration_min, total_cents, deposit_cents, status, pack_purchase_id, client:clients(first_name), appointment_services(starts_at, duration_min, service:services(name))"
+      "id, starts_at, duration_min, total_cents, deposit_cents, status, pack_purchase_id, client:clients(first_name), pack:pack_purchases(pack_name, sessions_total), appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))"
     )
     .in("id", ids)
     .order("starts_at", { ascending: true })
@@ -55,6 +57,39 @@ export default async function ReservaExitoPage({
   const appt = appts[0]
   const firstName = appt.client?.first_name ?? ""
   const dueNowCents = appts.reduce((acc, a) => acc + a.deposit_cents, 0)
+  const totalCents = appts.reduce((acc, a) => acc + a.total_cents, 0)
+
+  // El ITINERARIO UNIFICADO de la compra (módulo puro compartido con el mail
+  // de confirmación y el portal): todas las filas cronológicas juntas, SIN
+  // separar el pack de los tratamientos.
+  const withPack = appts.find((a) => a.pack)
+  const packName = withPack?.pack?.pack_name ?? null
+  const packScheduled = appts.filter((a) => a.pack_purchase_id).length
+  const packRemaining = withPack
+    ? Math.max(0, (withPack.pack?.sessions_total ?? packScheduled) - packScheduled)
+    : 0
+  const rows = buildItinerary(
+    appts.map((a) => ({
+      id: a.id,
+      startsAt: a.starts_at,
+      durationMin: a.duration_min,
+      packPurchaseId: a.pack_purchase_id,
+      legs: a.appointment_services.map((as) => ({
+        startsAt: as.starts_at,
+        durationMin: as.duration_min,
+        serviceName: as.service?.name ?? null,
+        staffName: as.staff?.full_name ?? null,
+      })),
+    })),
+    packName
+  )
+  // Agrupadas por día (una compra "separados" puede cruzar días).
+  const days: { dateStr: string; rows: typeof rows }[] = []
+  for (const r of rows) {
+    const last = days[days.length - 1]
+    if (!last || last.dateStr !== r.dateStr) days.push({ dateStr: r.dateStr, rows: [r] })
+    else last.rows.push(r)
+  }
   // Con turnos pendientes (falta la seña) el mail de confirmación sale recién
   // cuando el salón confirma el último — la nota de abajo no puede prometer
   // "te enviamos los detalles" que todavía no salieron. Con todo confirmado
@@ -130,130 +165,79 @@ export default async function ReservaExitoPage({
           )}
         </p>
 
-        {/* Card with appointment details — una por turno. OJO: este componente
-            corre en el SERVIDOR (UTC en Vercel), así que la fecha/hora se saca
-            SIEMPRE con `arPartsFromUtc` (hora argentina), nunca con getDay()/
-            toLocaleTimeString a secas — eso mostraba 10:00 como "01:00 p. m.". */}
-        {appts.map((a) => {
-          const aParts = arPartsFromUtc(new Date(a.starts_at))
-          const [, aMonth, aDay] = aParts.dateStr.split("-").map(Number)
-          const aDow = DOW_NAMES[(aParts.dayOfWeek + 6) % 7]
-          const priceLabel =
-            a.total_cents > 0
-              ? fmtPrice(a.total_cents / 100)
-              : a.pack_purchase_id
-              ? "Incluida en el pack"
-              : "Canjeada con puntos"
-          const legs = a.appointment_services
-            .map((as) => ({
-              name: as.service?.name ?? "",
-              startsAt: as.starts_at,
-              durationMin: as.duration_min,
-            }))
-            .filter((l) => l.name)
-          // Itinerario por servicio: sólo cuando el turno "juntos" tiene 2+
-          // servicios y cada pata trae su hora real — con la grilla puede haber
-          // huecos (10:20 · 12:00 · 13:00), así que una sola hora engaña.
-          const showItinerary =
-            legs.length > 1 && legs.every((l) => l.startsAt && l.durationMin)
-          if (showItinerary) {
-            const sorted = [...legs].sort(
-              (x, y) =>
-                new Date(x.startsAt!).getTime() - new Date(y.startsAt!).getTime()
-            )
+        {/* UNA sola tarjeta con el itinerario completo de la compra (pack +
+            tratamientos JUNTOS, cronológico) — la usuaria no quiere la
+            división pack/tratamientos. Este componente corre en el SERVIDOR
+            (UTC en Vercel): la fecha/hora viene SIEMPRE del itinerario (hora
+            argentina vía arPartsFromUtc), nunca de getDay()/toLocaleTimeString
+            a secas — eso mostraba 10:00 como "01:00 p. m.". */}
+        <div
+          className="success__card"
+          style={{ textAlign: "left", marginBottom: 24 }}
+        >
+          {days.map((day) => {
+            const [, dMonth, dDay] = day.dateStr.split("-").map(Number)
+            // El día de la semana del calendario argentino: medianoche UTC de
+            // esa fecha tiene el mismo día de calendario.
+            const dow = new Date(`${day.dateStr}T00:00:00Z`).getUTCDay()
             return (
-              <div
-                key={a.id}
-                className="success__card"
-                style={{ textAlign: "left", marginBottom: 24 }}
-              >
+              <div key={day.dateStr} style={{ marginBottom: 10 }}>
                 <div className="success__svc" style={{ marginBottom: 10 }}>
-                  {aDow} {aDay} de {MONTH_NAMES[aMonth - 1].toLowerCase()}
+                  {DOW_NAMES[(dow + 6) % 7]} {dDay} de{" "}
+                  {MONTH_NAMES[dMonth - 1].toLowerCase()}
                 </div>
-                {sorted.map((l) => {
-                  const lParts = arPartsFromUtc(new Date(l.startsAt!))
-                  return (
-                    <div
-                      key={l.name + l.startsAt}
-                      style={{ display: "flex", gap: 12, marginBottom: 6 }}
-                    >
-                      <span
-                        style={{
-                          color: "var(--gold)",
-                          fontVariantNumeric: "tabular-nums",
-                          minWidth: 44,
-                        }}
-                      >
-                        {lParts.timeStr}
-                      </span>
-                      <span>
-                        {l.name}
-                        <span style={{ color: "var(--muted, #7a6e64)" }}>
-                          {" "}
-                          · {fmtDuration(l.durationMin!)}
-                        </span>
-                      </span>
-                    </div>
-                  )
-                })}
-                <div
-                  className="success__when"
-                  style={{
-                    marginTop: 10,
-                    paddingTop: 10,
-                    borderTop: "1px solid var(--line)",
-                  }}
-                >
-                  {priceLabel}
-                  <br />
-                  <a
-                    href={MAPS_LINK}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
+                {day.rows.map((r) => (
+                  <div
+                    key={r.apptId + r.hm + r.label}
+                    style={{ display: "flex", gap: 12, marginBottom: 6 }}
                   >
-                    {ADDRESS_LINE} · {ADDRESS_AREA}
-                  </a>
-                </div>
+                    <span
+                      style={{
+                        color: "var(--gold)",
+                        fontVariantNumeric: "tabular-nums",
+                        minWidth: 44,
+                      }}
+                    >
+                      {r.hm}
+                    </span>
+                    <span>
+                      {r.label}
+                      <span style={{ color: "var(--muted, #7a6e64)" }}>
+                        {r.durationMin ? <> · {fmtDuration(r.durationMin)}</> : null}
+                        {r.staffName ? <> · {r.staffName}</> : null}
+                      </span>
+                    </span>
+                  </div>
+                ))}
               </div>
             )
-          }
-          return (
-            <div
-              key={a.id}
-              className="success__card"
-              style={{ textAlign: "left", marginBottom: 24 }}
-            >
-              {legs.map((l) => (
-                <div key={l.name} style={{ marginBottom: 8 }}>
-                  <div className="success__svc">{l.name}</div>
-                </div>
-              ))}
-              <div
-                className="success__when"
-                style={{
-                  marginTop: 10,
-                  paddingTop: 10,
-                  borderTop: "1px solid var(--line)",
-                }}
-              >
-                <strong>
-                  {aDow} {aDay} de {MONTH_NAMES[aMonth - 1].toLowerCase()}
-                </strong>{" "}
-                · {aParts.timeStr}hs · {fmtDuration(a.duration_min)} · {priceLabel}
-                <br />
-                <a
-                  href={MAPS_LINK}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
-                >
-                  {ADDRESS_LINE} · {ADDRESS_AREA}
-                </a>
-              </div>
+          })}
+          {packRemaining > 0 && (
+            <div style={{ fontSize: 13, color: "var(--muted, #7a6e64)", marginBottom: 10 }}>
+              Te quedan <strong>{packRemaining}</strong> sesión(es) del pack por
+              agendar. Coordinamos con vos para fijarlas.
             </div>
-          )
-        })}
+          )}
+          <div
+            className="success__when"
+            style={{
+              marginTop: 10,
+              paddingTop: 10,
+              borderTop: "1px solid var(--line)",
+            }}
+          >
+            {totalCents > 0 ? <>Total · {fmtPrice(totalCents / 100)}</> : "Canjeada con puntos"}
+            <br />
+            <a
+              href={MAPS_LINK}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
+            >
+              {ADDRESS_LINE} · {ADDRESS_AREA}
+            </a>
+          </div>
+        </div>
 
         {/* Con varios turnos, la seña es UNA sola: hay que decirlo. Si no hay
             nada que transferir (canjeó con puntos), no hay comprobante que

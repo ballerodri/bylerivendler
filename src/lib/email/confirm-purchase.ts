@@ -2,7 +2,7 @@ import "server-only"
 import { Resend } from "resend"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { ADDRESS_FULL, MAPS_LINK } from "@/lib/location"
-import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { buildItinerary } from "@/lib/servicios/purchase-itinerary"
 import {
   FROM,
   SITE,
@@ -18,10 +18,22 @@ const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null
 
+/** Sólo el día ("viernes, 17 de julio"), en hora argentina — la hora de cada
+ *  fila la pone el itinerario. */
+function fmtDayAR(d: Date): string {
+  return d.toLocaleString("es-AR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "America/Argentina/Buenos_Aires",
+  })
+}
+
 type GroupApptRow = {
   id: string
   starts_at: string
   status: string
+  duration_min: number | null
   pack_purchase_id: string | null
   client_id: string
   appointment_services: {
@@ -58,7 +70,7 @@ export async function sendGroupConfirmationEmail(
   const { data } = await admin
     .from("appointments")
     .select(
-      `id, starts_at, status, pack_purchase_id, client_id,
+      `id, starts_at, status, duration_min, pack_purchase_id, client_id,
        appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))`
     )
     .eq("booking_group_id", bookingGroupId)
@@ -108,12 +120,11 @@ export async function sendGroupConfirmationEmail(
       return
     }
 
-    // 5) Datos del pack (si la compra incluía uno): numera las sesiones por
-    //    fecha y avisa cuántas quedan por agendar.
+    // 5) Datos del pack (si la compra incluía uno): el nombre para etiquetar
+    //    las sesiones y cuántas quedan por agendar.
     const packId = appts.find((a) => a.pack_purchase_id)?.pack_purchase_id ?? null
     let packName = ""
     let packRemaining = 0
-    const sessionNumber = new Map<string, number>()
     if (packId) {
       const { data: packRow } = await admin
         .from("pack_purchases")
@@ -121,12 +132,9 @@ export async function sendGroupConfirmationEmail(
         .eq("id", packId)
         .single()
       const pack = packRow as { pack_name: string; sessions_total: number } | null
-      const sessions = appts
-        .filter((a) => a.pack_purchase_id === packId)
-        .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
-      sessions.forEach((a, i) => sessionNumber.set(a.id, i + 1))
+      const sessions = appts.filter((a) => a.pack_purchase_id === packId).length
       packName = pack?.pack_name ?? "Pack"
-      packRemaining = Math.max(0, (pack?.sessions_total ?? sessions.length) - sessions.length)
+      packRemaining = Math.max(0, (pack?.sessions_total ?? sessions) - sessions)
     }
 
     // 6) El mail muestra SOLO los turnos vivos: uno cancelado/no_show no
@@ -140,6 +148,27 @@ export async function sendGroupConfirmationEmail(
       return
     }
 
+    // El ITINERARIO UNIFICADO de la compra (módulo puro compartido con la
+    // pantalla de éxito y el portal): todas las filas cronológicas juntas,
+    // SIN separar el pack de los tratamientos — la usuaria no quiere esa
+    // división. Encabezado de día una sola vez (o uno por día en "separados").
+    // SIN plata: la compra ya está saldada/señada, acá solo se confirma.
+    const rows = buildItinerary(
+      live.map((a) => ({
+        id: a.id,
+        startsAt: a.starts_at,
+        durationMin: a.duration_min,
+        packPurchaseId: a.pack_purchase_id,
+        legs: (a.appointment_services ?? []).map((l) => ({
+          startsAt: l.starts_at,
+          durationMin: l.duration_min,
+          serviceName: l.service?.name ?? null,
+          staffName: l.staff?.full_name ?? null,
+        })),
+      })),
+      packName || null
+    )
+
     // Con UN solo turno vivo en total, chip de Google Calendar (con varios no:
     // un solo botón no puede agregar varios eventos). La duración del evento
     // es la ventana real del turno: desde el inicio hasta el fin de la última
@@ -147,65 +176,31 @@ export async function sendGroupConfirmationEmail(
     let chipHtml = ""
     if (live.length === 1) {
       const only = live[0]
-      const legs = only.appointment_services ?? []
       const startsAt = new Date(only.starts_at)
       let endMs = startsAt.getTime()
-      for (const l of legs) {
+      for (const l of only.appointment_services ?? []) {
         const legStart = l.starts_at ? new Date(l.starts_at).getTime() : startsAt.getTime()
         endMs = Math.max(endMs, legStart + (l.duration_min ?? 0) * 60_000)
       }
       const durationMin =
         endMs > startsAt.getTime() ? Math.round((endMs - startsAt.getTime()) / 60_000) : 60
-      const names = legs
-        .map((l) => l.service?.name)
-        .filter((n): n is string => Boolean(n))
-      const sn = sessionNumber.get(only.id)
-      const servicesNames = names.length ? names : sn ? [packName] : ["Tu turno"]
-      chipHtml = calChip(gcalLink({ servicesNames, startsAt, durationMin }))
+      chipHtml = calChip(
+        gcalLink({ servicesNames: rows.map((r) => r.label), startsAt, durationMin })
+      )
     }
 
-    // Un bloque por turno: la fecha en hora argentina y abajo qué es. Una
-    // sesión de pack se etiqueta como tal; con 2+ patas va el itinerario con
-    // la hora real de CADA una (la grilla puede dejar huecos y una sola hora
-    // engaña). SIN plata: la compra ya está saldada/señada, acá solo se
-    // confirma.
-    const turnoBlocks = live
-      .map((a, idx) => {
-        const legs = [...(a.appointment_services ?? [])].sort((x, y) => {
-          const tx = x.starts_at ? new Date(x.starts_at).getTime() : 0
-          const ty = y.starts_at ? new Date(y.starts_at).getTime() : 0
-          return tx - ty
-        })
-        const sn = sessionNumber.get(a.id)
-        let detail: string
-        if (sn) {
-          detail = `<p style="font-family:Georgia,serif;font-size:15px;margin:0;">Sesión ${sn} · ${escape(packName)}</p>`
-        } else if (legs.length > 1) {
-          detail = legs
-            .filter((l) => l.service?.name)
-            .map((l) => {
-              const hora = l.starts_at
-                ? `<span style="color:#b68a5f;">${arPartsFromUtc(new Date(l.starts_at)).timeStr}</span> `
-                : ""
-              const min = l.duration_min ? ` · ${l.duration_min} min` : ""
-              const prof = l.staff?.full_name ? ` · ${escape(l.staff.full_name)}` : ""
-              return `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">${hora}${escape(l.service!.name)}<span style="font-size:13px;color:#7a6e64;">${min}${prof}</span></p>`
-            })
-            .join("")
-        } else {
-          const l = legs[0]
-          const min = l?.duration_min ? ` · ${l.duration_min} min` : ""
-          const prof = l?.staff?.full_name ? ` · ${escape(l.staff.full_name)}` : ""
-          detail = `<p style="font-family:Georgia,serif;font-size:15px;margin:0;">${escape(l?.service?.name ?? "Tu tratamiento")}<span style="font-size:13px;color:#7a6e64;">${min}${prof}</span></p>`
-        }
-        const divider =
-          idx > 0
-            ? `<hr style="border:none;border-top:1px solid rgba(43,38,35,0.1);margin:16px 0;">`
+    let lastDate = ""
+    const turnoBlocks = rows
+      .map((r) => {
+        // Encabezado de día: una vez por día (la primera vez que aparece).
+        const header =
+          r.dateStr !== lastDate
+            ? `<p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:${lastDate ? "16px" : "0"} 0 6px;">${fmtDayAR(new Date(r.ms))}</p>`
             : ""
-        return `${divider}
-      <p style="font-family:Georgia,serif;font-size:18px;font-weight:500;margin:0 0 6px;">${fmtDateAR(new Date(a.starts_at))}</p>
-      ${detail}
-      ${idx === 0 && live.length === 1 ? chipHtml : ""}`
+        lastDate = r.dateStr
+        const min = r.durationMin ? ` · ${r.durationMin} min` : ""
+        const prof = r.staffName ? ` · ${escape(r.staffName)}` : ""
+        return `${header}<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;"><span style="color:#b68a5f;">${r.hm}</span> ${escape(r.label)}<span style="font-size:13px;color:#7a6e64;">${min}${prof}</span></p>`
       })
       .join("")
 
@@ -230,6 +225,7 @@ export async function sendGroupConfirmationEmail(
     </p>
     <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
       ${turnoBlocks}
+      ${live.length === 1 ? chipHtml : ""}
       ${packNote}
       <div style="height:16px;"></div>
 
