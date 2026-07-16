@@ -2,6 +2,7 @@ import "server-only"
 import { Resend } from "resend"
 import { WHATSAPP_DISPLAY, whatsappLink } from "@/lib/whatsapp"
 import { ADDRESS_FULL, MAPS_LINK } from "@/lib/location"
+import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -18,6 +19,12 @@ export type BookingEmailData = {
   durationMin: number
   totalCents: number
   appointmentId: string
+  /**
+   * Con 2+ servicios en el mismo turno ("juntos"), la hora real de CADA uno:
+   * con la colocación en grilla puede haber huecos (10:20 · 12:00 · 13:00),
+   * así que el mail lista servicio por servicio en vez de una sola hora.
+   */
+  legs?: { serviceName: string; startsAt: Date; durationMin: number }[]
 }
 
 function fmtDateAR(d: Date): string {
@@ -84,12 +91,27 @@ export async function sendBookingConfirmation(
       <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
-      <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
+      ${
+        data.legs && data.legs.length > 1
+          ? // Itinerario: la hora real de CADA servicio — con la colocación en
+            // grilla puede haber huecos (10:20 · 12:00 · 13:00) y una sola
+            // hora engaña. Después, el precio total (la "duración" del turno
+            // es la ventana con huecos: acá no aporta).
+            [...data.legs]
+              .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+              .map(
+                (l) =>
+                  `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;"><span style="color:#b68a5f;">${arPartsFromUtc(l.startsAt).timeStr}</span> ${escape(l.serviceName)} <span style="font-size:13px;color:#7a6e64;">· ${l.durationMin} min</span></p>`
+              )
+              .join("") +
+            `<p style="font-size:13px;color:#7a6e64;margin:8px 0 16px;">${fmtPrice(data.totalCents)}</p>`
+          : `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
         ${data.servicesNames.map((n) => escape(n)).join("<br>")}
       </p>
       <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">
         ${data.durationMin} min · ${fmtPrice(data.totalCents)}
-      </p>
+      </p>`
+      }
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Dónde</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0;">
@@ -219,12 +241,24 @@ export async function sendBookingReminder(
       <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Tratamiento${data.servicesNames.length > 1 ? "s" : ""}</p>
-      <p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
+      ${
+        data.legs && data.legs.length > 1
+          ? // Itinerario: la hora real de CADA servicio (con la grilla puede
+            // haber huecos y una sola hora engaña).
+            [...data.legs]
+              .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+              .map(
+                (l) =>
+                  `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;"><span style="color:#b68a5f;">${arPartsFromUtc(l.startsAt).timeStr}</span> ${escape(l.serviceName)} <span style="font-size:13px;color:#7a6e64;">· ${l.durationMin} min</span></p>`
+              )
+              .join("") + `<div style="height:12px;"></div>`
+          : `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 4px;">
         ${data.servicesNames.map((n) => escape(n)).join("<br>")}
       </p>
       <p style="font-size:13px;color:#7a6e64;margin:0 0 16px;">
         ${data.durationMin} min
-      </p>
+      </p>`
+      }
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Dónde</p>
       <p style="font-family:Georgia,serif;font-size:15px;margin:0;">

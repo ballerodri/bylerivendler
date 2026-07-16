@@ -1262,6 +1262,13 @@ export async function createBooking(
           durationMin: visitWindowMin,
           totalCents,
           appointmentId: apptId,
+          // Con 2+ servicios, el mail muestra la hora real de CADA pata (con
+          // la grilla puede haber huecos y una sola hora engaña).
+          legs: plannedAppt.legs.map((l) => ({
+            serviceName: l.name,
+            startsAt: new Date(l.startsAtMs),
+            durationMin: l.durationMin,
+          })),
         })
       } catch {
         // ignore — la reserva ya está; el equipo puede reenviar manualmente.
@@ -1291,7 +1298,12 @@ export async function createBooking(
         packName: pp.pack.name,
         packSessionsTotal: pp.pack.sessions,
         packStartsAtList: pp.slotDates,
-        services: looseItems.map((p) => ({ serviceName: p.label, startsAt: new Date(p.startsAtMs) })),
+        // Una fila POR SERVICIO con la hora real de su pata (no una sola fila
+        // con la hora del turno portador): con la grilla puede haber huecos
+        // (10:20 · 12:00 · 13:00) y una sola hora engañaba en el mail.
+        services: looseItems.flatMap((p) =>
+          p.legs.map((l) => ({ serviceName: l.name, startsAt: new Date(l.startsAtMs) }))
+        ),
         totalCents: sumTotals(plan),
         dueNowCents: sumDeposits(plan),
       })

@@ -2,6 +2,7 @@ import Link from "next/link"
 import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { DOW_NAMES, MONTH_NAMES, fmtDuration, fmtPrice } from "../data"
+import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 import "../reserva.css"
 
@@ -15,7 +16,11 @@ type ApptRow = {
   deposit_cents: number
   pack_purchase_id: string | null
   client: { first_name: string | null } | null
-  appointment_services: { service: { name: string } | null }[]
+  appointment_services: {
+    starts_at: string | null
+    duration_min: number | null
+    service: { name: string } | null
+  }[]
 }
 
 export default async function ReservaExitoPage({
@@ -38,7 +43,7 @@ export default async function ReservaExitoPage({
   const { data } = await admin
     .from("appointments")
     .select(
-      "id, starts_at, duration_min, total_cents, deposit_cents, pack_purchase_id, client:clients(first_name), appointment_services(service:services(name))"
+      "id, starts_at, duration_min, total_cents, deposit_cents, pack_purchase_id, client:clients(first_name), appointment_services(starts_at, duration_min, service:services(name))"
     )
     .in("id", ids)
     .order("starts_at", { ascending: true })
@@ -110,22 +115,103 @@ export default async function ReservaExitoPage({
           24 horas antes de tu turno.
         </p>
 
-        {/* Card with appointment details — una por turno */}
+        {/* Card with appointment details — una por turno. OJO: este componente
+            corre en el SERVIDOR (UTC en Vercel), así que la fecha/hora se saca
+            SIEMPRE con `arPartsFromUtc` (hora argentina), nunca con getDay()/
+            toLocaleTimeString a secas — eso mostraba 10:00 como "01:00 p. m.". */}
         {appts.map((a) => {
-          const aDate = new Date(a.starts_at)
-          const aDow = DOW_NAMES[(aDate.getDay() + 6) % 7]
-          const aServices = a.appointment_services
-            .map((as) => as.service?.name)
-            .filter((n): n is string => Boolean(n))
+          const aParts = arPartsFromUtc(new Date(a.starts_at))
+          const [, aMonth, aDay] = aParts.dateStr.split("-").map(Number)
+          const aDow = DOW_NAMES[(aParts.dayOfWeek + 6) % 7]
+          const priceLabel =
+            a.total_cents > 0
+              ? fmtPrice(a.total_cents / 100)
+              : a.pack_purchase_id
+              ? "Incluida en el pack"
+              : "Canjeada con puntos"
+          const legs = a.appointment_services
+            .map((as) => ({
+              name: as.service?.name ?? "",
+              startsAt: as.starts_at,
+              durationMin: as.duration_min,
+            }))
+            .filter((l) => l.name)
+          // Itinerario por servicio: sólo cuando el turno "juntos" tiene 2+
+          // servicios y cada pata trae su hora real — con la grilla puede haber
+          // huecos (10:20 · 12:00 · 13:00), así que una sola hora engaña.
+          const showItinerary =
+            legs.length > 1 && legs.every((l) => l.startsAt && l.durationMin)
+          if (showItinerary) {
+            const sorted = [...legs].sort(
+              (x, y) =>
+                new Date(x.startsAt!).getTime() - new Date(y.startsAt!).getTime()
+            )
+            return (
+              <div
+                key={a.id}
+                className="success__card"
+                style={{ textAlign: "left", marginBottom: 24 }}
+              >
+                <div className="success__svc" style={{ marginBottom: 10 }}>
+                  {aDow} {aDay} de {MONTH_NAMES[aMonth - 1].toLowerCase()}
+                </div>
+                {sorted.map((l) => {
+                  const lParts = arPartsFromUtc(new Date(l.startsAt!))
+                  return (
+                    <div
+                      key={l.name + l.startsAt}
+                      style={{ display: "flex", gap: 12, marginBottom: 6 }}
+                    >
+                      <span
+                        style={{
+                          color: "var(--gold)",
+                          fontVariantNumeric: "tabular-nums",
+                          minWidth: 44,
+                        }}
+                      >
+                        {lParts.timeStr}
+                      </span>
+                      <span>
+                        {l.name}
+                        <span style={{ color: "var(--muted, #7a6e64)" }}>
+                          {" "}
+                          · {fmtDuration(l.durationMin!)}
+                        </span>
+                      </span>
+                    </div>
+                  )
+                })}
+                <div
+                  className="success__when"
+                  style={{
+                    marginTop: 10,
+                    paddingTop: 10,
+                    borderTop: "1px solid var(--line)",
+                  }}
+                >
+                  {priceLabel}
+                  <br />
+                  <a
+                    href={MAPS_LINK}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "var(--gold)", textDecoration: "underline", textUnderlineOffset: 2 }}
+                  >
+                    {ADDRESS_LINE} · {ADDRESS_AREA}
+                  </a>
+                </div>
+              </div>
+            )
+          }
           return (
             <div
               key={a.id}
               className="success__card"
               style={{ textAlign: "left", marginBottom: 24 }}
             >
-              {aServices.map((name) => (
-                <div key={name} style={{ marginBottom: 8 }}>
-                  <div className="success__svc">{name}</div>
+              {legs.map((l) => (
+                <div key={l.name} style={{ marginBottom: 8 }}>
+                  <div className="success__svc">{l.name}</div>
                 </div>
               ))}
               <div
@@ -137,20 +223,9 @@ export default async function ReservaExitoPage({
                 }}
               >
                 <strong>
-                  {aDow} {aDate.getDate()} de{" "}
-                  {MONTH_NAMES[aDate.getMonth()].toLowerCase()}
+                  {aDow} {aDay} de {MONTH_NAMES[aMonth - 1].toLowerCase()}
                 </strong>{" "}
-                ·{" "}
-                {aDate.toLocaleTimeString("es-AR", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-                hs · {fmtDuration(a.duration_min)} ·{" "}
-                {a.total_cents > 0
-                  ? fmtPrice(a.total_cents / 100)
-                  : a.pack_purchase_id
-                  ? "Incluida en el pack"
-                  : "Canjeada con puntos"}
+                · {aParts.timeStr}hs · {fmtDuration(a.duration_min)} · {priceLabel}
                 <br />
                 <a
                   href={MAPS_LINK}

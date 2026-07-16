@@ -18,7 +18,11 @@ type ApptRow = {
   duration_min: number
   total_cents: number
   client: { email: string; first_name: string | null; phone: string | null } | null
-  appointment_services: { service: { name: string } | null }[]
+  appointment_services: {
+    starts_at: string | null
+    duration_min: number | null
+    service: { name: string } | null
+  }[]
 }
 
 export async function GET(req: NextRequest) {
@@ -52,7 +56,7 @@ export async function GET(req: NextRequest) {
     .select(
       `id, starts_at, duration_min, total_cents,
        client:clients(email, first_name, phone),
-       appointment_services(service:services(name))`
+       appointment_services(starts_at, duration_min, service:services(name))`
     )
     .gte("starts_at", windowStart)
     .lte("starts_at", windowEnd)
@@ -77,6 +81,21 @@ export async function GET(req: NextRequest) {
 
     const startsAt = new Date(a.starts_at)
 
+    // Con 2+ servicios en el turno, la hora real de cada pata (con la grilla
+    // puede haber huecos y una sola hora engaña). Sólo si TODAS las patas
+    // traen su hora (turnos viejos podrían no tenerla → mail de siempre).
+    const legRows = a.appointment_services.filter(
+      (as) => as.service?.name && as.starts_at && as.duration_min
+    )
+    const legs =
+      legRows.length > 1 && legRows.length === a.appointment_services.length
+        ? legRows.map((as) => ({
+            serviceName: as.service!.name,
+            startsAt: new Date(as.starts_at!),
+            durationMin: as.duration_min!,
+          }))
+        : undefined
+
     const emailResult = await sendBookingReminder({
       to: a.client.email,
       firstName: a.client.first_name ?? "",
@@ -85,6 +104,7 @@ export async function GET(req: NextRequest) {
       durationMin: a.duration_min,
       totalCents: a.total_cents,
       appointmentId: a.id,
+      legs,
     })
 
     // Mark as reminded regardless of result to avoid retrying on next run.
