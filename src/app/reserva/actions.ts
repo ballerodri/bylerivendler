@@ -1891,8 +1891,14 @@ function checkPerm(
     // servicio, y LIBRE en la ventana pegada [prevEndMin, prevEndMin+dur)
     // (mismos chequeos reales que la rama puntual). Si pega, arranca en el fin
     // del anterior — aunque sea mitad de hora y cruce la hora en punto.
+    // Tope del día (espejo de `placeOnGridMerged`): el pegado tiene que
+    // ARRANCAR dentro de la última hora reservable (último slot + 60); si no,
+    // no se pega (y la rama puntual tampoco va a encontrar slot → no se
+    // ofrece), para que una cadena no se extienda más allá del cierre.
+    const dayEndMin = gridMin.length > 0 ? gridMin[gridMin.length - 1] + 60 : Infinity
     if (
       prevStaff !== null &&
+      prevEndMin < dayEndMin &&
       (svc.staffId === "auto" || svc.staffId === prevStaff) &&
       (!enforce || canStaffDoService(prevStaff, svc.id, staffMap)) &&
       staffAssignableAt(svc.id, dur, prevEndMin, prevStaff)

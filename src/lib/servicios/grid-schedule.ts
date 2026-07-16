@@ -89,6 +89,13 @@ export function placeOnGridMerged(
       start = startSlot
     } else if (staffId === prevStaff) {
       start = prevEnd // misma profesional → pegado, aunque cruce la hora
+      // Tope del día: un pegado tiene que ARRANCAR dentro de la última hora
+      // reservable (último slot de la grilla + 60). Sin esto, una cadena de la
+      // misma profesional que arranca al final del día se extendería más allá
+      // del cierre (18:00 → 19:00 → 20:00…), cosa que las Fases 1/2 impedían
+      // de rebote. Un turno SOLO en el último slot sigue OK (no es pegado).
+      const dayEnd = gridSlots.length > 0 ? gridSlots[gridSlots.length - 1] + 60 : Infinity
+      if (start >= dayEnd) return null
     } else {
       const ns = gridSlots.find((g) => g >= prevEnd)
       if (ns === undefined) return null

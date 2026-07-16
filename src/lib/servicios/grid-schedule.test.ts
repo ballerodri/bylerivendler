@@ -128,6 +128,21 @@ describe("placeOnGridMerged — fase 3 (misma profesional pegados siempre)", () 
     expect(placeOnGridMerged([it2(60, "A"), it2(60, "B")], GRID, 1080)).toBeNull()
   })
 
+  it("tope del día: una cadena de la MISMA profesional tampoco se extiende más allá del cierre", () => {
+    // 60@A en el último slot (18:00–19:00) + otro 60@A pegado arrancaría 19:00,
+    // fuera de la última hora reservable (18:00 + 60) → null (no se ofrece).
+    expect(placeOnGridMerged([it2(60, "A"), it2(60, "A")], GRID, 1080)).toBeNull()
+    // Tres de 1h desde 17:00: la 3ª arrancaría 19:00 → null también.
+    expect(placeOnGridMerged([it2(60, "A"), it2(60, "A"), it2(60, "A")], GRID, 1020)).toBeNull()
+  })
+
+  it("tope del día: un pegado DENTRO de la última hora sigue OK (y un turno solo largo en el último slot también)", () => {
+    // 30@A 18:00–18:30 + 20@A pegado 18:30 (< 19:00) → OK
+    expect(placeOnGridMerged([it2(30, "A"), it2(20, "A")], GRID, 1080)).toEqual([1080, 1110])
+    // Un solo turno de 75 min en el último slot NO es pegado → sigue permitido (igual que Fase 1)
+    expect(placeOnGridMerged([it2(75, "A")], GRID, 1080)).toEqual([1080])
+  })
+
   it("PROPIEDAD CLAVE: con todas las profesionales distintas == placeOnGrid (Fase 1 es el caso sin fusión)", () => {
     const durs = [20, 45, 60, 30]
     const merged = placeOnGridMerged(
