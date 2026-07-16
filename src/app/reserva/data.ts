@@ -131,8 +131,8 @@ export const parseYmd = (s: string) => {
  * Grilla horaria (slots "HH:MM") de un día concreto, según los business hours
  * (con el mismo fallback que `generateAvailability`). Devuelve `[]` si el día
  * está cerrado. La usa el cliente para RECOLOCAR los turnos en la grilla —
- * misma regla que el buscador y el servidor (`placeOnGrid`) — cuando no tiene
- * los horarios que devolvió el buscador (estado restaurado viejo).
+ * misma regla que el buscador y el servidor (`placeOnGridMerged`) — cuando no
+ * tiene los horarios que devolvió el buscador (estado restaurado viejo).
  */
 export function slotsForDate(dateStr: string, businessHours?: BusinessHour[]): string[] {
   const hours = businessHours && businessHours.length > 0 ? businessHours : FALLBACK_HOURS
