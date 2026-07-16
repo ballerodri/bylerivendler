@@ -2715,13 +2715,7 @@ export function Screen5Confirm({
       <div className="summary">
         {/* QUÉ — recibo: nombre a la izquierda, precio alineado a la derecha */}
         <div className="summary__row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
-          <span className="summary__label">
-            {pack && services.length > 0
-              ? `Pack y tratamiento${services.length > 1 ? "s" : ""}`
-              : pack
-                ? "Pack"
-                : `Tratamiento${services.length > 1 ? "s" : ""}`}
-          </span>
+          <span className="summary__label">Tratamientos</span>
           <div className="summary__value" style={{ textAlign: "left" }}>
             {pack && (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: services.length > 0 ? 8 : 0 }}>
