@@ -391,7 +391,14 @@ async function planLooseServices(
   // evita una segunda lectura del combo (podría desactivarse entre una y
   // otra) y una segunda cuenta de la plata.
   totalDuration: number,
-  totalCents: number
+  totalCents: number,
+  // Compra mezclada encadenada (pack + servicios "juntos", Fase 3): el fin
+  // EXACTO de la sesión 1 del pack en ms (arranque + duración). Es el ÚNICO
+  // arranque FUERA de la grilla que se acepta para la cadena de sueltos: el
+  // buscador ofrece el 1er suelto PEGADO a la sesión 1 (misma profesional →
+  // mitad de hora a propósito). En cualquier otro caso viene `null` y el
+  // arranque se exige en grilla, como siempre.
+  packChainEndMs: number | null = null
 ): Promise<
   | { ok: true; mode: "separados" | "juntos"; appointments: PlannedAppointment[] }
   | { ok: false; error: string }
@@ -589,22 +596,31 @@ async function planLooseServices(
   // REAL (`orderedServices`). El buscador DEVOLVIÓ estos horarios; acá se
   // RECALCULAN igual, así coinciden por construcción — la "regla de oro": el
   // servidor no confía en lo que mande el cliente. La 1ª pata arranca en
-  // `startsAt` (el slot que eligió la clienta); cada siguiente FUNDE con el
-  // bloque de la misma profesional si entra en la hora, o cae en el 1er slot de
-  // la grilla ≥ donde terminó el bloque (con hueco si sobra tiempo). El pack va
-  // en un bloque APARTE (lo coloca `planPack`); `startsAt` ya es el 1er slot de
-  // grilla ≥ T + D_pack, así que acá SÓLO se funden los sueltos entre sí — el
-  // pack NUNCA entra en esta lista de ítems, igual que en el buscador.
+  // `startsAt` (el slot que eligió la clienta); cada siguiente arranca PEGADO
+  // al fin del anterior si es la MISMA profesional (aunque cruce la hora en
+  // punto — Fase 3), o cae en el 1er slot de la grilla ≥ donde terminó el
+  // anterior (con hueco si sobra tiempo). El pack lo
+  // coloca `planPack` en SUS fechas y NUNCA entra en esta lista de ítems. En la
+  // mezcla encadenada el buscador SÍ lo camina como ítem 0 de la cadena, pero
+  // `placeOnGridMerged` es anclada-sin-memoria (testeado): colocar los sueltos
+  // desde este `startsAt` (pegado al fin de la sesión 1, o el 1er slot de
+  // grilla ≥ ese fin) da lo MISMO que la caminata del buscador con el pack
+  // adelante — la regla de oro se sostiene sin duplicar el pack acá.
   const { dateStr: chainDate, timeStr: chainStartHm, dayOfWeek: chainDow } = arPartsFromUtc(startsAt)
   const bh0 = bhByDow.get(chainDow)
   // El ARRANQUE de la cadena (`startsAt`) es la ÚNICA entrada externa que la
   // clienta elige libremente: acá se exige, UNA vez, que caiga en un slot de la
-  // grilla de un día abierto. Todo lo que viene después son SALIDAS de
-  // `placeOnGridMerged` (correctas por construcción), así que las patas ya no se
-  // vuelven a exigir en grilla — una pata FUNDIDA cae a mitad de hora a
-  // propósito (Fase 2). No se confía en horarios de pata que mande el cliente:
-  // se recalculan acá con `placeOnGridMerged` desde este arranque validado.
-  if (!bh0?.is_open || !bh0.slots.includes(chainStartHm))
+  // grilla de un día abierto — O, en la mezcla encadenada (Fase 3), que sea
+  // EXACTAMENTE el fin de la sesión 1 del pack (`packChainEndMs`, igualdad al
+  // milisegundo): el buscador ofrece el 1er suelto PEGADO al pack, y ese pegado
+  // cae a mitad de hora a propósito. NINGÚN otro arranque fuera de grilla se
+  // acepta (ni más laxo ni más estricto que lo que el buscador ofrece). Todo lo
+  // que viene después son SALIDAS de `placeOnGridMerged` (correctas por
+  // construcción), así que las patas ya no se vuelven a exigir en grilla — una
+  // pata FUNDIDA cae a mitad de hora a propósito (Fase 2). No se confía en
+  // horarios de pata que mande el cliente: se recalculan acá con
+  // `placeOnGridMerged` desde este arranque validado.
+  if (!bh0?.is_open || !(bh0.slots.includes(chainStartHm) || startsAt.getTime() === packChainEndMs))
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
   // Ascendente, igual que `checkPerm` (que ordena la grilla antes de la
   // caminata): así el servidor coloca las patas IDÉNTICO al buscador.
@@ -942,8 +958,18 @@ export async function createBooking(
   }
 
   if (hasServices) {
+    // Compra mezclada (pack + sueltos): el fin EXACTO de la sesión 1 del pack
+    // en ms (arranque + duración de la sesión 1, la que planificó `planPack` —
+    // `packPlan` ya existe acá porque el pack se planifica ARRIBA). Es el único
+    // arranque fuera de grilla que `planLooseServices` acepta para la cadena
+    // "juntos" (Fase 3: el 1er suelto pegado al pack). Sin pack: `null`.
+    const packS1 = packPlan?.appointments[0] ?? null
+    const packChainEndMs = packS1
+      ? packS1.startsAtMs + packS1.durationMin * 60_000
+      : null
     const r = await planLooseServices(
-      supabase, input, services, computed, payChoice, redeem, totalPointsCost, totalDuration, totalCents
+      supabase, input, services, computed, payChoice, redeem, totalPointsCost, totalDuration, totalCents,
+      packChainEndMs
     )
     if (!r.ok) return { ok: false, error: r.error }
     looseMode = r.mode
