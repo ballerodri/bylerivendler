@@ -285,9 +285,6 @@ export function Screen1Services({
   const displayPrice =
     (selectedPack ? selectedPack.pack.priceCents / 100 : 0) +
     (selectedCombo ? selectedCombo.price : selected.reduce((a, s) => a + effective(s).price, 0))
-  const displayMin =
-    (selectedPack ? packDurationMin : 0) +
-    (selectedCombo ? selectedCombo.duration : selected.reduce((a, s) => a + effective(s).duration, 0))
   const hasSelection = selectedPack !== null || selectedCombo !== null || selected.length > 0
   const zonesOk = selected.every((s) => s.pricingMode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
   const canContinue = hasSelection && zonesOk && packZonesOk
@@ -545,56 +542,46 @@ export function Screen1Services({
     )
   }
 
+  // Todo lo elegido como burbujitas removibles (pack, combo, tratamientos): se
+  // ve de un vistazo qué se marcó (aunque esté en otra solapa) y se saca
+  // cualquiera con la × — sin descripción de texto, las burbujas SON el detalle.
+  const chipStyle = {
+    display: "inline-flex", alignItems: "center", gap: 6,
+    padding: "5px 10px", borderRadius: 999, fontSize: 12, whiteSpace: "nowrap",
+    border: "1px solid var(--nude)", background: "var(--rose-wash)",
+    color: "var(--ink)", cursor: "pointer",
+  } as const
+  const chipX = { fontSize: 15, lineHeight: 1, color: "var(--ink-mute)" } as const
+
   const FooterCTA = () => (
     <div className="footer">
-      {/* Chips de los tratamientos sueltos elegidos: se ven de un vistazo cuáles
-          marcaste (aunque estén en otra solapa) y se saca cualquiera con la ×,
-          útil si se marcó uno por error. No para combos (son un paquete). */}
-      {!selectedCombo && selected.length > 0 && (
+      {hasSelection ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-          {selected.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => toggle(s)}
-              title={`Quitar ${s.name}`}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 6,
-                padding: "5px 10px", borderRadius: 999, fontSize: 12, whiteSpace: "nowrap",
-                border: "1px solid var(--nude)", background: "var(--rose-wash)",
-                color: "var(--ink)", cursor: "pointer",
-              }}
-            >
+          {selectedPack && (
+            <button onClick={() => togglePack(selectedPack.pack)} title={`Quitar ${selectedPack.pack.name}`} style={chipStyle}>
+              {selectedPack.pack.name} · {selectedPack.pack.sessions} sesiones
+              <span aria-hidden style={chipX}>×</span>
+            </button>
+          )}
+          {selectedCombo && (
+            <button onClick={() => toggleCombo(selectedCombo)} title={`Quitar ${selectedCombo.name}`} style={chipStyle}>
+              {selectedCombo.name}
+              <span aria-hidden style={chipX}>×</span>
+            </button>
+          )}
+          {!selectedCombo && selected.map((s) => (
+            <button key={s.id} onClick={() => toggle(s)} title={`Quitar ${s.name}`} style={chipStyle}>
               {s.name}
-              <span aria-hidden style={{ fontSize: 15, lineHeight: 1, color: "var(--ink-mute)" }}>×</span>
+              <span aria-hidden style={chipX}>×</span>
             </button>
           ))}
         </div>
+      ) : (
+        <div className="footer__summary" style={{ marginBottom: 10 }}>Sin tratamientos seleccionados</div>
       )}
       <div className="footer__row">
         <div>
-          <div className="footer__summary">
-            {!hasSelection ? (
-              "Sin tratamientos seleccionados"
-            ) : selectedPack && selected.length > 0 ? (
-              <span>
-                <strong>{selectedPack.pack.name}</strong> · {selectedPack.pack.sessions} sesiones
-                {" + "}
-                <strong>{selected.length}</strong> tratamiento{selected.length > 1 ? "s" : ""}
-              </span>
-            ) : selectedPack ? (
-              <span><strong>{selectedPack.pack.name}</strong> · {selectedPack.pack.sessions} sesiones</span>
-            ) : selectedCombo ? (
-              <span><strong>{selectedCombo.name}</strong> · {fmtDuration(displayMin)}</span>
-            ) : (
-              <span>
-                <strong>{selected.length}</strong> tratamiento
-                {selected.length > 1 ? "s" : ""} · {fmtDuration(displayMin)}
-              </span>
-            )}
-          </div>
-          {hasSelection && (
-            <div className="footer__total">{fmtPrice(displayPrice)}</div>
-          )}
+          {hasSelection && <div className="footer__total">{fmtPrice(displayPrice)}</div>}
         </div>
         <button
           className="btn btn--primary"
