@@ -53,22 +53,25 @@ export function placeOnGrid(
 }
 
 /**
- * FASE 2 — igual que `placeOnGrid` pero CONSCIENTE de la profesional: dos
- * turnos SEGUIDOS de la MISMA profesional que ENTRAN en 1 hora (dentro del
- * mismo slot de grilla) **comparten el bloque** (el 2º arranca pegado, en
- * mitad de la hora); si son de OTRA profesional (o no entran), el turno
- * arranca en el siguiente slot de la grilla (hora en punto).
+ * FASE 3 — igual que `placeOnGrid` pero CONSCIENTE de la profesional: un turno
+ * de la MISMA profesional que el anterior arranca **PEGADO** (en el fin del
+ * anterior, aunque sea mitad de hora y cruce la hora en punto: 10:30, 11:20…);
+ * uno de OTRA profesional arranca en el **siguiente slot de la grilla** (hora
+ * en punto). Regla de la usuaria: cada profesional atiende de corrido, y los
+ * cambios de profesional caen en punto. (La Fase 2 limitaba el pegado a
+ * "entran juntos en 1 hora" — ese tope ya no existe.)
  *
  * Cada ítem trae su `staffId` YA RESUELTO (id concreto — no "auto"). PURO: la
  * disponibilidad NO entra acá (se chequea aparte). Determinístico dado el
  * staff → buscador, creación y pantalla lo reproducen idéntico (regla de oro).
  *
- * Propiedad clave: con TODOS los `staffId` distintos NUNCA funde → devuelve
- * exactamente lo mismo que `placeOnGrid(durations, …)`. La Fase 1 es el caso
- * "sin fusión".
+ * Propiedades (testeadas):
+ * - Con TODOS los `staffId` distintos NUNCA pega → devuelve exactamente lo
+ *   mismo que `placeOnGrid(durations, …)` (la Fase 1 es el caso sin fusión).
+ * - Anclada-sin-memoria: cada paso depende sólo del fin y la profesional del
+ *   anterior → colocar `[pack, ...sueltos]` desde T da, para los sueltos, lo
+ *   mismo que colocar `[...sueltos]` desde el inicio del 1er suelto.
  *
- * "Entra en la hora" = el ítem termina antes del PRIMER slot de grilla
- * posterior al arranque del bloque (`blockEnd + dur ≤ nextGridSlot(blockStart)`).
  * `null` si la cadena se pasa del final del día.
  */
 export function placeOnGridMerged(
@@ -77,33 +80,23 @@ export function placeOnGridMerged(
   startSlot: number
 ): number[] | null {
   const starts: number[] = []
-  let blockStart = startSlot
-  let blockStaff = ""
-  let blockEnd = startSlot
+  let prevStaff = ""
+  let prevEnd = startSlot
   for (let i = 0; i < items.length; i++) {
     const { durationMin, staffId } = items[i]
+    let start: number
     if (i === 0) {
-      blockStart = startSlot
-      blockStaff = staffId
-      blockEnd = startSlot + durationMin
-      starts.push(startSlot)
-      continue
-    }
-    // ¿Cabe en el bloque actual? Misma profesional Y termina antes del
-    // siguiente slot de grilla (el borde de la hora del bloque).
-    const nextGrid = gridSlots.find((g) => g > blockStart)
-    const fits = nextGrid !== undefined && blockEnd + durationMin <= nextGrid
-    if (staffId === blockStaff && fits) {
-      starts.push(blockEnd)
-      blockEnd += durationMin
+      start = startSlot
+    } else if (staffId === prevStaff) {
+      start = prevEnd // misma profesional → pegado, aunque cruce la hora
     } else {
-      const ns = gridSlots.find((g) => g >= blockEnd)
+      const ns = gridSlots.find((g) => g >= prevEnd)
       if (ns === undefined) return null
-      blockStart = ns
-      blockStaff = staffId
-      blockEnd = ns + durationMin
-      starts.push(ns)
+      start = ns // otra profesional → hora en punto
     }
+    starts.push(start)
+    prevStaff = staffId
+    prevEnd = start + durationMin
   }
   return starts
 }

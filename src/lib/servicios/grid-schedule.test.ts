@@ -81,41 +81,45 @@ describe("placeOnGrid — fase 1 (cada turno en su slot de grilla, sin fusión)"
   })
 })
 
-// Fase 2 — fusión de turnos cortos de la MISMA profesional dentro de 1 hora.
+// Fase 3 — misma profesional → PEGADOS siempre; distinta → hora en punto.
 const it2 = (durationMin: number, staffId: string) => ({ durationMin, staffId })
 
-describe("placeOnGridMerged — fase 2 (fusión misma profesional)", () => {
-  it("misma profesional + entran en 1 hora → comparten la hora (10:00 y 10:20)", () => {
-    // 20 min@A + 30 min@A: 20+30=50 ≤ 60 → funden
+describe("placeOnGridMerged — fase 3 (misma profesional pegados siempre)", () => {
+  it("misma profesional → pegados (10:00 y 10:20)", () => {
     expect(placeOnGridMerged([it2(20, "A"), it2(30, "A")], GRID, 840)).toEqual([840, 860])
   })
 
-  it("distinta profesional → el 2º arranca en hora en punto (10:00 y 11:00), nunca 10:20", () => {
+  it("EL CASO DE LA USUARIA: 30 min + 50 min misma profesional → 10:00 y 10:30 (cruza la hora, pegados)", () => {
+    // Vela 30 min 10:00–10:30 → HIFU 50 min arranca 10:30 (hasta 11:20)
+    expect(placeOnGridMerged([it2(30, "A"), it2(50, "A")], GRID, 840)).toEqual([840, 870])
+  })
+
+  it("distinta profesional → el 2º arranca en hora en punto (10:00 y 11:00), nunca a mitad de hora", () => {
     expect(placeOnGridMerged([it2(20, "A"), it2(30, "B")], GRID, 840)).toEqual([840, 900])
   })
 
-  it("misma profesional pero NO entran en 1 hora → hora en punto", () => {
-    // 40 min@A + 40 min@A: 80 > 60 → no funden
-    expect(placeOnGridMerged([it2(40, "A"), it2(40, "A")], GRID, 840)).toEqual([840, 900])
+  it("misma profesional aunque NO entren en 1 hora → pegados igual (ya no existe el tope de la Fase 2)", () => {
+    // 40 min@A + 40 min@A → 10:00 y 10:40 (antes saltaba a 11:00)
+    expect(placeOnGridMerged([it2(40, "A"), it2(40, "A")], GRID, 840)).toEqual([840, 880])
   })
 
-  it("el caso de la captura: dos de 1h de la misma profesional → 11:00 y 12:00 (no entran)", () => {
+  it("dos de 1h de la misma profesional → 11:00 y 12:00 (pegados; caen en punto porque duran justo 1h)", () => {
     expect(placeOnGridMerged([it2(60, "A"), it2(60, "A")], GRID, 900)).toEqual([900, 960])
   })
 
-  it("tres cortos de la misma profesional que entran → todos en la misma hora", () => {
-    // 15+20+15 = 50 ≤ 60 → 10:00, 10:15, 10:35
-    expect(placeOnGridMerged([it2(15, "A"), it2(20, "A"), it2(15, "A")], GRID, 840)).toEqual([840, 855, 875])
+  it("tres de la misma profesional → todos de corrido", () => {
+    // 15+20+30 → 10:00, 10:15, 10:35 (pegados, sin saltar a la hora)
+    expect(placeOnGridMerged([it2(15, "A"), it2(20, "A"), it2(30, "A")], GRID, 840)).toEqual([840, 855, 875])
   })
 
-  it("funden hasta llenar la hora, el que se pasa salta a la hora siguiente", () => {
-    // 15+20 funden (10:00, 10:15, fin 10:35); +30 → 10:35+30=11:05 > 11:00 → salta 11:00
-    expect(placeOnGridMerged([it2(15, "A"), it2(20, "A"), it2(30, "A")], GRID, 840)).toEqual([840, 855, 900])
-  })
-
-  it("cambia de profesional → nuevo bloque; después la misma vuelve a fundir", () => {
-    // 20@A (10:00), 20@B distinta → 11:00, 20@B misma que el bloque, entra → 11:20
+  it("cambia de profesional → hora en punto; después la misma vuelve a pegarse", () => {
+    // 20@A (10:00), 20@B distinta → 11:00, 20@B misma que la anterior → 11:20
     expect(placeOnGridMerged([it2(20, "A"), it2(20, "B"), it2(20, "B")], GRID, 840)).toEqual([840, 900, 920])
+  })
+
+  it("el cambio de profesional tras una cadena que cruza la hora cae en el siguiente punto", () => {
+    // A: 30+50 → 10:00, 10:30 (fin 11:20); B → primer slot ≥ 11:20 = 12:00
+    expect(placeOnGridMerged([it2(30, "A"), it2(50, "A"), it2(60, "B")], GRID, 840)).toEqual([840, 870, 960])
   })
 
   it("sin ítems → lista vacía; se pasa del día → null", () => {
@@ -132,5 +136,24 @@ describe("placeOnGridMerged — fase 2 (fusión misma profesional)", () => {
       840
     )
     expect(merged).toEqual(placeOnGrid(durs, GRID, 840))
+  })
+
+  // Anclada-sin-memoria CON el pack encadenable (Fase 3): colocar
+  // [pack, ...sueltos] desde T da, para los sueltos, lo MISMO que colocar
+  // [...sueltos] desde el inicio del 1er suelto — sea PEGADO al pack (misma
+  // profesional, mitad de hora) o en punto (distinta). La regla de oro del
+  // encadenado con pack depende de esto.
+  it("regla de oro: pack + 1er suelto de la MISMA profesional → el suelto arranca pegado (T+D_pack) y el server lo reproduce", () => {
+    const full = placeOnGridMerged([it2(30, "A"), it2(50, "A"), it2(60, "B")], GRID, 840)
+    expect(full).toEqual([840, 870, 960]) // pack 10:00, HIFU 10:30, masaje 12:00
+    const looseOnly = placeOnGridMerged([it2(50, "A"), it2(60, "B")], GRID, full![1])
+    expect(looseOnly).toEqual(full!.slice(1))
+  })
+
+  it("regla de oro: pack + 1er suelto de OTRA profesional → el suelto arranca en punto y el server lo reproduce", () => {
+    const full = placeOnGridMerged([it2(30, "A"), it2(60, "B"), it2(60, "B")], GRID, 840)
+    expect(full).toEqual([840, 900, 960]) // pack 10:00, B 11:00 y 12:00
+    const looseOnly = placeOnGridMerged([it2(60, "B"), it2(60, "B")], GRID, full![1])
+    expect(looseOnly).toEqual(full!.slice(1))
   })
 })
