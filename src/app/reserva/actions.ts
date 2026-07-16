@@ -1779,8 +1779,7 @@ function checkPerm(
   staffMap: StaffServiceMap,
   enforce: boolean,
   dateStr: string,
-  gridSlots: string[],
-  leadServiceId: string | null
+  gridSlots: string[]
 ): { assignment: Record<string, string>; starts: Record<string, string> } | null {
   const assignment: Record<string, string> = {}
   const starts: Record<string, string> = {}
@@ -1834,9 +1833,10 @@ function checkPerm(
 
   // Resuelve la profesional de `svc` en `posMin`, o `null` si no hay ninguna.
   // Mismos chequeos que Fase 1. `excludeStaff` (si viene) se descarta como
-  // candidata: lo usa el "nuevo bloque" tras una fusión geométricamente posible
-  // pero descartada por disponibilidad, para que la nueva profesional NO sea la
-  // del bloque (si lo fuera, `placeOnGridMerged` fundiría y divergiría).
+  // candidata: lo usa la colocación SIN pegar, para que la profesional del
+  // nuevo ítem NO sea la del anterior (si lo fuera, `placeOnGridMerged` — que
+  // pega a CUALQUIER par consecutivo de la misma profesional — pegaría y
+  // divergiría de la caminata).
   const resolveStaffAt = (svc: ServiceInput, posMin: number, excludeStaff: string | null): string | null => {
     const dur = svc.duration
     if (svc.staffId !== "auto") {
@@ -1856,19 +1856,20 @@ function checkPerm(
     return preferred ?? free[0]
   }
 
-  // ── Caminata codiciosa: decide POSICIÓN (fundida o slot de grilla) y
+  // ── Caminata codiciosa: decide POSICIÓN (pegada o slot de grilla) y
   // PROFESIONAL a la vez, ítem por ítem, en la posición REAL ──────────────────
   // Regla de oro: produce `starts`/`assignment` tales que
-  // `placeOnGridMerged(perm con este assignment, gridMin, startSlot)` (con el
-  // pack/lead como su propio bloque) da EXACTAMENTE estos `starts` — porque la
-  // caminata funde justo cuando `placeOnGridMerged` fundiría (misma profesional
-  // + entra en la hora) y, cuando no puede fundir por disponibilidad, asigna
-  // OTRA profesional (así `placeOnGridMerged` tampoco funde). Con profesionales
-  // todas distintas se reduce a Fase 1 (`placeOnGrid`).
-  let blockStartMin = 0
-  let blockStaff: string | null = null
-  let blockEndMin = 0
-  let isLeadBoundary = false
+  // `placeOnGridMerged(perm con este assignment, gridMin, startSlot)` da
+  // EXACTAMENTE estos `starts` — porque la caminata pega justo cuando
+  // `placeOnGridMerged` pegaría (misma profesional que el ítem anterior,
+  // aunque cruce la hora en punto — Fase 3, ya sin el tope de 1 hora) y,
+  // cuando no puede pegar por disponibilidad, asigna OTRA profesional
+  // (`excludeStaff = prevStaff`, así `placeOnGridMerged` tampoco pega). Con
+  // profesionales todas distintas nunca pega → se reduce a Fase 1
+  // (`placeOnGrid`). El pack (lead) ya NO es un bloque aparte: es el ítem 0 de
+  // la cadena, y el 1er suelto PUEDE pegarse a él si es la misma profesional.
+  let prevStaff: string | null = null
+  let prevEndMin = 0
 
   for (let p = 0; p < perm.length; p++) {
     const svc = services[perm[p]]
@@ -1880,57 +1881,44 @@ function checkPerm(
       if (staff === null) return null
       assignment[svc.id] = staff
       starts[svc.id] = minutesToHm(pos)
-      blockStartMin = pos
-      blockStaff = staff
-      blockEndMin = pos + dur
-      // El lead (1ª sesión del pack encadenada) es su PROPIO bloque: el 1er
-      // servicio suelto nunca funde con él.
-      isLeadBoundary = leadServiceId != null && svc.id === leadServiceId
+      prevStaff = staff
+      prevEndMin = pos + dur
       continue
     }
 
-    const nextGrid = gridMin.find((g) => g > blockStartMin)
-    // "Entra en la hora del bloque" = termina antes del PRIMER slot de grilla
-    // posterior al arranque del bloque.
-    const fits = nextGrid !== undefined && blockEndMin + dur <= nextGrid
-
-    // ── Intentar FUSIÓN con el bloque actual ──
-    // Misma profesional (o "auto" que la acepta), entra en la hora, no es el
-    // borde del pack, y esa profesional está LIBRE en la ventana fundida
-    // (mismos chequeos reales que la rama puntual, en [blockEndMin, +dur)).
+    // ── Intentar PEGADO al ítem anterior ──
+    // Misma profesional que el anterior (o "auto" que la acepta), capaz del
+    // servicio, y LIBRE en la ventana pegada [prevEndMin, prevEndMin+dur)
+    // (mismos chequeos reales que la rama puntual). Si pega, arranca en el fin
+    // del anterior — aunque sea mitad de hora y cruce la hora en punto.
     if (
-      fits &&
-      !isLeadBoundary &&
-      blockStaff !== null &&
-      (svc.staffId === "auto" || svc.staffId === blockStaff) &&
-      (!enforce || canStaffDoService(blockStaff, svc.id, staffMap)) &&
-      staffAssignableAt(svc.id, dur, blockEndMin, blockStaff)
+      prevStaff !== null &&
+      (svc.staffId === "auto" || svc.staffId === prevStaff) &&
+      (!enforce || canStaffDoService(prevStaff, svc.id, staffMap)) &&
+      staffAssignableAt(svc.id, dur, prevEndMin, prevStaff)
     ) {
-      const pos = blockEndMin
-      assignment[svc.id] = blockStaff
+      const pos = prevEndMin
+      assignment[svc.id] = prevStaff
       starts[svc.id] = minutesToHm(pos)
-      blockEndMin += dur
-      isLeadBoundary = false
+      prevEndMin = pos + dur
       continue
     }
 
-    // ── NUEVO BLOQUE en el 1er slot de grilla ≥ fin del bloque actual ──
-    const pos = gridMin.find((g) => g >= blockEndMin)
+    // ── SIN pegar: 1er slot de grilla ≥ fin del ítem anterior ──
+    const pos = gridMin.find((g) => g >= prevEndMin)
     if (pos === undefined) return null
-    // Si geométricamente ENTRABA pero no fundimos (profesional ocupada/incapaz),
-    // la nueva profesional NO puede ser la del bloque: si lo fuera,
-    // `placeOnGridMerged` (que sólo mira profesional + geometría) SÍ fundiría y
-    // divergiría de esta caminata. En el borde del pack no se excluye (es un
-    // bloque nuevo de todos modos y el pack va aparte).
-    const excludeStaff = fits && !isLeadBoundary ? blockStaff : null
-    const staff = resolveStaffAt(svc, pos, excludeStaff)
+    // La profesional de este ítem NO puede ser la del anterior: la regla pura
+    // pega a CUALQUIER par consecutivo de la misma profesional, así que si acá
+    // se asignara la misma sin pegar, `placeOnGridMerged` (que sólo mira la
+    // profesional) SÍ pegaría y divergiría de esta caminata. Compromiso igual
+    // que Fase 2: si la única capaz está ocupada justo en la posición pegada,
+    // este horario no se ofrece.
+    const staff = resolveStaffAt(svc, pos, prevStaff)
     if (staff === null) return null
     assignment[svc.id] = staff
     starts[svc.id] = minutesToHm(pos)
-    blockStartMin = pos
-    blockStaff = staff
-    blockEndMin = pos + dur
-    isLeadBoundary = false
+    prevStaff = staff
+    prevEndMin = pos + dur
   }
 
   return { assignment, starts }
@@ -1947,7 +1935,6 @@ function trySlot(
   staffMap: StaffServiceMap,
   enforce: boolean,
   gridSlots: string[],
-  leadServiceId: string | null,
   isValidOrder: (perm: number[]) => boolean = () => true
 ): SlotResult | null {
   const startMs = slotToUtcMs(dateStr, slot)
@@ -1955,7 +1942,7 @@ function trySlot(
   // Entre TODOS los órdenes válidos, se elige el que agrupa mejor por
   // profesional: menos cambios de profesional entre turnos consecutivos = la
   // clienta se atiende con una y después con otra, sin ir y volver (y de paso
-  // habilita más fusiones de la Fase 2). Es sólo una PREFERENCIA sobre órdenes
+  // habilita más pegados de la Fase 3). Es sólo una PREFERENCIA sobre órdenes
   // ya válidos: si hay uno válido, siempre se devuelve (no se pierde ningún
   // horario), y el orden elegido viaja al cliente y al servidor por igual
   // (`serviceOrder`) — no afecta la regla de oro.
@@ -1963,7 +1950,7 @@ function trySlot(
   let bestSwitches = Infinity
   for (const perm of permutations(services.map((_, i) => i))) {
     if (!isValidOrder(perm)) continue
-    const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots, leadServiceId)
+    const res = checkPerm(startMs, perm, services, legs, allPros, dayOfWeek, blockedMap, staffMap, enforce, dateStr, gridSlots)
     if (!res) continue
     const orderedIds = perm.map((i) => services[i].id)
     let switches = 0
@@ -2117,7 +2104,7 @@ export async function fetchSequentialAvailability(
     const dayLegs = buildBusyLegs(dayApptRows)
 
     for (const slot of candidates) {
-      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, bh.slots, opts.leadServiceId ?? null, isValidOrder)
+      const result = trySlot(slot, dateStr, services, dayLegs, allPros, dayOfWeek, blockedMap, staffMap, enforce, bh.slots, isValidOrder)
       if (!result) continue
       if (i === 0) {
         slotsForDate.push(result)
