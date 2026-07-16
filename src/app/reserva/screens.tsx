@@ -547,6 +547,29 @@ export function Screen1Services({
 
   const FooterCTA = () => (
     <div className="footer">
+      {/* Chips de los tratamientos sueltos elegidos: se ven de un vistazo cuáles
+          marcaste (aunque estén en otra solapa) y se saca cualquiera con la ×,
+          útil si se marcó uno por error. No para combos (son un paquete). */}
+      {!selectedCombo && selected.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+          {selected.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => toggle(s)}
+              title={`Quitar ${s.name}`}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "5px 10px", borderRadius: 999, fontSize: 12, whiteSpace: "nowrap",
+                border: "1px solid var(--nude)", background: "var(--rose-wash)",
+                color: "var(--ink)", cursor: "pointer",
+              }}
+            >
+              {s.name}
+              <span aria-hidden style={{ fontSize: 15, lineHeight: 1, color: "var(--ink-mute)" }}>×</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="footer__row">
         <div>
           <div className="footer__summary">
