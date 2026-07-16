@@ -205,7 +205,10 @@ export default async function PortalPage() {
                     id: a.id,
                     startsAt: a.starts_at,
                     durationMin: a.duration_min,
-                    packPurchaseId: a.pack_purchase_id,
+                    // Sin grupo NO etiquetamos "Sesión i" (una sesión suelta
+                    // agendada después no sabe su número real): se anula el
+                    // packPurchaseId y la fila usa el nombre del servicio.
+                    packPurchaseId: first.booking_group_id ? a.pack_purchase_id : null,
                     legs: (a.appointment_services ?? []).map((s) => ({
                       startsAt: s.starts_at,
                       durationMin: s.duration_min,
@@ -215,6 +218,10 @@ export default async function PortalPage() {
                   })),
                   packName
                 )
+                // Para marcar en el itinerario las filas de un turno cancelado
+                // (la tarjeta es de la compra entera; sin esto no se sabría
+                // CUÁL turno es el cancelado).
+                const statusById = new Map(group.map((a) => [a.id, a.status]))
                 const multiDay = spansMultipleDays(rows)
                 const statuses = [...new Set(group.map((a) => a.status))]
                 const totalCents = group.reduce((acc, a) => acc + a.total_cents, 0)
@@ -236,37 +243,58 @@ export default async function PortalPage() {
                     <div className="summary__value" style={{ fontSize: 13 }}>
                       {statuses.map(labelStatus).join(" / ")}
                       <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                        {rows.map((r) => (
-                          <small key={r.apptId + r.hm + r.label} style={{ color: "var(--ink-soft)" }}>
-                            <span style={{ marginRight: 4, fontVariantNumeric: "tabular-nums" }}>
-                              {multiDay
-                                ? `${r.dateStr.slice(8, 10)}/${r.dateStr.slice(5, 7)} · ${r.hm}`
-                                : r.hm}
-                            </span>
-                            {r.label}
-                            {r.staffName && <> · {r.staffName}</>}
-                          </small>
-                        ))}
+                        {rows.map((r) => {
+                          const rowStatus = statusById.get(r.apptId)
+                          const dead = rowStatus === "cancelled" || rowStatus === "no_show"
+                          return (
+                            <small
+                              key={r.apptId + r.hm + r.label}
+                              style={{
+                                color: "var(--ink-soft)",
+                                ...(dead ? { textDecoration: "line-through", opacity: 0.6 } : null),
+                              }}
+                            >
+                              <span style={{ marginRight: 4, fontVariantNumeric: "tabular-nums" }}>
+                                {multiDay
+                                  ? `${r.dateStr.slice(8, 10)}/${r.dateStr.slice(5, 7)} · ${r.hm}`
+                                  : r.hm}
+                              </span>
+                              {r.label}
+                              {r.staffName && <> · {r.staffName}</>}
+                              {dead && <> · {labelStatus(rowStatus!).toLowerCase()}</>}
+                            </small>
+                          )
+                        })}
                         <small>
                           {totalCents > 0
                             ? `Total · $${(totalCents / 100).toLocaleString("es-AR")}`
+                            : first.pack_purchase_id
+                            ? "Incluida en el pack"
                             : "Canjeada con puntos"}
                         </small>
                       </div>
-                      {cancellables.map((a) => (
-                        <small key={a.id} style={{ marginTop: 6 }}>
-                          <CancelButton
-                            appointmentId={a.id}
-                            label={
-                              group.length > 1
-                                ? `Cancelar turno de las ${
-                                    rows.find((r) => r.apptId === a.id)?.hm ?? ""
-                                  }`
-                                : undefined
-                            }
-                          />
-                        </small>
-                      ))}
+                      {cancellables.map((a) => {
+                        const firstRow = rows.find((r) => r.apptId === a.id)
+                        // Con varios días en la compra, la hora sola es
+                        // ambigua: el link dice también el día.
+                        const cuando = firstRow
+                          ? multiDay
+                            ? `del ${firstRow.dateStr.slice(8, 10)}/${firstRow.dateStr.slice(5, 7)} a las ${firstRow.hm}`
+                            : `de las ${firstRow.hm}`
+                          : ""
+                        return (
+                          <small key={a.id} style={{ marginTop: 6 }}>
+                            <CancelButton
+                              appointmentId={a.id}
+                              label={
+                                group.length > 1 && cuando
+                                  ? `Cancelar turno ${cuando}`
+                                  : undefined
+                              }
+                            />
+                          </small>
+                        )
+                      })}
                     </div>
                   </div>
                 )
