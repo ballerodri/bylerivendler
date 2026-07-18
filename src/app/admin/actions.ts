@@ -1232,6 +1232,8 @@ export type ClientSearchResult = {
   last_name: string
   email: string
   phone: string | null
+  /** DNI o CUIT ya cargado (lo usa la factura manual para no volver a pedirlo). */
+  dni: string | null
 }
 
 export async function searchClients(q: string): Promise<ClientSearchResult[]> {
@@ -1241,7 +1243,7 @@ export async function searchClients(q: string): Promise<ClientSearchResult[]> {
   const term = `%${q.trim()}%`
   const { data } = await admin
     .from("clients")
-    .select("id, first_name, last_name, email, phone")
+    .select("id, first_name, last_name, email, phone, dni")
     .or(`first_name.ilike.${term},last_name.ilike.${term},email.ilike.${term},phone.ilike.${term}`)
     .order("last_name")
     .limit(10)

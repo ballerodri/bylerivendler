@@ -3,6 +3,9 @@
 import { useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { emitirFacturaManual } from "../actions"
+import { searchClients, type ClientSearchResult } from "@/app/admin/actions"
+import PadronLookup from "@/app/admin/_components/padron-lookup"
+import { docTipoParaDocumento, normalizarDoc, type PadronPersona } from "@/lib/arca/padron-parse"
 import { fmtPrice } from "@/app/reserva/data"
 
 export type SelectableItem = {
@@ -26,6 +29,62 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
   const [montoStr, setMontoStr] = useState("")
   const [identificar, setIdentificar] = useState(false)
   const [docTipo, setDocTipo] = useState<96 | 80>(96)
+  // Controlados para que "Buscar en ARCA" pueda completarlos (se siguen
+  // pudiendo escribir a mano).
+  const [docNro, setDocNro] = useState("")
+  const [nombre, setNombre] = useState("")
+  const [email, setEmail] = useState("")
+  const [condIva, setCondIva] = useState<number | null>(null)
+
+  /** Lo que encontró el padrón: completa tipo, número, nombre y condición. */
+  function aplicarPersona(p: PadronPersona | null) {
+    if (!p) { setCondIva(null); return }
+    setDocTipo(p.docTipo)
+    setDocNro(p.doc)
+    if (p.nombre) setNombre(p.nombre)
+    setCondIva(p.condicionIva)
+  }
+
+  // ── Buscar una clienta ya cargada ──────────────────────────────────────────
+  const [clientQuery, setClientQuery] = useState("")
+  const [clientResults, setClientResults] = useState<ClientSearchResult[]>([])
+  const [clientPending, startClientSearch] = useTransition()
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function onClientQuery(q: string) {
+    setClientQuery(q)
+    if (searchTimeout.current) clearTimeout(searchTimeout.current)
+    if (!q.trim()) { setClientResults([]); return }
+    searchTimeout.current = setTimeout(() => {
+      startClientSearch(async () => {
+        try {
+          setClientResults(await searchClients(q))
+        } catch {
+          setClientResults([])
+        }
+      })
+    }, 300)
+  }
+
+  /** Elegir una clienta: completa lo que ya tenga cargado. Si no tiene
+   *  documento, el buscador de ARCA de abajo lo resuelve. */
+  function elegirClienta(c: ClientSearchResult) {
+    setNombre(`${c.first_name} ${c.last_name}`.trim())
+    setEmail(c.email ?? "")
+    const doc = normalizarDoc(c.dni)
+    if (doc) {
+      setDocNro(doc)
+      const t = docTipoParaDocumento(doc)
+      if (t === 96 || t === 80) setDocTipo(t)
+    } else {
+      setDocNro("")
+    }
+    // La condición frente al IVA no se guarda en la ficha: si hace falta, se
+    // trae con "Buscar en ARCA" (que además completa el documento faltante).
+    setCondIva(null)
+    setClientQuery("")
+    setClientResults([])
+  }
 
   const services = items.filter((i) => i.kind === "service")
   const packs = items.filter((i) => i.kind === "pack")
@@ -54,15 +113,22 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
     if (!concepto.trim()) { setError("Ingresá un concepto o seleccioná un ítem"); return }
     if (!montoPesos || montoPesos <= 0) { setError("Ingresá un monto válido"); return }
 
-    const fd = new FormData(e.currentTarget)
+    // El documento va SIEMPRE normalizado (sin puntos ni guiones): ARCA
+    // rechaza cualquier otra cosa.
+    const doc = normalizarDoc(docNro)
+    if (identificar && !doc) { setError("Ingresá el número de documento del receptor"); return }
+
     start(async () => {
       const r = await emitirFacturaManual({
         docTipo: identificar ? docTipo : 99,
-        docNro: identificar ? String(fd.get("docNro") ?? "").trim() : "0",
-        receptorNombre: String(fd.get("nombre") ?? "").trim(),
-        email: String(fd.get("email") ?? "").trim(),
+        docNro: identificar ? doc : "0",
+        receptorNombre: nombre.trim(),
+        email: email.trim(),
         descripcion: concepto.trim(),
         montoPesos,
+        // Sólo si la trajo el padrón para ESTE documento; si no, el servidor
+        // usa Consumidor Final como siempre.
+        condIva: identificar && condIva != null ? condIva : undefined,
       })
       if (r.ok) router.push("/admin/facturacion")
       else setError(r.error ?? "Error al emitir")
@@ -132,20 +198,78 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
         </label>
         {identificar && (
           <div style={{ display: "flex", flexDirection: "column", gap: 14, paddingLeft: 24, marginTop: 12 }}>
+            {/* Dos atajos, los dos opcionales: elegir una clienta ya cargada
+                (trae nombre, email y su DNI/CUIT si lo tiene), o buscar un
+                documento en ARCA (trae nombre y condición frente al IVA).
+                Todo se puede escribir a mano igual que siempre. */}
+            <div>
+              <label className="adm-label">Buscar una clienta ya cargada</label>
+              <input
+                className="adm-input"
+                value={clientQuery}
+                onChange={(e) => onClientQuery(e.target.value)}
+                placeholder="Nombre, email o teléfono"
+              />
+              {clientPending && (
+                <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 6 }}>Buscando…</p>
+              )}
+              {clientResults.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                  {clientResults.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="adm-btn"
+                      style={{ justifyContent: "flex-start", textAlign: "left" }}
+                      onClick={() => elegirClienta(c)}
+                    >
+                      {c.first_name} {c.last_name}
+                      <span style={{ color: "var(--ink-mute)", marginLeft: 8, fontSize: 12 }}>
+                        {normalizarDoc(c.dni)
+                          ? `· ${normalizarDoc(c.dni).length === 11 ? "CUIT" : "DNI"} ${normalizarDoc(c.dni)}`
+                          : "· sin documento cargado"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <PadronLookup onPersona={aplicarPersona} />
             <div>
               <label className="adm-label">Tipo de documento</label>
-              <select className="adm-input" value={docTipo} onChange={(e) => setDocTipo(Number(e.target.value) as 96 | 80)} style={{ width: 200 }}>
+              <select
+                className="adm-input"
+                value={docTipo}
+                onChange={(e) => { setDocTipo(Number(e.target.value) as 96 | 80); setCondIva(null) }}
+                style={{ width: 200 }}
+              >
                 <option value={96}>DNI</option>
                 <option value={80}>CUIT</option>
               </select>
             </div>
             <div>
               <label className="adm-label">Número</label>
-              <input name="docNro" className="adm-input" placeholder="Sin puntos ni guiones" />
+              <input
+                name="docNro"
+                className="adm-input"
+                placeholder="Sin puntos ni guiones"
+                value={docNro}
+                // Si se edita el número a mano, la condición frente al IVA que
+                // había traído el padrón deja de valer: era de OTRA persona.
+                // Sin esto se podría emitir una factura con la condición
+                // fiscal equivocada sin que nada lo avise.
+                onChange={(e) => { setDocNro(e.target.value); setCondIva(null) }}
+              />
             </div>
             <div>
               <label className="adm-label">Nombre / Razón social</label>
-              <input name="nombre" className="adm-input" />
+              <input
+                name="nombre"
+                className="adm-input"
+                value={nombre}
+                onChange={(e) => setNombre(e.target.value)}
+              />
             </div>
           </div>
         )}
@@ -153,7 +277,14 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
 
       <div>
         <label className="adm-label">Email (opcional, para enviar el PDF)</label>
-        <input name="email" className="adm-input" type="email" placeholder="clienta@email.com" />
+        <input
+          name="email"
+          className="adm-input"
+          type="email"
+          placeholder="clienta@email.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
       </div>
 
       {error && <p style={{ color: "#8c463c", fontSize: 13 }}>{error}</p>}

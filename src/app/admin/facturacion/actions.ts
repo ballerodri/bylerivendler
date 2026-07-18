@@ -31,6 +31,10 @@ const ManualSchema = z.object({
   email: z.string().trim(),
   descripcion: z.string().trim().min(1, "Falta la descripción"),
   montoPesos: z.number().positive("El monto debe ser mayor a 0").max(20_000_000, "Monto demasiado alto"),
+  // Condición frente al IVA traída del padrón de ARCA (opcional). Si no viene
+  // —o si viene un código que no reconocemos— se usa el default de siempre
+  // (Consumidor Final): nunca le mandamos a ARCA un código inventado.
+  condIva: z.number().int().optional(),
 })
 
 export async function emitirFacturaManual(
@@ -47,7 +51,13 @@ export async function emitirFacturaManual(
       docTipo: v.docTipo,
       docNro: v.docTipo === 99 ? "0" : v.docNro,
       receptorNombre: v.receptorNombre || undefined,
-      condIvaReceptor: 5,
+      // Sólo se usa la condición del padrón si el receptor está IDENTIFICADO
+      // (con Consumidor Final no hay a quién atribuirle otra condición) y si
+      // el código es uno de los válidos de la RG 5616.
+      condIvaReceptor:
+        v.docTipo !== 99 && v.condIva != null && COND_IVA_VALIDAS.has(v.condIva)
+          ? v.condIva
+          : COND_IVA_DEFAULT,
       totalCents: pesosToCents(v.montoPesos),
       descripcion: v.descripcion,
     })
