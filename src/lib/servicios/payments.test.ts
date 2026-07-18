@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { amountDueNow, paymentSummary, validatePayment, DEPOSIT_PCT } from "./payments"
+import { amountDueNow, paymentSummary, validatePayment, distributePayment, DEPOSIT_PCT } from "./payments"
 
 describe("amountDueNow", () => {
   it("seña = 30% del total", () => {
@@ -92,5 +92,67 @@ describe("validatePayment", () => {
   it("no entero -> error", () => {
     const r = validatePayment(100.5, 10_000_000)
     expect(r.ok).toBe(false)
+  })
+})
+
+describe("distributePayment — repartir UN cobro entre los turnos de una compra", () => {
+  const t = (id: string, totalCents: number, paidCents = 0) => ({ id, totalCents, paidCents })
+
+  it("llena el primer turno antes de pasar al siguiente", () => {
+    const r = distributePayment([t("a", 10000), t("b", 10000)], 15000)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.aplicaciones).toEqual([
+      { id: "a", deCents: 0, aCents: 10000 },
+      { id: "b", deCents: 0, aCents: 5000 },
+    ])
+  })
+
+  it("LO QUE MÁS IMPORTA: lo repartido suma EXACTAMENTE el monto cobrado", () => {
+    const appts = [t("a", 17000), t("b", 13500, 500), t("c", 4000)]
+    for (const monto of [1, 500, 17000, 17001, 29999, 34000]) {
+      const r = distributePayment(appts, monto)
+      expect(r.ok).toBe(true)
+      if (!r.ok) return
+      const sumado = r.aplicaciones.reduce((a, x) => a + (x.aCents - x.deCents), 0)
+      expect(sumado).toBe(monto)
+    }
+  })
+
+  it("ningún turno queda cobrado por encima de su total", () => {
+    const r = distributePayment([t("a", 5000, 4000), t("b", 9000)], 10000)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.aplicaciones).toEqual([
+      { id: "a", deCents: 4000, aCents: 5000 },
+      { id: "b", deCents: 0, aCents: 9000 },
+    ])
+  })
+
+  it("saltea los turnos de $0 (sesiones 2..N de un pack) y los ya saldados", () => {
+    const r = distributePayment([t("saldado", 5000, 5000), t("pack0", 0), t("real", 8000)], 3000)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.aplicaciones).toEqual([{ id: "real", deCents: 0, aCents: 3000 }])
+  })
+
+  it("se pasa de lo que falta cobrar → no reparte NADA y dice cuánto falta", () => {
+    const r = distributePayment([t("a", 5000, 1000), t("b", 2000)], 7000)
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.faltaCents).toBe(6000)
+  })
+
+  it("montos inválidos se rechazan (0, negativo, con centavos partidos)", () => {
+    for (const m of [0, -100, 100.5, NaN, Infinity]) {
+      expect(distributePayment([t("a", 5000)], m).ok).toBe(false)
+    }
+  })
+
+  it("cubrir el total exacto deja todo saldado", () => {
+    const r = distributePayment([t("a", 5000), t("b", 3000)], 8000)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.aplicaciones.map((x) => x.aCents)).toEqual([5000, 3000])
   })
 })

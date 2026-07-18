@@ -5,10 +5,11 @@ import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
-import { validatePayment } from "@/lib/servicios/payments"
+import { validatePayment, distributePayment } from "@/lib/servicios/payments"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
+import { fmtPrice } from "@/app/reserva/data"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
@@ -333,16 +334,6 @@ export async function deletePackPurchase(
 }
 
 /**
- * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
- * mueve): sólo anota lo efectivamente recibido.
- *
- * `expectedPaidCents` es lo que la pantalla que llama creía que ya estaba
- * registrado. El update sólo aplica si la base de datos todavía está de
- * acuerdo — si otra pantalla (otra pestaña, otro celular) ya cambió el
- * cobro entre medio, se rechaza en vez de pisarlo. Un reintento de red del
- * MISMO guardado (mismo `paidCents`) sigue siendo un éxito, no un error.
- */
-/**
  * Registra UN cobro sobre una COMPRA entera (varios turnos), repartiéndolo en
  * orden cronológico: llena el primer turno hasta su total, sigue con el
  * segundo, etc. Lo usa el asistente de Nueva reserva para poder anotar en el
@@ -351,16 +342,18 @@ export async function deletePackPurchase(
  * La plata por turno sigue siendo la verdad (cada turno factura lo suyo):
  * esto sólo evita la carga manual repetida.
  *
- * Todo o nada: si el monto no entra en lo que falta cobrar de la compra, no
- * se escribe nada y se avisa.
+ * La CUENTA vive en `distributePayment` (módulo puro, testeado). Acá queda lo
+ * que necesita la base: leer, escribir con la misma guarda optimista que
+ * `registrarPago`, y —si una escritura falla a mitad de camino— decir la
+ * VERDAD sobre lo que quedó aplicado. No hay transacción: el rechazo por
+ * monto ocurre ANTES de escribir, pero un choque de concurrencia en medio del
+ * reparto puede dejarlo incompleto, y eso hay que informarlo tal cual.
  */
 export async function registrarPagoCompra(
   appointmentIds: string[],
   montoCents: number
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; aplicadoCents?: number }> {
   await requireStaff()
-  if (!Number.isFinite(montoCents) || montoCents <= 0)
-    return { ok: false, error: "El monto tiene que ser mayor a 0." }
   const ids = [...new Set(appointmentIds.filter(Boolean))]
   if (!ids.length) return { ok: false, error: "No hay turnos a los que aplicar el cobro." }
 
@@ -374,38 +367,64 @@ export async function registrarPagoCompra(
   const rows = (data ?? []) as { id: string; total_cents: number; paid_cents: number }[]
   if (rows.length !== ids.length) return { ok: false, error: "Algún turno de la compra no existe." }
 
-  const falta = rows.reduce((a, r) => a + Math.max(0, r.total_cents - r.paid_cents), 0)
-  if (montoCents > falta)
+  const plan = distributePayment(
+    rows.map((r) => ({ id: r.id, totalCents: r.total_cents, paidCents: r.paid_cents })),
+    montoCents
+  )
+  if (!plan.ok)
     return {
       ok: false,
-      error: `Te pasás: a esta compra le falta cobrar ${"$" + (falta / 100).toLocaleString("es-AR")}.`,
+      error:
+        plan.faltaCents > 0
+          ? `Te pasás: a esta compra le falta cobrar ${fmtPrice(plan.faltaCents / 100)}.`
+          : plan.error,
     }
 
-  // Se reparte en orden: cada turno se llena hasta su total antes de pasar al
-  // siguiente. Se escribe con la misma guarda optimista de `registrarPago`
-  // (`eq("paid_cents", …)`) para no pisar un cobro cargado en otra pantalla.
-  let resto = montoCents
-  for (const r of rows) {
-    if (resto <= 0) break
-    const suma = Math.min(resto, Math.max(0, r.total_cents - r.paid_cents))
-    if (suma <= 0) continue
+  let aplicado = 0
+  for (const a of plan.aplicaciones) {
     const { data: upd, error } = await admin
       .from("appointments")
-      .update({ paid_cents: r.paid_cents + suma })
-      .eq("id", r.id)
-      .eq("paid_cents", r.paid_cents)
+      .update({ paid_cents: a.aCents })
+      .eq("id", a.id)
+      .eq("paid_cents", a.deCents)
       .select("id")
-    if (error) return { ok: false, error: error.message }
-    if (!upd?.length)
-      return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a cargarlo." }
-    resto -= suma
+    if (error || !upd?.length) {
+      // Si ya se escribió algo, hay que refrescar SÍ O SÍ: la agenda no puede
+      // seguir mostrando $0 en un turno que ya tiene plata registrada.
+      if (aplicado > 0) {
+        revalidatePath("/admin")
+        revalidatePath("/admin/turnos")
+      }
+      const detalle = error
+        ? error.message
+        : "el cobro cambió en otra pantalla"
+      return {
+        ok: false,
+        aplicadoCents: aplicado,
+        error:
+          aplicado > 0
+            ? `Se registraron ${fmtPrice(aplicado / 100)} de ${fmtPrice(montoCents / 100)} y el resto no (${detalle}). Revisá los turnos en la agenda antes de volver a cargarlo.`
+            : `No pudimos registrar el cobro (${detalle}).`,
+      }
+    }
+    aplicado += a.aCents - a.deCents
   }
 
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
-  return { ok: true }
+  return { ok: true, aplicadoCents: aplicado }
 }
 
+/**
+ * Registra cuánto se cobró de un turno. NO toca `total_cents` (la plata no se
+ * mueve): sólo anota lo efectivamente recibido.
+ *
+ * `expectedPaidCents` es lo que la pantalla que llama creía que ya estaba
+ * registrado. El update sólo aplica si la base de datos todavía está de
+ * acuerdo — si otra pantalla (otra pestaña, otro celular) ya cambió el
+ * cobro entre medio, se rechaza en vez de pisarlo. Un reintento de red del
+ * MISMO guardado (mismo `paidCents`) sigue siendo un éxito, no un error.
+ */
 export async function registrarPago(
   appointmentId: string,
   paidCents: number,

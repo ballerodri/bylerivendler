@@ -159,6 +159,11 @@ export default function NuevaReservaForm({
   const [cobrado, setCobrado] = useState("")
   const [submitPending, startSubmitTransition] = useTransition()
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // La reserva YA se creó. Si después falla el cobro nos quedamos en la
+  // pantalla para avisarlo, y sin esto volver a tocar "Confirmar" crearía un
+  // SEGUNDO turno idéntico (el camino de sólo tratamientos ni siquiera
+  // revalida disponibilidad, así que lo crearía sin chistar).
+  const [creada, setCreada] = useState(false)
 
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -356,6 +361,7 @@ export default function NuevaReservaForm({
           payChoice: "full",
         })
         if (!result.ok) { setSubmitError(result.error); return }
+        setCreada(true)
         const cobroErr = await aplicarCobro(result.appointmentIds ?? [result.appointmentId])
         if (cobroErr) {
           setSubmitError(`La reserva se creó, pero el cobro no: ${cobroErr} Cargalo desde la agenda.`)
@@ -389,6 +395,7 @@ export default function NuevaReservaForm({
         setSubmitError(result.error ?? "Error al crear el turno.")
         return
       }
+      setCreada(true)
       const cobroErr = await aplicarCobro(result.appointmentId ? [result.appointmentId] : [])
       if (cobroErr) {
         setSubmitError(`El turno se creó, pero el cobro no: ${cobroErr} Cargalo desde la agenda.`)
@@ -401,8 +408,14 @@ export default function NuevaReservaForm({
   /** Aplica el cobro sobre los turnos recién creados (si se cargó alguno).
    *  Si falla, la reserva YA está hecha: se avisa sin perderla. */
   async function aplicarCobro(ids: string[]): Promise<string | null> {
-    const pesos = Number(cobrado)
-    if (!cobrado.trim() || !Number.isFinite(pesos) || pesos <= 0) return null
+    if (!cobrado.trim()) return null   // vacío = no se cobró nada, no es error
+    // Con coma decimal ("1500,50") `Number` da NaN: antes eso se tomaba como
+    // "no hay cobro" y el monto se perdía EN SILENCIO, con la pantalla
+    // mostrándolo. Ahora se acepta la coma y, si igual no se entiende, se
+    // avisa en vez de descartarlo.
+    const pesos = Number(cobrado.replace(",", "."))
+    if (!Number.isFinite(pesos) || pesos <= 0)
+      return "El monto cobrado no es válido: escribilo sin puntos de mil (ej: 1500,50)."
     const r = await registrarPagoCompra(ids, Math.round(pesos * 100))
     return r.ok ? null : (r.error ?? "No pudimos registrar el cobro.")
   }
@@ -1182,6 +1195,16 @@ export default function NuevaReservaForm({
               style={{ fontSize: 13 }}
             >
               Continuar →
+            </button>
+          ) : creada ? (
+            // Ya está creada: el único camino de acá es ir a la agenda. Volver
+            // a tocar "Confirmar" duplicaría el turno.
+            <button
+              className="adm-btn adm-btn--primary"
+              onClick={() => router.push("/admin/turnos")}
+              style={{ fontSize: 13 }}
+            >
+              Ir a la agenda →
             </button>
           ) : (
             <button
