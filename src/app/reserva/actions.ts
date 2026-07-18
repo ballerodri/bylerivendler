@@ -12,7 +12,7 @@ import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
-import { gridStepMin, gridStepMinFromMinutes } from "@/lib/servicios/grid-step"
+import { gridStepMin, gridStepMinFromMinutes, DEFAULT_STEP_MIN } from "@/lib/servicios/grid-step"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
 import { crossOverlapCheck, sumDeposits, sumTotals } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
@@ -1522,12 +1522,18 @@ export async function fetchDayAvailability(
     .select("staff_id, day_of_week, slot")
   if (proHint !== "auto") availQuery = availQuery.eq("staff_id", proHint)
 
-  const [{ data: apptData }, { data: prosData }, { data: availData }] = await Promise.all([
+  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: bhData }] = await Promise.all([
     apptQuery,
     proHint === "auto" || serviceId
       ? supabase.from("staff").select("id").eq("is_professional", true).eq("active", true)
       : Promise.resolve({ data: [] as { id: string }[] }),
     availQuery,
+    // La grilla completa de los 7 días: es lo que dice cuánto dura una hora
+    // bloqueada del personal (ver `BlockedMap`). NO se puede deducir de
+    // `candidateSlots`, que acá llega ya filtrado (sólo los futuros de hoy, o
+    // un único horario cuando se revalida una reserva). Tabla de 7 filas y va
+    // en el mismo `Promise.all`: no agrega ninguna espera.
+    supabase.from("business_hours").select("day_of_week, slots"),
   ])
 
   // El turno que se está reagendando no puede bloquearse a sí mismo: sus
@@ -1537,7 +1543,10 @@ export async function fetchDayAvailability(
     : (apptData ?? [])
 
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
-  const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  const blockedMap = buildBlockedMap(
+    (availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
+    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[]
+  )
   // Sólo hace falta armar las patas por-servicio en el camino público: el
   // admin (sin `serviceId`) sigue leyendo `appointments` tal cual, como siempre.
   const legs = serviceId ? buildBusyLegs((appointments ?? []) as ApptRow[]) : []
@@ -1679,7 +1688,13 @@ export async function chooseStaffForSlot(
   const dayStart = new Date(dayStartMs).toISOString()
   const dayEnd = new Date(dayStartMs + 24 * 3_600_000).toISOString()
 
-  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: linkRows, error: linkErr }] =
+  const [
+    { data: apptData },
+    { data: prosData },
+    { data: availData },
+    { data: linkRows, error: linkErr },
+    { data: bhData },
+  ] =
     await Promise.all([
       supabase
         .from("appointments")
@@ -1693,12 +1708,19 @@ export async function chooseStaffForSlot(
       // `assignableStaff` necesita el mapa cruzado para resolver de qué servicio
       // es una pata ANÓNIMA de un servicio distinto al que se está reservando.
       supabase.from("staff_services").select("service_id, staff_id"),
+      // La grilla de los 7 días: dice cuánto dura una hora bloqueada (ver
+      // `BlockedMap`). Tiene que ser el MISMO criterio que el buscador o esta
+      // función podría contradecirlo. Tabla de 7 filas, en paralelo: no espera.
+      supabase.from("business_hours").select("day_of_week, slots"),
     ])
   // Fail-closed: si no podemos leer quién hace el servicio, no inventamos a nadie.
   if (linkErr) return null
 
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
-  const blockedMap = buildBlockedMap((availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  const blockedMap = buildBlockedMap(
+    (availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
+    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[]
+  )
   const staffMap: StaffServiceMap = {}
   for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
     ;(staffMap[r.service_id] ??= []).push(r.staff_id)
@@ -1760,26 +1782,58 @@ function permutations(arr: number[]): number[][] {
 
 type Appt = { starts_at: string; duration_min: number; staff_id: string | null }
 
-// `${staffId}|${dayOfWeek}` -> conjunto de horas "HH:MM" bloqueadas (no disponible).
-type BlockedMap = Map<string, Set<string>>
-const SLOT_BLOCK_MIN = 60 // cada hora bloqueada cubre 60 min
+/**
+ * Las horas bloqueadas del personal, más cuánto DURA cada una.
+ *
+ * - `blocked`: `${staffId}|${dayOfWeek}` -> conjunto de horas "HH:MM" tildadas
+ *   como NO disponibles.
+ * - `stepByDow`: día de la semana -> paso real de la grilla de ESE día, que es
+ *   lo que dura una hora bloqueada.
+ *
+ * ¿Por qué el paso va POR DÍA y no como constante? Porque una fila de
+ * `staff_blocked_slots` no guarda duración: guarda "la casilla de las 08:00
+ * está tildada", y esa casilla cubre exactamente lo que la grilla de ese día
+ * ofrece. Con grilla de 60 la casilla de las 08:00 tapa 08:00–09:00; con
+ * grilla de 30 tapa 08:00–08:30. Y el paso se deduce de `business_hours`, que
+ * es por día de la semana: el salón puede tener sábados de 30 y martes de 60.
+ * Dejarlo fijo en 60 con grilla de 30 bloquea de más (se pierden turnos);
+ * dejarlo fijo en 30 con grilla de 60 bloquea de menos → SOBREVENTA.
+ */
+type BlockedMap = {
+  blocked: Map<string, Set<string>>
+  stepByDow: Map<number, number>
+}
 
 function hhmmToMin(hhmm: string): number {
   const [h, m] = hhmm.split(":").map(Number)
   return h * 60 + m
 }
 
+/**
+ * `hours` son las filas de `business_hours` (tabla de 7 filas). OJO: tienen que
+ * ser los horarios COMPLETOS del día, nunca la lista de candidatos que se está
+ * filtrando — los que llaman suelen pasar un subconjunto (sólo los futuros de
+ * hoy, o un único horario a revalidar) y de ahí el paso saldría mal.
+ *
+ * Sin filas, o un día sin horarios cargados, cae en `DEFAULT_STEP_MIN` (60):
+ * el valor de siempre, que bloquea de más y nunca de menos.
+ */
 function buildBlockedMap(
-  rows: { staff_id: string; day_of_week: number; slot: string }[]
+  rows: { staff_id: string; day_of_week: number; slot: string }[],
+  // Obligatorio a propósito: si fuera opcional, un futuro llamador podría
+  // olvidarlo y quedarse en 60 sin enterarse.
+  hours: { day_of_week: number; slots: string[] | null }[]
 ): BlockedMap {
-  const m: BlockedMap = new Map()
+  const blocked = new Map<string, Set<string>>()
   for (const r of rows) {
     const k = `${r.staff_id}|${r.day_of_week}`
-    let set = m.get(k)
-    if (!set) { set = new Set(); m.set(k, set) }
+    let set = blocked.get(k)
+    if (!set) { set = new Set(); blocked.set(k, set) }
     set.add(r.slot)
   }
-  return m
+  const stepByDow = new Map<number, number>()
+  for (const h of hours) stepByDow.set(h.day_of_week, gridStepMin(h.slots ?? []))
+  return { blocked, stepByDow }
 }
 
 function utcMsToArTime(ms: number): string {
@@ -1798,13 +1852,16 @@ function proWorksAtSlot(
   slotEndMs: number,
   blockedMap: BlockedMap
 ): boolean {
-  const blocked = blockedMap.get(`${staffId}|${dayOfWeek}`)
+  const blocked = blockedMap.blocked.get(`${staffId}|${dayOfWeek}`)
   if (!blocked || blocked.size === 0) return true
+  // Cuánto tapa una casilla tildada = el paso de la grilla de ESTE día (ver
+  // `BlockedMap`). Si no se pudo deducir, 60: bloquea de más, nunca de menos.
+  const stepMin = blockedMap.stepByDow.get(dayOfWeek) ?? DEFAULT_STEP_MIN
   const s0 = hhmmToMin(utcMsToArTime(slotStartMs))
   const s1 = hhmmToMin(utcMsToArTime(slotEndMs))
   for (const bt of blocked) {
     const b0 = hhmmToMin(bt)
-    const b1 = b0 + SLOT_BLOCK_MIN
+    const b1 = b0 + stepMin
     if (s0 < b1 && s1 > b0) return false // el servicio pisa una hora bloqueada
   }
   return true
@@ -2079,7 +2136,12 @@ export async function fetchSequentialAvailability(
   )
   const allPros = ((prosRes.data ?? []) as { id: string }[]).map((p) => p.id)
 
-  const blockedMap = buildBlockedMap((availRes.data ?? []) as { staff_id: string; day_of_week: number; slot: string }[])
+  // Los horarios ya vienen en `bhRes` (los mismos que arman la grilla del día,
+  // más abajo): de ahí sale cuánto dura una hora bloqueada, sin otra consulta.
+  const blockedMap = buildBlockedMap(
+    (availRes.data ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
+    (bhRes.data ?? []) as { day_of_week: number; slots: string[] | null }[]
+  )
 
   // Set of "first_id|second_id" — first must go before second
   const orderRules = new Set<string>(
