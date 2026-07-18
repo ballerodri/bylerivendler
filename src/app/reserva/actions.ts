@@ -649,14 +649,18 @@ async function planLooseServices(
   // horarios de pata que mande el cliente: se recalculan acá con
   // `placeOnGridMerged` desde este arranque validado.
   // Tope del día para el arranque pegado (espejo del buscador): el pegado al
-  // pack tiene que ARRANCAR dentro de la última hora reservable (último slot
-  // + 60). `placeOnGridMerged` aplica ese tope a los pegados i≥1, pero acá el
-  // 1er suelto entra como ítem 0 (anclado sin chequeo) — sin esto, un
-  // `startsAt` artesanal igual a `packChainEndMs` podría caer DESPUÉS del
-  // cierre y el buscador jamás lo ofrecería.
-  const lastGridMin = bh0?.is_open ? Math.max(...bh0.slots.map(hmToMinutes)) : -1
+  // pack tiene que ARRANCAR dentro de la última franja reservable (último slot
+  // + el PASO de la grilla, igual que `placeOnGridMerged` y `checkPerm` — NO un
+  // 60 fijo, o con grilla de media hora este chequeo sería más laxo que lo que
+  // el buscador ofrece). `placeOnGridMerged` aplica ese tope a los pegados
+  // i≥1, pero acá el 1er suelto entra como ítem 0 (anclado sin chequeo) — sin
+  // esto, un `startsAt` artesanal igual a `packChainEndMs` podría caer DESPUÉS
+  // del cierre y el buscador jamás lo ofrecería.
+  const gridMin0 = bh0?.is_open ? bh0.slots.map(hmToMinutes) : []
+  const lastGridMin = gridMin0.length > 0 ? Math.max(...gridMin0) : -1
   const chainedStartOk =
-    startsAt.getTime() === packChainEndMs && hmToMinutes(chainStartHm) < lastGridMin + 60
+    startsAt.getTime() === packChainEndMs &&
+    hmToMinutes(chainStartHm) < lastGridMin + gridStepMinFromMinutes(gridMin0)
   if (!bh0?.is_open || !(bh0.slots.includes(chainStartHm) || chainedStartOk))
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
   // Ascendente, igual que `checkPerm` (que ordena la grilla antes de la

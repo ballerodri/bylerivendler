@@ -41,6 +41,10 @@ La regla "**distinta profesional → el turno arranca en un horario de la grilla
 
 La plata, los mails, la agenda, los packs, la regla de la Fase 3, la reserva online (que ya leía la grilla guardada). Los turnos YA reservados no se mueven: siguen en su horario, y su bloqueo real sale de la duración del servicio, no de la grilla.
 
+## Limitación conocida (documentada por la revisión final)
+
+Yendo de **fino a grueso** (30 → 1 hora) **con una pausa que no queda alineada** a la grilla nueva, una fila bloqueada puede no tener ningún horario nuevo que la cubra y se descarta (la grilla gruesa no puede representar esa media hora). No es alcanzable con la configuración de hoy (no hay pausa cargada, y el primer movimiento es 60 → 30, que no descarta nada). Como no hay un horario "correcto" al que llevarla —arrastrarla al anterior bloquearía un rato en el que la profesional SÍ trabaja—, se descarta y **se avisa en pantalla** ("Revisá Admin → Personal: N horas bloqueadas no entraban en la grilla nueva").
+
 ## Riesgos
 
 - **Es un cambio de disponibilidad de todo el salón.** Lo delicado es la conversión de bloqueos: mal hecha, alguien figura libre cuando no lo está (doble reserva) o al revés (se pierden turnos).

@@ -160,6 +160,8 @@ export default function HoursEditor({
   const [pending, startTransition] = useTransition()
   const [status, setStatus] = useState<"idle" | "saved" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
+  // Horas bloqueadas del personal que no entraron en la grilla nueva.
+  const [dropped, setDropped] = useState(0)
 
   const update = (dow: number, patch: Partial<DayConfig>) => {
     setConfigs(prev => prev.map(c => c.day_of_week === dow ? { ...c, ...patch } : c))
@@ -184,8 +186,15 @@ export default function HoursEditor({
     }))
     startTransition(async () => {
       const r = await updateBusinessHours(payload)
-      if (r.ok) setStatus("saved")
-      else { setError(r.error ?? "Error"); setStatus("error") }
+      if (r.ok) {
+        setStatus("saved")
+        // Al cambiar el intervalo, alguna hora bloqueada del personal puede no
+        // entrar en la grilla nueva (típico: una hora que cae justo en una
+        // pausa). Se descarta, y hay que DECIRLO: si no, una profesional queda
+        // disponible en un horario que ella había bloqueado, sin que nadie se
+        // entere.
+        setDropped(r.droppedBlockedSlots ?? 0)
+      } else { setError(r.error ?? "Error"); setStatus("error") }
     })
   }
 
@@ -296,6 +305,20 @@ export default function HoursEditor({
         {status === "saved" && <span style={{ fontSize: 12, color: "#4d6b3e" }}>Guardado ✓</span>}
         {status === "error" && <span style={{ fontSize: 12, color: "#8c463c" }}>{error}</span>}
       </div>
+
+      {status === "saved" && dropped > 0 && (
+        <div
+          className="adm-card"
+          style={{ padding: 14, marginTop: 12, background: "#f6ecdf", fontSize: 13 }}
+        >
+          <strong>Revisá Admin → Personal.</strong> {dropped} hora
+          {dropped === 1 ? "" : "s"} bloqueada{dropped === 1 ? "" : "s"} no
+          entraba{dropped === 1 ? "" : "n"} en la grilla nueva (por ejemplo, una
+          hora que ahora cae dentro de una pausa) y quedó
+          {dropped === 1 ? "" : "ron"} sin marcar. Volvé a tildar lo que
+          corresponda para que nadie figure disponible sin estarlo.
+        </div>
+      )}
     </div>
   )
 }
