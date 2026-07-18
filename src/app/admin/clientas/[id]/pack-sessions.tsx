@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
-import { schedulePackSession, confirmPackSessions } from "../../actions"
+import { schedulePackSession, confirmPackSessions, registrarSesionPasada } from "../../actions"
 import type { BusinessHour } from "@/app/reserva/data"
 
 export type PackPurchaseView = {
@@ -56,6 +56,28 @@ export default function PackSessions({
     startTransition(async () => {
       const r = await confirmPackSessions(purchase.id)
       if (!r.ok) setError(r.error ?? "Error")
+    })
+  }
+
+  // ── Registrar una sesión que YA se hizo ─────────────────────────────────
+  const [pasada, setPasada] = useState(false)
+  const [pasadaWhen, setPasadaWhen] = useState("")
+  // El input no deja elegir el futuro: esto es sólo para lo que ya pasó (el
+  // servidor lo vuelve a exigir igual).
+  const maxPasada = new Date(new Date().getTime() - 60_000)
+    .toLocaleString("sv", { timeZone: "America/Argentina/Buenos_Aires" })
+    .slice(0, 16)
+    .replace(" ", "T")
+
+  const registrarPasada = () => {
+    setError(null)
+    // El input da hora ARGENTINA sin zona ("2026-07-14T15:00"); se convierte a
+    // instante real con el mismo desfase que usa toda la app (UTC-3).
+    const iso = `${pasadaWhen}:00-03:00`
+    startTransition(async () => {
+      const r = await registrarSesionPasada(purchase.id, new Date(iso).toISOString())
+      if (r.ok) { setPasada(false); setPasadaWhen("") }
+      else setError(r.error ?? "Error")
     })
   }
 
@@ -119,6 +141,46 @@ export default function PackSessions({
               {pending ? "Confirmando…" : `Confirmar las ${pendingCount} sesiones`}
             </button>
           )}
+          {missing > 0 && !pasada && (
+            <button className="adm-btn" disabled={pending} onClick={() => setPasada(true)}>
+              Registrar una sesión ya realizada
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Para packs vendidos fuera del sistema o cargados tarde: la sesión ya
+          ocurrió, así que no hay disponibilidad que chequear ni mail que
+          mandar — sólo queda dejar constancia y descontarla del pack. */}
+      {pasada && !picking && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+          <label style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+            ¿Cuándo se hizo? (fecha y hora, ya pasada)
+          </label>
+          <input
+            type="datetime-local"
+            className="adm-input"
+            value={pasadaWhen}
+            max={maxPasada}
+            onChange={(e) => setPasadaWhen(e.target.value)}
+            style={{ maxWidth: 260 }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className="adm-btn adm-btn--primary"
+              disabled={pending || !pasadaWhen}
+              onClick={registrarPasada}
+            >
+              {pending ? "Registrando…" : "Registrar como realizada"}
+            </button>
+            <button className="adm-btn" disabled={pending} onClick={() => { setPasada(false); setError(null) }}>
+              Cancelar
+            </button>
+          </div>
+          <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: 0 }}>
+            Queda como <strong>completada</strong> y descuenta una sesión del pack. No se le avisa
+            nada a la clienta.
+          </p>
         </div>
       )}
 

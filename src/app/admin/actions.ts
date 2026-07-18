@@ -1818,6 +1818,157 @@ export async function schedulePackSession(
 }
 
 /**
+ * Registra una sesión de pack QUE YA SE HIZO (fecha pasada).
+ *
+ * Para packs vendidos fuera del sistema o cargados tarde: la sesión ocurrió,
+ * y si no queda registrada el pack miente (dice que le quedan sesiones por
+ * agendar que en realidad ya usó).
+ *
+ * A diferencia de `schedulePackSession` NO chequea horario de atención ni
+ * disponibilidad: no hay nada que reservar, sólo se está dejando constancia de
+ * algo que pasó. Tampoco exige el intervalo entre sesiones (el espaciado real
+ * es un hecho, no una elección) ni le manda ningún mail a la clienta.
+ *
+ * SÍ conserva: que el pack no tenga más sesiones que las compradas, y que no
+ * se pise con otra sesión viva del mismo pack (eso sería un error de carga).
+ *
+ * Queda COMPLETADA, y el descuento del pack (y los puntos) se hacen pasando
+ * por `updateAppointmentStatus`, el mismo camino de siempre — así el contador
+ * de sesiones usadas no depende de una segunda copia de esa lógica.
+ */
+export async function registrarSesionPasada(
+  packPurchaseId: string,
+  startsAtIso: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: pp } = await admin
+    .from("pack_purchases")
+    .select("id, client_id, pack_id, service_id, sessions_total")
+    .eq("id", packPurchaseId)
+    .maybeSingle()
+  if (!pp) return { ok: false, error: "No encontramos ese pack." }
+
+  const { data: pack } = await admin
+    .from("packs")
+    .select("service:services(duration_min, pricing_mode)")
+    .eq("id", pp.pack_id)
+    .maybeSingle()
+  const svc = pack?.service as unknown as { duration_min: number; pricing_mode: "fixed" | "per_zone" } | null
+
+  const { data: allExisting } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, appointment_services(zones)")
+    .eq("pack_purchase_id", packPurchaseId)
+    .order("starts_at", { ascending: true })
+  type ExistingRow = {
+    id: string
+    starts_at: string
+    duration_min: number
+    status: string
+    appointment_services: { zones: ZoneSnapshot[] | null }[]
+  }
+  const allRows = (allExisting ?? []) as unknown as ExistingRow[]
+  const vivas = allRows.filter((r) => r.status !== "cancelled")
+  if (vivas.length >= pp.sessions_total)
+    return { ok: false, error: "Este pack ya tiene todas sus sesiones registradas." }
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
+  // Al revés que agendar: acá EXIGIMOS que ya haya pasado. Una sesión futura
+  // se agenda con "Elegir fecha", que sí chequea disponibilidad.
+  if (startsAt.getTime() >= Date.now())
+    return { ok: false, error: "Esto es para sesiones que YA se hicieron: elegí una fecha pasada." }
+
+  // Duración: la de otra sesión de este pack o, si no hay ninguna, la del
+  // servicio cuando es 'fixed'. Un servicio por zona sin ninguna sesión de
+  // referencia no tiene duración deducible (mismo límite que agendar).
+  const reference = allRows[0]
+  const pricingMode = svc?.pricing_mode ?? "fixed"
+  let durationMin: number
+  if (reference) durationMin = reference.duration_min
+  else if (pricingMode === "fixed") durationMin = svc?.duration_min ?? 0
+  else
+    return {
+      ok: false,
+      error:
+        "Este pack es de un servicio por zona y sus zonas nunca quedaron registradas. Cargá primero una sesión desde 'Nueva reserva' (que sí pregunta las zonas) y después registrá esta.",
+    }
+  if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
+
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + durationMin * 60_000
+  const conflict = allRows
+    .filter((r) => isAliveStatus(r.status))
+    .find((r) => {
+      const rStart = new Date(r.starts_at).getTime()
+      return newStartMs < rStart + r.duration_min * 60_000 && newEndMs > rStart
+    })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+    })
+    return { ok: false, error: `Se superpone con otra sesión de este pack (${when}hs).` }
+  }
+
+  const zonesSnapshot = reference?.appointment_services?.[0]?.zones ?? null
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+
+  // Igual que agendar: la sesión vale $0 (el pack ya está pagado) y nunca es
+  // la portadora del precio — si lo fuera, generaría una segunda Factura C.
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: pp.client_id,
+      staff_id: null,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: new Date(newEndMs).toISOString(),
+      duration_min: durationMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      pack_purchase_id: packPurchaseId,
+      notes_internal: "Pack: sesión ya realizada, registrada a mano",
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos registrarla: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert({
+    appointment_id: appt.id,
+    service_id: pp.service_id,
+    duration_min: durationMin,
+    price_cents: 0,
+    zones: zonesSnapshot,
+    staff_id: null,
+    starts_at: startsAt.toISOString(),
+  })
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
+  }
+
+  // Completarla por el camino de siempre: descuenta la sesión del pack y suma
+  // los puntos, sin duplicar esa lógica acá. Si fallara, la sesión queda
+  // creada como pendiente y se puede completar a mano desde la agenda.
+  const done = await updateAppointmentStatus(appt.id, "completed")
+  if (!done.ok)
+    return {
+      ok: false,
+      error: `Se registró la sesión pero no pudimos marcarla completada (${done.error ?? "error"}). Completala desde la agenda.`,
+    }
+
+  revalidatePath(`/admin/clientas/${pp.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
  * Confirma de una vez TODAS las sesiones pendientes de un pack (se usa después
  * de verificar que la seña está pagada). No toca canceladas ni completadas.
  */
