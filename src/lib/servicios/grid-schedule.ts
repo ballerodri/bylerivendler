@@ -9,6 +9,8 @@
  * reserva == lo que se muestra.
  */
 
+import { gridStepMinFromMinutes } from "./grid-step"
+
 /** "HH:MM" → minutos desde medianoche. */
 export function hmToMinutes(hm: string): number {
   const [h, m] = hm.split(":").map(Number)
@@ -89,12 +91,16 @@ export function placeOnGridMerged(
       start = startSlot
     } else if (staffId === prevStaff) {
       start = prevEnd // misma profesional → pegado, aunque cruce la hora
-      // Tope del día: un pegado tiene que ARRANCAR dentro de la última hora
-      // reservable (último slot de la grilla + 60). Sin esto, una cadena de la
+      // Tope del día: un pegado tiene que ARRANCAR dentro de la última franja
+      // reservable (último slot de la grilla + el PASO de la grilla — 60 con
+      // grilla de 1 hora, 30 con grilla de media). Sin esto, una cadena de la
       // misma profesional que arranca al final del día se extendería más allá
       // del cierre (18:00 → 19:00 → 20:00…), cosa que las Fases 1/2 impedían
       // de rebote. Un turno SOLO en el último slot sigue OK (no es pegado).
-      const dayEnd = gridSlots.length > 0 ? gridSlots[gridSlots.length - 1] + 60 : Infinity
+      const dayEnd =
+        gridSlots.length > 0
+          ? gridSlots[gridSlots.length - 1] + gridStepMinFromMinutes(gridSlots)
+          : Infinity
       if (start >= dayEnd) return null
     } else {
       const ns = gridSlots.find((g) => g >= prevEnd)

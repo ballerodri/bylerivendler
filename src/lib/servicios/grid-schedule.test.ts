@@ -136,6 +136,15 @@ describe("placeOnGridMerged — fase 3 (misma profesional pegados siempre)", () 
     expect(placeOnGridMerged([it2(60, "A"), it2(60, "A"), it2(60, "A")], GRID, 1020)).toBeNull()
   })
 
+  it("tope del día con grilla de MEDIA HORA: el tope es el último slot + 30, no + 60", () => {
+    // Grilla 14:00–15:30 de a 30 min. Último slot 15:30 → tope 16:00.
+    const G30 = [840, 870, 900, 930]
+    // 20@A 15:30–15:50 + 20@A pegado 15:50 (< 16:00) → OK
+    expect(placeOnGridMerged([it2(20, "A"), it2(20, "A")], G30, 930)).toEqual([930, 950])
+    // 40@A 15:30–16:10 + otro pegado arrancaría 16:10 (≥ 16:00) → null
+    expect(placeOnGridMerged([it2(40, "A"), it2(20, "A")], G30, 930)).toBeNull()
+  })
+
   it("tope del día: un pegado DENTRO de la última hora sigue OK (y un turno solo largo en el último slot también)", () => {
     // 30@A 18:00–18:30 + 20@A pegado 18:30 (< 19:00) → OK
     expect(placeOnGridMerged([it2(30, "A"), it2(20, "A")], GRID, 1080)).toEqual([1080, 1110])

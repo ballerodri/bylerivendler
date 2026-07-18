@@ -12,6 +12,7 @@ import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
+import { gridStepMin, gridStepMinFromMinutes } from "@/lib/servicios/grid-step"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
 import { crossOverlapCheck, sumDeposits, sumTotals } from "@/lib/servicios/booking-plan"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
@@ -1936,7 +1937,10 @@ function checkPerm(
     // ARRANCAR dentro de la última hora reservable (último slot + 60); si no,
     // no se pega (y la rama puntual tampoco va a encontrar slot → no se
     // ofrece), para que una cadena no se extienda más allá del cierre.
-    const dayEndMin = gridMin.length > 0 ? gridMin[gridMin.length - 1] + 60 : Infinity
+    const dayEndMin =
+      gridMin.length > 0
+        ? gridMin[gridMin.length - 1] + gridStepMinFromMinutes(gridMin)
+        : Infinity
     if (
       prevStaff !== null &&
       prevEndMin < dayEndMin &&
