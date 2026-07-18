@@ -81,6 +81,12 @@ const BookingInput = z.object({
   // público (que hoy rechaza el payload sin `dob`).
   message: "Falta la fecha de nacimiento.",
   path: ["client", "dob"],
+}).refine((v) => v.adminMode === true || typeof v.client.marketingConsent === "boolean", {
+  // Mismo caso que `dob`: opcional sólo para el admin. Además de no aflojar el
+  // camino público, evita guardar un "no acepta" INVENTADO — sin el dato, el
+  // consentimiento no se responde, no se asume.
+  message: "Falta el consentimiento de marketing.",
+  path: ["client", "marketingConsent"],
 })
 
 export type CreateBookingInput = z.infer<typeof BookingInput>
