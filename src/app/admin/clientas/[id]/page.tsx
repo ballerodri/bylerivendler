@@ -7,6 +7,7 @@ import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
 import PackSessions, { type PackPurchaseView } from "./pack-sessions"
+import PadronLookup from "@/app/admin/_components/padron-lookup"
 import { fetchBusinessHours } from "@/app/reserva/queries"
 
 export const dynamic = "force-dynamic"
@@ -18,6 +19,7 @@ type ClientRow = {
   email: string
   phone: string | null
   date_of_birth: string | null
+  dni: string | null
   notes: string | null
   loyalty_points: number
   created_at: string
@@ -55,7 +57,7 @@ export default async function AdminClientDetailPage({
 
   const { data: client } = await admin
     .from("clients")
-    .select("id, first_name, last_name, email, phone, date_of_birth, notes, loyalty_points, created_at")
+    .select("id, first_name, last_name, email, phone, date_of_birth, dni, notes, loyalty_points, created_at")
     .eq("id", id)
     .maybeSingle<ClientRow>()
   if (!client) notFound()
@@ -217,6 +219,20 @@ export default async function AdminClientDetailPage({
         <div className="adm-row">
           <div className="adm-row__label">Notas internas</div>
           <div>{client.notes ?? "—"}</div>
+        </div>
+        <div className="adm-row">
+          <div className="adm-row__label">DNI o CUIT</div>
+          <div>
+            <PadronLookup
+              clientId={client.id}
+              docInicial={client.dni}
+              ayuda={
+                client.dni
+                  ? "Con esto la factura sale identificada en vez de Consumidor Final."
+                  : "Cargalo una vez y las facturas de esta clienta salen identificadas."
+              }
+            />
+          </div>
         </div>
       </div>
 

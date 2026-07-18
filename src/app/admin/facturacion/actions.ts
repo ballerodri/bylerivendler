@@ -8,6 +8,7 @@ import { isStaffUser } from "@/lib/staff"
 import { emitirFactura } from "@/lib/arca/invoice-service"
 import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
 import { pesosToCents } from "@/lib/arca/format"
+import { docTipoParaDocumento, normalizarDoc } from "@/lib/arca/padron-parse"
 
 async function requireStaff() {
   const supabase = await createSsrClient()
@@ -58,9 +59,25 @@ export async function emitirFacturaManual(
   }
 }
 
+// Datos del receptor traídos del padrón de ARCA en la pantalla de facturar.
+// Son OPCIONALES: si no vienen, la factura sale exactamente igual que antes de
+// que existiera la búsqueda en el padrón.
+export interface ReceptorOverride {
+  doc?: string | null
+  condIva?: number | null
+  nombre?: string | null
+}
+
+// Códigos válidos de condición frente al IVA del receptor (RG 5616). Si llega
+// cualquier otra cosa la ignoramos y usamos el default de siempre: nunca
+// mandamos a ARCA un código que no reconocemos.
+const COND_IVA_VALIDAS = new Set([1, 4, 5, 6, 7, 8, 9, 10, 13, 15, 16])
+const COND_IVA_DEFAULT = 5 // Consumidor Final
+
 export async function emitirFacturaTurno(
   appointmentId: string,
-  identificar: boolean
+  identificar: boolean,
+  receptor?: ReceptorOverride
 ): Promise<{ ok: boolean; error?: string; id?: string }> {
   await requireStaff()
   const admin = adminClient()
@@ -97,16 +114,34 @@ export async function emitirFacturaTurno(
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
   const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"
 
-  const useDni = identificar && !!client?.dni
+  // El documento del receptor sale, por orden: del que se buscó en el padrón
+  // en esta misma pantalla, o del que está guardado en la ficha si se tildó
+  // "identificar". Sin ninguno de los dos, Consumidor Final (como siempre).
+  const docPadron = normalizarDoc(receptor?.doc)
+  const docFicha = identificar && client?.dni ? normalizarDoc(client.dni) : ""
+  const docReceptor = docPadron || docFicha
+  // El tipo ya no está fijo en 96: se deduce del largo (11 = CUIT, si no DNI).
+  const docTipo = docTipoParaDocumento(docReceptor)
+
+  // La condición del padrón sólo vale si además tenemos su documento: no tiene
+  // sentido facturarle "Responsable Inscripto" a un Consumidor Final sin CUIT.
+  const condIva =
+    docPadron && receptor?.condIva != null && COND_IVA_VALIDAS.has(receptor.condIva)
+      ? receptor.condIva
+      : COND_IVA_DEFAULT
+
+  const nombreFicha = client ? `${client.first_name} ${client.last_name}` : undefined
+  const nombreReceptor = receptor?.nombre?.trim() || nombreFicha
+
   try {
     const factura = await emitirFactura({
       clientId: client?.id,
       appointmentId,
       concepto: 2,
-      docTipo: useDni ? 96 : 99,
-      docNro: useDni ? client!.dni! : "0",
-      receptorNombre: client ? `${client.first_name} ${client.last_name}` : undefined,
-      condIvaReceptor: 5,
+      docTipo,
+      docNro: docTipo === 99 ? "0" : docReceptor,
+      receptorNombre: nombreReceptor,
+      condIvaReceptor: condIva,
       totalCents: appt.total_cents,
       descripcion,
     })

@@ -10,6 +10,7 @@ export interface ArcaConfig {
   key: string
   wsaaUrl: string
   wsfeUrl: string
+  padronUrl: string
   emisor: {
     razonSocial: string
     domicilio: string
@@ -22,10 +23,13 @@ const URLS = {
   homologacion: {
     wsaa: "https://wsaahomo.afip.gov.ar/ws/services/LoginCms?wsdl",
     wsfe: "https://wswhomo.afip.gov.ar/wsfev1/service.asmx?WSDL",
+    // Padrón A13 (ws_sr_padron_a13): consulta de datos de una persona.
+    padron: "https://awshomo.afip.gov.ar/sr-padron/webservices/personaServiceA13?WSDL",
   },
   produccion: {
     wsaa: "https://wsaa.afip.gov.ar/ws/services/LoginCms?wsdl",
     wsfe: "https://servicios1.afip.gov.ar/wsfev1/service.asmx?WSDL",
+    padron: "https://aws.afip.gov.ar/sr-padron/webservices/personaServiceA13?WSDL",
   },
 } as const
 
@@ -46,6 +50,7 @@ export function getArcaConfig(): ArcaConfig {
     key: required("ARCA_KEY").replace(/\\n/g, "\n"),
     wsaaUrl: URLS[env].wsaa,
     wsfeUrl: URLS[env].wsfe,
+    padronUrl: URLS[env].padron,
     emisor: {
       razonSocial: process.env.ARCA_RAZON_SOCIAL ?? "By Leri Vendler",
       domicilio: process.env.ARCA_DOMICILIO ?? "",

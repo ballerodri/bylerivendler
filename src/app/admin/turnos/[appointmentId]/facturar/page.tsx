@@ -20,7 +20,7 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
 
   const { data: appt } = await admin
     .from("appointments")
-    .select(`total_cents, pack_purchase_id, client:clients(first_name, last_name, dni, email), appointment_services(service:services(name))`)
+    .select(`total_cents, pack_purchase_id, client:clients(id, first_name, last_name, dni, email), appointment_services(service:services(name))`)
     .eq("id", appointmentId)
     .maybeSingle()
 
@@ -40,7 +40,7 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
     )
   }
 
-  const client = appt.client as unknown as { first_name: string; last_name: string; dni: string | null; email: string | null } | null
+  const client = appt.client as unknown as { id: string; first_name: string; last_name: string; dni: string | null; email: string | null } | null
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
   const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"
 
@@ -72,7 +72,12 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
         </div>
       </div>
 
-      <FacturarForm appointmentId={appointmentId} tieneDni={!!client?.dni} />
+      <FacturarForm
+        appointmentId={appointmentId}
+        tieneDni={!!client?.dni}
+        dni={client?.dni ?? null}
+        clientId={client?.id}
+      />
     </>
   )
 }
