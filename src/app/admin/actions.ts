@@ -12,6 +12,7 @@ import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot 
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { minStartForNextSession, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { convertBlockedSlots, needsBlockedConversion } from "@/lib/servicios/blocked-slots-convert"
 import { fetchDayAvailability, chooseStaffForSlot } from "@/app/reserva/actions"
 
 const StatusSchema = z.enum([
@@ -965,22 +966,145 @@ export async function updateServiceStaff(
 
 // ─── Horarios ─────────────────────────────────────────────────────────────────
 
+/**
+ * Guarda la grilla de horarios Y, si a algún día le cambió el PASO (ej. de 1
+ * hora a 30 min), reacomoda en la MISMA operación las horas bloqueadas del
+ * personal de ese día.
+ *
+ * Por qué: cada fila de `staff_blocked_slots` significa "no disponible durante
+ * UN PASO desde ese horario", y el paso sale de la grilla del día. Si la grilla
+ * cambia y las filas no, la disponibilidad pasa a mentir (alguien figura libre
+ * sin estarlo → doble reserva, o al revés → se pierden turnos).
+ *
+ * TODO O NADA sin transacciones (supabase-js no las expone), así que se
+ * compensa a mano: primero leemos las filas viejas y las guardamos en memoria;
+ * después borramos/insertamos los bloqueos; y RECIÉN AL FINAL el upsert de
+ * `business_hours`, que es el que "activa" la grilla nueva. Si algo falla en el
+ * medio, restauramos las filas viejas y no guardamos los horarios: mejor no
+ * cambiar nada que dejar la agenda mintiendo.
+ */
 export async function updateBusinessHours(
   hours: { day_of_week: number; is_open: boolean; slots: string[] }[]
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; droppedBlockedSlots?: number }> {
   await requireStaff()
   const admin = adminClient()
 
-  for (const h of hours) {
-    const { error } = await admin
-      .from("business_hours")
-      .upsert({ day_of_week: h.day_of_week, is_open: h.is_open, slots: h.slots })
-    if (error) return { ok: false, error: error.message }
+  // 1. La grilla ACTUAL: de acá sale el paso VIEJO de cada día, o sea cuánto
+  //    duraba hasta ahora cada casilla bloqueada.
+  const { data: currentRows, error: curErr } = await admin
+    .from("business_hours")
+    .select("day_of_week, slots")
+  if (curErr) return { ok: false, error: curErr.message }
+  const oldSlotsByDay = new Map<number, string[]>(
+    (currentRows ?? []).map((r: { day_of_week: number; slots: string[] | null }) => [
+      r.day_of_week,
+      r.slots ?? [],
+    ])
+  )
+
+  // 2. Sólo los días cuyo paso cambió. Al resto no se le toca NINGUNA fila.
+  const daysToConvert = hours.filter((h) =>
+    needsBlockedConversion(oldSlotsByDay.get(h.day_of_week) ?? [], h.slots)
+  )
+
+  // Las filas viejas quedan acá para poder restaurarlas si algo sale mal.
+  let previousBlocked: { staff_id: string; day_of_week: number; slot: string }[] = []
+  const converted: { staff_id: string; day_of_week: number; slot: string }[] = []
+  let dropped = 0
+  let blockedTouched = false
+
+  if (daysToConvert.length > 0) {
+    const dows = daysToConvert.map((d) => d.day_of_week)
+
+    const { data: blockedRows, error: blkErr } = await admin
+      .from("staff_blocked_slots")
+      .select("staff_id, day_of_week, slot")
+      .in("day_of_week", dows)
+    if (blkErr) return { ok: false, error: blkErr.message }
+    previousBlocked = blockedRows ?? []
+
+    for (const day of daysToConvert) {
+      const rowsOfDay = previousBlocked
+        .filter((r) => r.day_of_week === day.day_of_week)
+        .map((r) => ({ staff_id: r.staff_id, slot: r.slot }))
+      const res = convertBlockedSlots(
+        oldSlotsByDay.get(day.day_of_week) ?? [],
+        day.slots,
+        rowsOfDay
+      )
+      dropped += res.dropped
+      for (const r of res.rows) {
+        converted.push({ staff_id: r.staff_id, day_of_week: day.day_of_week, slot: r.slot })
+      }
+    }
+
+    if (dropped > 0) {
+      console.warn(
+        `[updateBusinessHours] ${dropped} hora(s) bloqueada(s) del personal no entran en la grilla nueva y se descartaron (días ${dows.join(", ")}).`
+      )
+    }
+
+    // 3. Parte destructiva: reemplazamos las filas de ESOS días.
+    const { error: delErr } = await admin
+      .from("staff_blocked_slots")
+      .delete()
+      .in("day_of_week", dows)
+    if (delErr) return { ok: false, error: delErr.message }
+    blockedTouched = true
+
+    if (converted.length > 0) {
+      const { error: insErr } = await admin.from("staff_blocked_slots").insert(converted)
+      if (insErr) return { ok: false, error: await restoreBlocked(admin, dows, previousBlocked, insErr.message) }
+    }
+  }
+
+  // 4. Recién ahora la grilla nueva. Un solo upsert con todos los días: si
+  //    falla, no queda ningún día a medio guardar.
+  const { error } = await admin.from("business_hours").upsert(
+    hours.map((h) => ({ day_of_week: h.day_of_week, is_open: h.is_open, slots: h.slots }))
+  )
+  if (error) {
+    if (blockedTouched) {
+      const dows = daysToConvert.map((d) => d.day_of_week)
+      return { ok: false, error: await restoreBlocked(admin, dows, previousBlocked, error.message) }
+    }
+    return { ok: false, error: error.message }
   }
 
   revalidatePath("/admin/horarios")
   revalidatePath("/reserva")
-  return { ok: true }
+  if (blockedTouched) {
+    revalidatePath("/admin/staff")
+    revalidatePath("/admin")
+  }
+  return { ok: true, ...(dropped > 0 ? { droppedBlockedSlots: dropped } : {}) }
+}
+
+/**
+ * Compensación del "todo o nada": vuelve a dejar los bloqueos de esos días como
+ * estaban antes. Devuelve el mensaje de error a mostrar (si la restauración
+ * también falla, avisa que hay que revisar Admin → Personal a mano).
+ */
+async function restoreBlocked(
+  admin: ReturnType<typeof adminClient>,
+  dows: number[],
+  previous: { staff_id: string; day_of_week: number; slot: string }[],
+  originalError: string
+): Promise<string> {
+  const { error: delErr } = await admin
+    .from("staff_blocked_slots")
+    .delete()
+    .in("day_of_week", dows)
+  const insErr =
+    !delErr && previous.length > 0
+      ? (await admin.from("staff_blocked_slots").insert(previous)).error
+      : null
+
+  if (delErr || insErr) {
+    console.error("[updateBusinessHours] no se pudieron restaurar los bloqueos:", delErr ?? insErr)
+    return `${originalError}. Además no se pudieron restaurar las horas bloqueadas del personal: revisá Admin → Personal antes de tomar turnos.`
+  }
+  return `${originalError}. No se guardó nada: los horarios y las horas bloqueadas quedaron como estaban.`
 }
 
 // ─── Reglas de orden entre servicios ──────────────────────────────────────────
