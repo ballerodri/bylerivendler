@@ -73,9 +73,10 @@ export default function PackSessions({
     setError(null)
     // El input da hora ARGENTINA sin zona ("2026-07-14T15:00"); se convierte a
     // instante real con el mismo desfase que usa toda la app (UTC-3).
-    const iso = `${pasadaWhen}:00-03:00`
+    const cuando = new Date(`${pasadaWhen}:00-03:00`)
+    if (isNaN(cuando.getTime())) { setError("Fecha inválida."); return }
     startTransition(async () => {
-      const r = await registrarSesionPasada(purchase.id, new Date(iso).toISOString())
+      const r = await registrarSesionPasada(purchase.id, cuando.toISOString())
       if (r.ok) { setPasada(false); setPasadaWhen("") }
       else setError(r.error ?? "Error")
     })

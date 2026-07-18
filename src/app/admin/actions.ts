@@ -1870,8 +1870,11 @@ export async function registrarSesionPasada(
     appointment_services: { zones: ZoneSnapshot[] | null }[]
   }
   const allRows = (allExisting ?? []) as unknown as ExistingRow[]
-  const vivas = allRows.filter((r) => r.status !== "cancelled")
-  if (vivas.length >= pp.sessions_total)
+  // "No canceladas" — a propósito NO es `isAliveStatus`, que además excluye
+  // no_show: una sesión a la que la clienta no vino igual consumió su lugar.
+  // Mismo criterio que `schedulePackSession`.
+  const noCanceladas = allRows.filter((r) => r.status !== "cancelled")
+  if (noCanceladas.length >= pp.sessions_total)
     return { ok: false, error: "Este pack ya tiene todas sus sesiones registradas." }
 
   const startsAt = new Date(startsAtIso)
@@ -1880,6 +1883,10 @@ export async function registrarSesionPasada(
   // se agenda con "Elegir fecha", que sí chequea disponibilidad.
   if (startsAt.getTime() >= Date.now())
     return { ok: false, error: "Esto es para sesiones que YA se hicieron: elegí una fecha pasada." }
+  // Piso contra un error de tipeo (un año mal escrito): sin esto la sesión
+  // quedaría registrada en una fecha absurda y el pack igual se descontaría.
+  if (startsAt.getTime() < Date.now() - 365 * 24 * 3600 * 1000)
+    return { ok: false, error: "Esa fecha es de hace más de un año: revisá que esté bien escrita." }
 
   // Duración: la de otra sesión de este pack o, si no hay ninguna, la del
   // servicio cuando es 'fixed'. Un servicio por zona sin ninguna sesión de
@@ -1890,10 +1897,13 @@ export async function registrarSesionPasada(
   if (reference) durationMin = reference.duration_min
   else if (pricingMode === "fixed") durationMin = svc?.duration_min ?? 0
   else
+    // OJO con lo que se sugiere acá: "Nueva reserva" NO agrega una sesión a un
+    // pack ya vendido — al elegir un pack ahí se crea una compra NUEVA, o sea
+    // se le cobraría el pack dos veces.
     return {
       ok: false,
       error:
-        "Este pack es de un servicio por zona y sus zonas nunca quedaron registradas. Cargá primero una sesión desde 'Nueva reserva' (que sí pregunta las zonas) y después registrá esta.",
+        "Este pack es de un servicio por zona y sus zonas nunca quedaron registradas (se vendió sin crear ninguna sesión), así que no sabemos cuánto dura. Agendá una sesión como turno común y, al completarla en la agenda, elegí este pack para descontarla: eso registra las zonas. Después vas a poder registrar ésta.",
     }
   if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
 
@@ -1957,11 +1967,16 @@ export async function registrarSesionPasada(
   // los puntos, sin duplicar esa lógica acá. Si fallara, la sesión queda
   // creada como pendiente y se puede completar a mano desde la agenda.
   const done = await updateAppointmentStatus(appt.id, "completed")
-  if (!done.ok)
+  if (!done.ok) {
+    // La sesión SÍ quedó creada (pendiente): hay que refrescar la ficha para
+    // que se vea, o el salón no encuentra lo que tiene que arreglar.
+    revalidatePath(`/admin/clientas/${pp.client_id}`)
+    revalidatePath("/admin/turnos")
     return {
       ok: false,
-      error: `Se registró la sesión pero no pudimos marcarla completada (${done.error ?? "error"}). Completala desde la agenda.`,
+      error: `Se registró la sesión pero quedó pendiente (${done.error ?? "error"}). Completala desde la agenda, con el filtro "Pasados", para que descuente del pack.`,
     }
+  }
 
   revalidatePath(`/admin/clientas/${pp.client_id}`)
   revalidatePath("/admin/turnos")
