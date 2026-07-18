@@ -159,12 +159,17 @@ function LoggedInView({
             className="mt-2 text-2xl"
             style={{ fontFamily: "var(--font-serif)" }}
           >
+            {/* Esta página corre en el SERVIDOR (UTC en Vercel): sin pedir la
+                zona, a la clienta le figuraban 3 horas de más en su propio
+                turno. Hora argentina y 24h, como en toda la app. */}
             {new Date(nextAppt.starts_at).toLocaleString("es-AR", {
               weekday: "long",
               day: "numeric",
               month: "long",
               hour: "2-digit",
               minute: "2-digit",
+              hour12: false,
+              timeZone: "America/Argentina/Buenos_Aires",
             })}
           </p>
           <p className="mt-2 text-sm text-[#4a423d]">

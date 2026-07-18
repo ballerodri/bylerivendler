@@ -104,12 +104,17 @@ export default function RescheduleFlow({
   const slotsError = slotsResult && slotsResult.date === selectedDate ? slotsResult.error ?? null : null
   const selectedDateObj = selectedDate ? parseYmd(selectedDate) : null
 
+  // El turno es del salón: se muestra SIEMPRE en hora argentina, no en la del
+  // dispositivo. Sin fijarla, a una clienta de viaje (o con el reloj en otra
+  // zona) le figuraría un horario que no es el suyo.
   const fmtCurrent = currentDate.toLocaleString("es-AR", {
     weekday: "long",
     day: "numeric",
     month: "long",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
+    timeZone: "America/Argentina/Buenos_Aires",
   })
 
   const confirm = () => {
