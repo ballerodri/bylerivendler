@@ -3,12 +3,15 @@
 import { useState, useTransition, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { searchClients, createAdminBooking, type ClientSearchResult } from "../actions"
-import { fetchSequentialAvailability, type SlotResult } from "@/app/reserva/actions"
-import { fmtPrice } from "@/app/reserva/data"
-import type { ServiceOption } from "./page"
+import { createBooking, fetchSequentialAvailability, type SlotResult } from "@/app/reserva/actions"
+import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
+import { fmtPrice, slotToUtcMs, type BusinessHour } from "@/app/reserva/data"
+import { minStartForNextSession } from "@/lib/servicios/pack-sessions"
+import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-overlap"
+import type { ServiceOption, PackOption } from "./page"
 
 const TZ = "America/Argentina/Buenos_Aires"
-const STEPS = ["Cliente", "Servicios", "Fecha y hora", "Confirmar"]
+const STEPS = ["Cliente", "Qué reserva", "Fecha y hora", "Confirmar"]
 
 function todayAR(): string {
   return new Date().toLocaleDateString("sv", { timeZone: TZ })
@@ -25,11 +28,48 @@ function fmtDate(dateStr: string): string {
   })
 }
 
+/** Un instante (ms UTC) como "lunes 20 de julio · 14:00", hora de Argentina. */
+function fmtMoment(ms: number): string {
+  return new Date(ms).toLocaleString("es-AR", {
+    weekday: "long", day: "numeric", month: "long",
+    hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ,
+  })
+}
+
+/**
+ * ¿Esta clienta se queda sin el mail de confirmación? Sin email, o con el
+ * placeholder que el salón le pone a quien no dejó uno real: los dos casos son
+ * "sin email" para `sendGroupConfirmationEmail`.
+ */
+function sinEmail(email: string | null | undefined): boolean {
+  const e = (email ?? "").trim().toLowerCase()
+  return !e || e.endsWith("@noemail.local")
+}
+
 type SelectedClient =
   | { mode: "existing" } & ClientSearchResult
   | { mode: "new"; firstName: string; lastName: string; phone: string; email: string }
 
-export default function NuevaReservaForm({ services }: { services: ServiceOption[] }) {
+/**
+ * El email que viaja en el payload de `createBooking`. Sin uno real va el
+ * mismo placeholder que usa el resto del admin (`admin_created_…@noemail.local`):
+ * el motor exige un email válido, y ese dominio es el que el mail de
+ * confirmación reconoce como "sin email" y no le escribe a nadie.
+ */
+function emailForBooking(c: SelectedClient): string {
+  const raw = (c.email ?? "").trim().toLowerCase()
+  return raw || `admin_created_${Date.now()}@noemail.local`
+}
+
+export default function NuevaReservaForm({
+  services,
+  packs,
+  businessHours,
+}: {
+  services: ServiceOption[]
+  packs: PackOption[]
+  businessHours: BusinessHour[]
+}) {
   const router = useRouter()
   const [step, setStep] = useState(0)
 
@@ -41,7 +81,16 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
   const [newClient, setNewClient] = useState({ firstName: "", lastName: "", phone: "", email: "" })
   const [searchPending, startSearchTransition] = useTransition()
 
-  // Step 1 — Services
+  // Step 1 — Qué reserva (pack + tratamientos)
+  const [packId, setPackId] = useState<string | null>(null)
+  const [packZoneIds, setPackZoneIds] = useState<string[]>([])
+  // Fechas de las sesiones del pack (ISO), en orden. Se pueden dejar sesiones
+  // sin agendar (se agendan después desde la ficha de la clienta), pero la
+  // primera es obligatoria: `validatePackSlots` la exige. Se declara acá, con
+  // el resto del pack, aunque se elija recién en el paso "Fecha y hora".
+  const [packSlots, setPackSlots] = useState<string[]>([])
+  const [pickingIdx, setPickingIdx] = useState<number | null>(null)
+  const selectedPack = packs.find((p) => p.id === packId) ?? null
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [zoneSel, setZoneSel] = useState<Record<string, string[]>>({})
   const toggleZone = (serviceId: string, zoneId: string, single: boolean) =>
@@ -65,6 +114,40 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
   const [selectedSlot, setSelectedSlot] = useState<SlotResult | null>(null)
   const [slotsPending, startSlotsTransition] = useTransition()
 
+  // ── Selected service data ────────────────────────────────────────────────────
+  const selectedServices = services.filter((s) => selectedIds.has(s.id))
+  const hasServices = selectedIds.size > 0
+
+  // Zonas del pack: si el servicio del pack es "por producto"
+  // (`zone_selection: single`) se elige UNA y reemplaza; si no, se tildan
+  // hasta `zonesCount` (la misma regla que la reserva online).
+  const togglePackZone = (zoneId: string) => {
+    if (!selectedPack) return
+    setPackSlots([])
+    setSelectedSlot(null)
+    setPackZoneIds((prev) => {
+      if (selectedPack.zoneSelection === "single") return [zoneId]
+      if (prev.includes(zoneId)) return prev.filter((z) => z !== zoneId)
+      if (prev.length >= selectedPack.zonesCount) return prev
+      return [...prev, zoneId]
+    })
+  }
+
+  const choosePack = (p: PackOption | null) => {
+    setPackId(p?.id ?? null)
+    setPackZoneIds([])
+    setPackSlots([])
+    setSelectedSlot(null)
+  }
+
+  // Cuánto dura una sesión del pack: la suma de las zonas elegidas, o la
+  // duración del servicio. Es la misma cuenta que hace `planPack`.
+  const packDurationMin = selectedPack
+    ? selectedPack.pricingMode === "per_zone"
+      ? selectedPack.zones.filter((z) => packZoneIds.includes(z.id)).reduce((a, z) => a + z.durationMin, 0)
+      : selectedPack.serviceDurationMin
+    : 0
+
   // Step 3 — Confirm
   const [notes, setNotes] = useState("")
   const [submitPending, startSubmitTransition] = useTransition()
@@ -85,6 +168,70 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
     }, 300)
   }
 
+  // ── Sesiones del pack ────────────────────────────────────────────────────────
+  const setPackSlot = (idx: number, iso: string) => {
+    // Al cambiar una sesión se re-eligen las siguientes (su mínimo cambió).
+    setPackSlots((prev) => [...prev.slice(0, idx), iso])
+    setSelectedSlot(null)   // el horario de los tratamientos puede haber quedado pisado
+    setPickingIdx(null)
+  }
+  const clearPackFrom = (idx: number) => {
+    setPackSlots((prev) => prev.slice(0, idx))
+    setSelectedSlot(null)
+  }
+
+  /**
+   * Desde cuándo se puede elegir la sesión `idx`: nunca antes de que termine la
+   * anterior, y nunca antes del intervalo del pack. `validatePackSlots` (en el
+   * servidor) exige las dos cosas SIN excepción — a diferencia de agendar una
+   * sesión suelta desde la ficha, acá no hay "saltear el intervalo": ofrecerlo
+   * sería ofrecer un horario que el servidor rechaza al confirmar.
+   */
+  const minForPackSession = (idx: number): Date | null => {
+    if (idx === 0 || !selectedPack) return null
+    const prev = packSlots[idx - 1]
+    if (!prev) return null
+    const prevStart = new Date(prev)
+    const noOverlapMin = new Date(prevStart.getTime() + packDurationMin * 60_000)
+    const intervalMin = minStartForNextSession(prevStart, selectedPack.intervalDays)
+    return intervalMin.getTime() > noOverlapMin.getTime() ? intervalMin : noOverlapMin
+  }
+
+  // Los tramos que ya ocupan las sesiones del pack: los horarios de los
+  // tratamientos que se pisen con ellos no se ofrecen (misma regla estricta
+  // que `crossOverlapCheck`, que si no rechazaría la reserva al confirmar).
+  const packBlocks: BlockedInterval[] = selectedPack
+    ? packSlots.map((iso, i) => {
+        const startMs = new Date(iso).getTime()
+        return {
+          startMs,
+          endMs: startMs + packDurationMin * 60_000,
+          name: `Sesión ${i + 1} · ${selectedPack.name}`,
+        }
+      })
+    : []
+
+  /**
+   * La VENTANA REAL de la visita de tratamientos de un horario: del arranque
+   * hasta que termina la última pata según `slot.starts` (lo que resolvió el
+   * buscador, ya colocado en la grilla). Con huecos, la ventana es más larga
+   * que la suma de las duraciones — es la misma cuenta que hace el servidor.
+   */
+  const visitWindow = (slot: SlotResult): { startMs: number; endMs: number } => {
+    const startMs = slotToUtcMs(slot.date, slot.time)
+    const endMs = selectedServices.reduce(
+      (acc, s) => Math.max(acc, slotToUtcMs(slot.date, slot.starts[s.id] ?? slot.time) + effective(s).duration * 60_000),
+      startMs
+    )
+    return { startMs, endMs }
+  }
+
+  // El tramo que ya ocupan los tratamientos elegidos (si ya se eligió horario):
+  // ninguna sesión del pack puede caer ahí.
+  const treatmentBlocks: BlockedInterval[] = selectedSlot
+    ? [{ ...visitWindow(selectedSlot), name: "los tratamientos de esta compra" }]
+    : []
+
   // ── Load slots ───────────────────────────────────────────────────────────────
   const loadSlots = (d: string) => {
     setSelectedSlot(null)
@@ -94,7 +241,11 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
       .map((s) => ({ id: s.id, name: s.name, duration: effective(s).duration, staffId: "auto" }))
     if (!svcs.length) return
     startSlotsTransition(async () => {
-      const res = await fetchSequentialAvailability(svcs, d, 1, { enforceStaffServices: false })
+      // Con un pack en la compra, el turno lo escribe `createBooking`, que
+      // aplica `staff_services` a rajatabla: el buscador tiene que ser igual de
+      // estricto o terminaría ofreciendo horarios que el servidor rechaza. Sin
+      // pack, el camino es el de siempre (`createAdminBooking`, sin esa regla).
+      const res = await fetchSequentialAvailability(svcs, d, 1, { enforceStaffServices: !!selectedPack })
       setSlots(res.slotsForDate)
     })
   }
@@ -106,20 +257,30 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   const goNext = () => {
-    if (step === 1) loadSlots(date)
+    if (step === 1) { setPickingIdx(null); loadSlots(date) }
     setStep((s) => s + 1)
   }
-  const goBack = () => setStep((s) => s - 1)
-
-  // ── Selected service data ────────────────────────────────────────────────────
-  const selectedServices = services.filter((s) => selectedIds.has(s.id))
+  const goBack = () => { setPickingIdx(null); setStep((s) => s - 1) }
 
   // ── Validation ───────────────────────────────────────────────────────────────
   const clientValid = selectedClient !== null ||
     (clientMode === "new" && newClient.firstName.trim() && newClient.lastName.trim() && newClient.phone.trim())
-  const servicesValid = selectedIds.size > 0 &&
-    selectedServices.every((s) => s.pricing_mode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1)
-  const slotValid = selectedSlot !== null
+  // `planPack` exige EXACTAMENTE `zones_count` zonas. Un pack por zona con
+  // `zones_count` en 0 está mal cargado y no se puede vender por ningún
+  // camino: se frena acá en vez de fallar recién al confirmar.
+  const packZonesOk = !selectedPack ||
+    selectedPack.pricingMode !== "per_zone" ||
+    (selectedPack.zonesCount > 0 && packZoneIds.length === selectedPack.zonesCount)
+  // Con un pack en la compra escribe `createBooking`, que es fail-closed: un
+  // tratamiento sin ninguna profesional en `staff_services` haría fallar la
+  // compra ENTERA al confirmar. Se frena acá, con el motivo a la vista.
+  const treatmentsBookableOk = !selectedPack || selectedServices.every((s) => s.bookable)
+  const servicesValid = (hasServices || selectedPack !== null) &&
+    selectedServices.every((s) => s.pricing_mode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1) &&
+    packZonesOk && treatmentsBookableOk
+  // La 1ª sesión del pack es obligatoria; el horario de los tratamientos, sólo
+  // si hay tratamientos.
+  const slotValid = (!selectedPack || packSlots.length > 0) && (!hasServices || selectedSlot !== null)
 
   // ── Submit ───────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
@@ -130,16 +291,69 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
           ? { mode: "new", ...newClient }
           : null
       )
-      if (!client || !selectedSlot) return
-
-      const orderedIds = selectedSlot.serviceOrder
-      const resolvedStaff = selectedSlot.resolvedStaff
+      if (!client) return
+      if (hasServices && !selectedSlot) return
 
       // Build startsAt ISO from slot date + time (Argentina)
-      const [y, m, d] = selectedSlot.date.split("-").map(Number)
-      const [hh, mm] = selectedSlot.time.split(":").map(Number)
-      // Convert Argentina time to UTC (AR is UTC-3)
-      const startsAt = new Date(Date.UTC(y, m - 1, d, hh + 3, mm)).toISOString()
+      const startsAt = selectedSlot
+        ? new Date(slotToUtcMs(selectedSlot.date, selectedSlot.time)).toISOString()
+        : null
+
+      // ── Con pack: el MISMO motor que la reserva online ──────────────────────
+      // `createBooking` en modo admin registra la compra del pack y los turnos
+      // todo-o-nada, agrupados en una sola compra, y le manda a la clienta el
+      // mail de confirmación de siempre.
+      if (selectedPack) {
+        const packFirst = packSlots[0]
+        if (!packFirst) return
+        const result = await createBooking({
+          adminMode: true,
+          savedClientId: client.mode === "existing" ? client.id : undefined,
+          client: {
+            firstName: client.mode === "existing" ? client.first_name : client.firstName,
+            lastName: client.mode === "existing" ? client.last_name : client.lastName,
+            // Sin email real va el mismo placeholder que usa el resto del admin:
+            // `sendGroupConfirmationEmail` lo trata como "sin email" y no manda
+            // nada (el paso "Confirmar" ya avisó). Para una clienta existente
+            // estos datos ni se usan (manda `savedClientId`), pero el motor los
+            // pide igual, así que se mandan los suyos y no los de nadie más.
+            email: emailForBooking(client),
+            // El motor pide un teléfono; una ficha vieja puede no tenerlo. Con
+            // `savedClientId` no se guarda en ningún lado (la ficha ya existe).
+            phone: client.phone?.trim() || "-",
+            isExisting: client.mode === "existing",
+          },
+          packId: selectedPack.id,
+          packZoneIds: selectedPack.pricingMode === "per_zone" ? packZoneIds : undefined,
+          packSlots,
+          // La profesional la resuelve el motor sesión por sesión (el asistente
+          // no la pide) y el pack NUNCA se encadena con los tratamientos desde
+          // el admin: cada parte va en su propia fecha.
+          packStaff: "auto",
+          packChainedFirst: false,
+          // Sin tratamientos va `[]`: el schema lo acepta porque hay pack.
+          serviceIds: hasServices ? Array.from(selectedIds) : [],
+          serviceOrder: hasServices ? selectedSlot!.serviceOrder : undefined,
+          resolvedStaff: hasServices ? selectedSlot!.resolvedStaff : undefined,
+          zoneSelections: Object.fromEntries(
+            selectedServices.filter((s) => s.pricing_mode === "per_zone").map((s) => [s.id, zoneSel[s.id] ?? []])
+          ),
+          // Sin tratamientos no hay cadena que arrancar: el motor no lo usa,
+          // pero el schema lo exige, así que va la 1ª sesión del pack.
+          startsAt: startsAt ?? packFirst,
+          proHint: "auto",
+          // El salón cobra en persona: el turno nace saldado, no señado.
+          payChoice: "full",
+        })
+        if (result.ok) router.push("/admin/turnos")
+        else setSubmitError(result.error)
+        return
+      }
+
+      // ── Sólo tratamientos: el camino de siempre, sin tocar ──────────────────
+      if (!selectedSlot || !startsAt) return
+      const orderedIds = selectedSlot.serviceOrder
+      const resolvedStaff = selectedSlot.resolvedStaff
 
       const result = await createAdminBooking({
         clientId: client.mode === "existing" ? client.id : undefined,
@@ -166,6 +380,38 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
 
   const totalMin = selectedServices.reduce((a, s) => a + effective(s).duration, 0)
   const totalCents = selectedServices.reduce((a, s) => a + effective(s).priceCents, 0)
+  // El pack se cobra UNA vez (su precio total), sin importar cuántas sesiones
+  // se agenden ahora: las que queden sin agendar ya están pagas.
+  const grandTotalCents = totalCents + (selectedPack?.priceCents ?? 0)
+
+  // ── El itinerario: sesiones del pack + tratamientos, en orden cronológico ────
+  // El horario de cada tratamiento sale de `slot.starts` (lo que resolvió el
+  // buscador, ya colocado en la grilla), no de encadenarlos por minutos: es lo
+  // MISMO que va a escribir el servidor.
+  const itinerary: { startMs: number; label: string; durationMin: number; priceCents: number | null }[] = [
+    ...(selectedPack
+      ? packSlots.map((iso, i) => ({
+          startMs: new Date(iso).getTime(),
+          label: `Sesión ${i + 1} de ${selectedPack.sessions} · ${selectedPack.name}`,
+          durationMin: packDurationMin,
+          priceCents: i === 0 ? selectedPack.priceCents : 0,
+        }))
+      : []),
+    ...(selectedSlot
+      ? selectedSlot.serviceOrder
+          .map((id) => selectedServices.find((s) => s.id === id))
+          .filter((s): s is ServiceOption => Boolean(s))
+          .map((s) => ({
+            startMs: slotToUtcMs(selectedSlot.date, selectedSlot.starts[s.id] ?? selectedSlot.time),
+            label: s.name,
+            durationMin: effective(s).duration,
+            priceCents: effective(s).priceCents,
+          }))
+      : []),
+  ].sort((a, b) => a.startMs - b.startMs)
+
+  // Cuántas sesiones del pack quedan para agendar después, desde la ficha.
+  const packPendingSessions = selectedPack ? selectedPack.sessions - packSlots.length : 0
 
   // ── Grouped services ─────────────────────────────────────────────────────────
   const byCategory = services.reduce<Record<string, ServiceOption[]>>((acc, s) => {
@@ -180,6 +426,15 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
     : clientMode === "new" && newClient.firstName
       ? `${newClient.firstName} ${newClient.lastName}`
       : null
+
+  // El email al que iría la confirmación (la clienta elegida, o la que se está
+  // cargando). `null` = todavía no hay clienta.
+  const clientEmail = selectedClient
+    ? selectedClient.email
+    : clientMode === "new" && newClient.firstName
+      ? newClient.email
+      : null
+  const avisaSinEmail = clientLabel !== null && sinEmail(clientEmail)
 
   return (
     <div>
@@ -334,12 +589,105 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
           </div>
         )}
 
-        {/* ── Step 1: Services ── */}
+        {/* ── Step 1: Qué reserva (packs + tratamientos) ── */}
         {step === 1 && (
           <div>
             <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 20 }}>
-              ¿Qué servicios?
+              ¿Qué reserva?
             </h3>
+
+            {packs.length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                  Packs
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {packs.map((p) => {
+                    const isSel = packId === p.id
+                    return (
+                      <div key={p.id}>
+                        <label
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12,
+                            cursor: p.bookable ? "pointer" : "not-allowed",
+                            padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                            background: isSel ? "var(--linen)" : "transparent",
+                            border: `1px solid ${isSel ? "var(--gold)" : "var(--line)"}`,
+                            opacity: p.bookable ? 1 : 0.55,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            disabled={!p.bookable}
+                            onChange={(e) => choosePack(e.target.checked ? p : null)}
+                            style={{ width: 15, height: 15 }}
+                          />
+                          <span style={{ flex: 1 }}>
+                            <strong>{p.name}</strong>
+                            <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{p.serviceName}</span>
+                          </span>
+                          <span style={{ color: "var(--ink-mute)" }}>
+                            {p.sessions} sesiones{p.intervalDays ? ` · cada ${p.intervalDays} días` : ""}
+                          </span>
+                          <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(p.priceCents / 100)}</span>
+                        </label>
+                        {!p.bookable && (
+                          <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "4px 0 0 34px" }}>
+                            Este pack no tiene ninguna profesional asignada a “{p.serviceName}”: asignala en
+                            Personal antes de venderlo.
+                          </p>
+                        )}
+                        {isSel && p.pricingMode === "per_zone" && (() => {
+                          const single = p.zoneSelection === "single"
+                          const atLimit = packZoneIds.length >= p.zonesCount
+                          return (
+                            <div style={{ paddingLeft: 34, display: "flex", flexDirection: "column", gap: 6, marginTop: 4, marginBottom: 4 }}>
+                              <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                                {single ? "Elegí un producto:" : `Elegí ${p.zonesCount} zona(s) para el pack:`}
+                              </span>
+                              {p.zones.map((z) => {
+                                const checked = packZoneIds.includes(z.id)
+                                return (
+                                  <label
+                                    key={z.id}
+                                    style={{
+                                      display: "flex", alignItems: "center", gap: 8, fontSize: 13,
+                                      cursor: "pointer", opacity: !single && !checked && atLimit ? 0.5 : 1,
+                                    }}
+                                  >
+                                    <input
+                                      type={single ? "radio" : "checkbox"}
+                                      name={single ? `nr-packzone-${p.id}` : undefined}
+                                      checked={checked}
+                                      disabled={!single && !checked && atLimit}
+                                      onChange={() => togglePackZone(z.id)}
+                                      style={{ width: 15, height: 15 }}
+                                    />
+                                    <span>{z.name} · {z.durationMin} min</span>
+                                  </label>
+                                )
+                              })}
+                              <span style={{ fontSize: 12, color: p.zonesCount > 0 ? "var(--ink-mute)" : "#8c463c" }}>
+                                {p.zonesCount <= 0
+                                  ? "Este pack no tiene configurada la cantidad de zonas: revisalo en Packs."
+                                  : packZoneIds.length === p.zonesCount
+                                    ? `${packDurationMin} min por sesión`
+                                    : `Elegí ${p.zonesCount - packZoneIds.length} más`}
+                              </span>
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+              Tratamientos
+            </p>
             {Object.entries(byCategory).map(([cat, svcs]) => (
               <div key={cat} style={{ marginBottom: 20 }}>
                 <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
@@ -374,6 +722,12 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                         <span style={{ color: "var(--ink-mute)" }}>{s.duration_min} min</span>
                         <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(s.price_cents / 100)}</span>
                       </label>
+                      {selectedPack && selectedIds.has(s.id) && !s.bookable && (
+                        <p style={{ fontSize: 12, color: "#8c463c", margin: "4px 0 0 34px" }}>
+                          “{s.name}” no tiene ninguna profesional asignada: no se puede sumar a una compra
+                          con pack. Sacalo, o cargá el turno aparte (sin pack).
+                        </p>
+                      )}
                       {s.pricing_mode === "per_zone" && selectedIds.has(s.id) && (() => {
                         const single = s.zone_selection === "single"
                         return (
@@ -410,9 +764,19 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                 </div>
               </div>
             ))}
-            {selectedIds.size > 0 && (
+            {(selectedIds.size > 0 || selectedPack) && (
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 13, color: "var(--ink-mute)" }}>
-                {selectedIds.size} servicio{selectedIds.size > 1 ? "s" : ""} · {totalMin} min · {fmtPrice(totalCents / 100)}
+                {selectedPack && (
+                  <div>{selectedPack.name} · {selectedPack.sessions} sesiones · {fmtPrice(selectedPack.priceCents / 100)}</div>
+                )}
+                {selectedIds.size > 0 && (
+                  <div>
+                    {selectedIds.size} servicio{selectedIds.size > 1 ? "s" : ""} · {totalMin} min · {fmtPrice(totalCents / 100)}
+                  </div>
+                )}
+                {selectedPack && selectedIds.size > 0 && (
+                  <div style={{ color: "var(--ink)", marginTop: 4 }}>Total · {fmtPrice(grandTotalCents / 100)}</div>
+                )}
               </div>
             )}
           </div>
@@ -424,40 +788,150 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
             <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 20 }}>
               ¿Cuándo?
             </h3>
-            <input
-              type="date"
-              className="adm-select"
-              value={date}
-              min={todayAR()}
-              onChange={(e) => handleDateChange(e.target.value)}
-              style={{ fontSize: 14, padding: "8px 12px", marginBottom: 20 }}
-            />
-            {slotsPending && (
-              <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>Buscando horarios…</p>
-            )}
-            {!slotsPending && slots.length === 0 && date && (
-              <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>
-                Sin disponibilidad para el {fmtDate(date)}. Elegí otro día.
-              </p>
-            )}
-            {!slotsPending && slots.length > 0 && (
-              <>
-                <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
-                  {fmtDate(date)} · {slots.length} horario{slots.length > 1 ? "s" : ""} disponible{slots.length > 1 ? "s" : ""}
+
+            {/* ── Las sesiones del pack, cada una con su fecha ── */}
+            {selectedPack && (
+              <div style={{ marginBottom: 28 }}>
+                <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                  {selectedPack.name}
                 </p>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {slots.map((slot) => (
-                    <button
-                      key={slot.time}
-                      onClick={() => setSelectedSlot(slot)}
-                      className={`adm-btn ${selectedSlot?.time === slot.time ? "adm-btn--primary" : ""}`}
-                      style={{ fontSize: 13, minWidth: 64 }}
-                    >
-                      {slot.time}
-                    </button>
-                  ))}
-                </div>
-              </>
+                {pickingIdx !== null ? (
+                  <div>
+                    <p style={{ fontSize: 13, marginBottom: 10 }}>
+                      Sesión {pickingIdx + 1} de {selectedPack.sessions}
+                      {selectedPack.intervalDays && pickingIdx > 0 ? (
+                        <span style={{ color: "var(--ink-mute)" }}>
+                          {" "}· al menos {selectedPack.intervalDays} días después de la anterior
+                        </span>
+                      ) : null}
+                    </p>
+                    <PackSessionPicker
+                      businessHours={businessHours}
+                      durationMin={packDurationMin}
+                      proHint="auto"
+                      // Con el servicio del pack: la MISMA regla estricta de
+                      // `staff_services` que aplica `planPack` al confirmar (la
+                      // ficha de la clienta pasa `null` porque ahí agenda
+                      // `schedulePackSession`, que no la aplica).
+                      serviceId={selectedPack.serviceId}
+                      minDate={minForPackSession(pickingIdx)}
+                      // No ofrecer un horario que se pise con lo que ya se
+                      // eligió para esta misma compra (las sesiones anteriores
+                      // o los tratamientos): `crossOverlapCheck` lo rechazaría.
+                      blockedIntervals={[...packBlocks, ...treatmentBlocks]}
+                      onPick={(iso) => setPackSlot(pickingIdx, iso)}
+                      onCancel={() => setPickingIdx(null)}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {Array.from({ length: selectedPack.sessions }).map((_, i) => {
+                      const iso = packSlots[i]
+                      // No se puede elegir la 3ª sin la 2ª: el mínimo de cada
+                      // sesión depende de la anterior.
+                      const blocked = i > 0 && !packSlots[i - 1]
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12,
+                            padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                            border: `1px solid ${iso ? "var(--gold)" : "var(--line)"}`,
+                            background: iso ? "var(--linen)" : "transparent",
+                          }}
+                        >
+                          <span style={{ color: "var(--ink-mute)", width: 80, flexShrink: 0 }}>Sesión {i + 1}</span>
+                          <span style={{ flex: 1 }}>
+                            {iso ? fmtMoment(new Date(iso).getTime()) : <span style={{ color: "var(--ink-mute)" }}>Sin agendar</span>}
+                          </span>
+                          {iso ? (
+                            <button className="adm-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => clearPackFrom(i)}>
+                              Quitar
+                            </button>
+                          ) : (
+                            <button
+                              className="adm-btn"
+                              style={{ fontSize: 11, padding: "4px 10px" }}
+                              disabled={blocked}
+                              onClick={() => setPickingIdx(i)}
+                            >
+                              Elegir fecha
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                    <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "4px 0 0" }}>
+                      Alcanza con agendar la primera: las que queden sin fecha se agendan después, desde la
+                      ficha de la clienta.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── Los tratamientos, con el buscador de siempre ── */}
+            {hasServices && pickingIdx === null && (
+              <div>
+                {selectedPack && (
+                  <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                    Tratamientos
+                  </p>
+                )}
+                <input
+                  type="date"
+                  className="adm-select"
+                  value={date}
+                  min={todayAR()}
+                  onChange={(e) => handleDateChange(e.target.value)}
+                  style={{ fontSize: 14, padding: "8px 12px", marginBottom: 20 }}
+                />
+                {slotsPending && (
+                  <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>Buscando horarios…</p>
+                )}
+                {!slotsPending && slots.length === 0 && date && (
+                  <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>
+                    Sin disponibilidad para el {fmtDate(date)}. Elegí otro día.
+                  </p>
+                )}
+                {!slotsPending && slots.length > 0 && (
+                  <>
+                    <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
+                      {fmtDate(date)} · {slots.length} horario{slots.length > 1 ? "s" : ""} disponible{slots.length > 1 ? "s" : ""}
+                    </p>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {slots.map((slot) => {
+                        // Un horario que se pisa con una sesión del pack no se
+                        // ofrece: `crossOverlapCheck` rechazaría la compra entera.
+                        const { startMs, endMs } = visitWindow(slot)
+                        const block = overlappingBlock(startMs, Math.round((endMs - startMs) / 60_000), packBlocks)
+                        if (block) {
+                          return (
+                            <span
+                              key={slot.time}
+                              className="adm-btn"
+                              title={`Se pisa con ${block.name}`}
+                              style={{ fontSize: 13, minWidth: 64, opacity: 0.45, cursor: "default", textAlign: "center" }}
+                            >
+                              {slot.time}
+                            </span>
+                          )
+                        }
+                        return (
+                          <button
+                            key={slot.time}
+                            onClick={() => setSelectedSlot(slot)}
+                            className={`adm-btn ${selectedSlot?.time === slot.time ? "adm-btn--primary" : ""}`}
+                            style={{ fontSize: 13, minWidth: 64 }}
+                          >
+                            {slot.time}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -466,7 +940,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
         {step === 3 && (
           <div>
             <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 20 }}>
-              Confirmar turno
+              {selectedPack ? "Confirmar la compra" : "Confirmar turno"}
             </h3>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
@@ -474,34 +948,94 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
                 <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Clienta</span>
                 <span><strong>{clientLabel}</strong></span>
               </div>
-              <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
-                <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Fecha</span>
-                <span>{selectedSlot ? `${fmtDate(selectedSlot.date)} · ${selectedSlot.time}` : "—"}</span>
-              </div>
-              <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
-                <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Servicios</span>
-                <span>
-                  {selectedServices.map((s) => s.name).join(", ")}
-                  <span style={{ color: "var(--ink-mute)", marginLeft: 6 }}>
-                    ({totalMin} min · {fmtPrice(totalCents / 100)})
+              {selectedPack && (
+                <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+                  <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Pack</span>
+                  <span>
+                    {selectedPack.name}
+                    <span style={{ color: "var(--ink-mute)", marginLeft: 6 }}>
+                      ({selectedPack.sessions} sesiones · {fmtPrice(selectedPack.priceCents / 100)})
+                    </span>
                   </span>
-                </span>
+                </div>
+              )}
+              {hasServices && (
+                <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+                  <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>
+                    {selectedPack ? "Tratamientos" : "Servicios"}
+                  </span>
+                  <span>
+                    {selectedServices.map((s) => s.name).join(", ")}
+                    <span style={{ color: "var(--ink-mute)", marginLeft: 6 }}>
+                      ({totalMin} min · {fmtPrice(totalCents / 100)})
+                    </span>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* El itinerario completo, en el mismo orden en que la clienta lo va a vivir. */}
+            <div style={{ marginBottom: 24 }}>
+              <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                Itinerario
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {itinerary.map((it, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 12, fontSize: 13,
+                      padding: "8px 12px", borderRadius: 8, border: "1px solid var(--line)",
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>
+                      <strong>{it.label}</strong>
+                      <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{fmtMoment(it.startMs)}</span>
+                    </span>
+                    <span style={{ color: "var(--ink-mute)" }}>{it.durationMin} min</span>
+                    <span style={{ color: "var(--ink-soft)" }}>
+                      {it.priceCents === 0 ? "incluida" : fmtPrice((it.priceCents ?? 0) / 100)}
+                    </span>
+                  </div>
+                ))}
+                {packPendingSessions > 0 && (
+                  <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "2px 0 0" }}>
+                    Quedan {packPendingSessions} sesión{packPendingSessions > 1 ? "es" : ""} sin agendar: se
+                    agendan después, desde la ficha de la clienta.
+                  </p>
+                )}
+              </div>
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)", fontSize: 13, display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: "var(--ink-mute)" }}>Total</span>
+                <strong>{fmtPrice(grandTotalCents / 100)}</strong>
               </div>
             </div>
 
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ display: "block", fontSize: 12, color: "var(--ink-mute)", marginBottom: 6 }}>
-                Notas internas (opcional)
-              </label>
-              <textarea
-                className="adm-select"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Indicaciones especiales, contexto del turno…"
-                rows={3}
-                style={{ width: "100%", fontSize: 13, padding: "8px 12px", resize: "vertical" }}
-              />
-            </div>
+            {avisaSinEmail && (
+              <p style={{ fontSize: 13, color: "#8c463c", marginBottom: 16 }}>
+                Esta clienta no tiene email: no va a recibir la confirmación.
+              </p>
+            )}
+
+            {/* Las notas internas sólo viajan por el camino de sólo tratamientos
+                (`createAdminBooking`). El motor compartido no las recibe, así que
+                con un pack en la compra no se ofrece el campo en vez de perderlas
+                en silencio. */}
+            {!selectedPack && (
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ display: "block", fontSize: 12, color: "var(--ink-mute)", marginBottom: 6 }}>
+                  Notas internas (opcional)
+                </label>
+                <textarea
+                  className="adm-select"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Indicaciones especiales, contexto del turno…"
+                  rows={3}
+                  style={{ width: "100%", fontSize: 13, padding: "8px 12px", resize: "vertical" }}
+                />
+              </div>
+            )}
 
             {submitError && (
               <p style={{ fontSize: 13, color: "#8c463c", marginBottom: 12 }}>{submitError}</p>
@@ -527,7 +1061,7 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
               disabled={
                 (step === 0 && !clientValid) ||
                 (step === 1 && !servicesValid) ||
-                (step === 2 && !slotValid)
+                (step === 2 && (!slotValid || pickingIdx !== null))
               }
               style={{ fontSize: 13 }}
             >
@@ -540,7 +1074,9 @@ export default function NuevaReservaForm({ services }: { services: ServiceOption
               disabled={submitPending}
               style={{ fontSize: 13 }}
             >
-              {submitPending ? "Creando turno…" : "Crear turno"}
+              {submitPending
+                ? (selectedPack ? "Creando la compra…" : "Creando turno…")
+                : (selectedPack ? "Confirmar compra" : "Crear turno")}
             </button>
           )}
         </div>
