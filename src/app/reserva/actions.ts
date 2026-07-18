@@ -74,6 +74,13 @@ const BookingInput = z.object({
   }),
 }).refine((v) => v.serviceIds.length > 0 || !!v.packId, {
   message: "Elegí al menos un servicio o un pack.",
+}).refine((v) => v.adminMode === true || (v.client.dob ?? "").length > 0, {
+  // La fecha de nacimiento es opcional SÓLO para el asistente del admin. La
+  // reserva pública la sigue exigiendo igual que siempre: sin este refine,
+  // haberla vuelto opcional en el schema habría aflojado también el camino
+  // público (que hoy rechaza el payload sin `dob`).
+  message: "Falta la fecha de nacimiento.",
+  path: ["client", "dob"],
 })
 
 export type CreateBookingInput = z.infer<typeof BookingInput>
@@ -965,7 +972,9 @@ export async function createBooking(
           phone: input.client.phone.trim(),
           date_of_birth: dob,
           marketing_consent: input.client.marketingConsent ?? false,
-          source: "web",
+          // Igual que el turno: una ficha que cargó el salón no figura como
+          // alta por la web (mismo criterio que `createAdminBooking`).
+          source: adminMode ? "admin" : "web",
         })
         .select("id")
         .single()
@@ -1124,7 +1133,10 @@ export async function createBooking(
         deposit_paid: adminMode ? true : p.depositPaid,
         paid_cents: 0,
         status: adminMode || redeem ? "confirmed" : "pending",
-        source: "web",
+        // De dónde salió la reserva: cargada por el salón vs. hecha por la
+        // clienta en la web. Las estadísticas cuentan por acá — una compra que
+        // cargó el salón no puede figurar como reserva online.
+        source: adminMode ? "admin" : "web",
         pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
         notes_internal: p.notesInternal,
         booking_group_id: bookingGroupId,
