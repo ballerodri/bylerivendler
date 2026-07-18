@@ -817,7 +817,18 @@ export default function NuevaReservaForm({
                         para una PÁGINA entera (alto de pantalla y fondo
                         propio), que acá dejarían un bloque beige gigante
                         dentro de la tarjeta del admin. */}
-                    <div className="blv" style={{ minHeight: 0, background: "transparent" }}>
+                    <div
+                      className="blv"
+                      style={{
+                        minHeight: 0,
+                        background: "transparent",
+                        // El calendario son 7 columnas de celdas CUADRADAS: en
+                        // una tarjeta ancha como la del admin cada celda se
+                        // agranda muchísimo. Se lo acota al ancho de columna
+                        // para el que fue diseñado (el de la reserva pública).
+                        maxWidth: 420,
+                      }}
+                    >
                     <PackSessionPicker
                       businessHours={businessHours}
                       durationMin={packDurationMin}
@@ -859,9 +870,24 @@ export default function NuevaReservaForm({
                             {iso ? fmtMoment(new Date(iso).getTime()) : <span style={{ color: "var(--ink-mute)" }}>Sin agendar</span>}
                           </span>
                           {iso ? (
-                            <button className="adm-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => clearPackFrom(i)}>
-                              Quitar
-                            </button>
+                            <>
+                              {/* "Cambiar" abre el calendario en ESTA sesión sin
+                                  borrarla antes: si se elige otra fecha se
+                                  reemplaza (y se re-eligen las siguientes, que
+                                  dependen de ella); si se cancela, queda como
+                                  estaba. Antes había que quitarla para poder
+                                  moverla. */}
+                              <button
+                                className="adm-btn"
+                                style={{ fontSize: 11, padding: "4px 10px" }}
+                                onClick={() => setPickingIdx(i)}
+                              >
+                                Cambiar
+                              </button>
+                              <button className="adm-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => clearPackFrom(i)}>
+                                Quitar
+                              </button>
+                            </>
                           ) : (
                             <button
                               className="adm-btn"

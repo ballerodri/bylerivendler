@@ -26,6 +26,8 @@ type ApptRow = {
   paid_cents: number
   pack_purchase_id: string | null
   booking_group_id: string | null
+  /** Cuándo salió el mail de confirmación de la compra (null = no salió). */
+  confirmation_email_sent_at: string | null
   client: { id: string; first_name: string; last_name: string; phone: string | null } | null
   appointment_services: ApptService[]
 }
@@ -47,6 +49,40 @@ function fmtTime(iso: string) {
 
 function fmtDateLong(iso: string) {
   return new Date(iso).toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long", timeZone: TZ })
+}
+
+/**
+ * Si a la clienta ya le salió el mail de confirmación de esta compra.
+ * `confirmation_email_sent_at` lo marca `sendGroupConfirmationEmail` al
+ * mandarlo (y lo suelta si el envío falla, para poder reintentar), así que
+ * "Mail enviado" quiere decir que Resend lo aceptó de verdad.
+ *
+ * Sólo se muestra en turnos confirmados: mientras están pendientes, que no
+ * haya salido es lo ESPERADO (sale recién al confirmar el último de la
+ * compra) y un cartelito de "sin mail" ahí sería ruido.
+ */
+function MailPill({ sentAt, status }: { sentAt: string | null; status: string }) {
+  if (status !== "confirmed" && status !== "in_progress" && status !== "completed") return null
+  if (sentAt) {
+    return (
+      <span
+        className="adm-pill"
+        title={`Enviado el ${new Date(sentAt).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ })}`}
+        style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}
+      >
+        Mail enviado
+      </span>
+    )
+  }
+  return (
+    <span
+      className="adm-pill"
+      title="Confirmá la compra de nuevo para reintentar el envío"
+      style={{ marginLeft: 6, background: "#f6ecdf", color: "#8a6a3c", fontSize: 10 }}
+    >
+      Sin mail
+    </span>
+  )
 }
 
 export default async function AdminTurnosPage({
@@ -71,6 +107,7 @@ export default async function AdminTurnosPage({
   let q = admin.from("appointments").select(
     `
       id, starts_at, status, duration_min, total_cents, paid_cents, pack_purchase_id, booking_group_id,
+      confirmation_email_sent_at,
       client:clients(id, first_name, last_name, phone),
       appointment_services(
         starts_at,
@@ -212,6 +249,7 @@ export default async function AdminTurnosPage({
           {facturadasSet.has(a.id) && (
             <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
           )}
+          <MailPill sentAt={a.confirmation_email_sent_at} status={a.status} />
         </div>
         <div className="adm-actions">
           {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
@@ -372,6 +410,7 @@ export default async function AdminTurnosPage({
               {STATUS_LABEL[first.status] ?? first.status}
             </span>
           )}
+          <MailPill sentAt={group.find((a) => a.confirmation_email_sent_at)?.confirmation_email_sent_at ?? null} status={first.status} />
         </div>
         <div className="adm-actions">
           {groupHasPending && first.booking_group_id && (
