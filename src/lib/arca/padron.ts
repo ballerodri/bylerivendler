@@ -5,6 +5,8 @@ import { createArcaSoapClient } from "./soap-client"
 import {
   MENSAJES,
   classifyPadronError,
+  elegirCuitParaDocumento,
+  mismoDocumento,
   normalizarDoc,
   parseIdPersonaList,
   parsePersona,
@@ -40,6 +42,26 @@ function paraLog(res: unknown): string {
   } catch {
     return String(res)
   }
+}
+
+const LLAVES_IMPUESTO = ["impuesto", "impuestos", "categoria", "categorias"]
+
+/**
+ * Busca en la respuesta cruda las listas de impuestos y categorías, vengan
+ * donde vengan. Es sólo para el log: de ahí sale de qué se dedujo la condición
+ * frente al IVA.
+ */
+function impuestosParaLog(raw: unknown, profundidad = 0): unknown[] {
+  if (raw == null || profundidad > 6) return []
+  if (Array.isArray(raw)) return raw.flatMap((i) => impuestosParaLog(i, profundidad + 1))
+  if (typeof raw !== "object") return []
+  const out: unknown[] = []
+  for (const [llave, valor] of Object.entries(raw as Record<string, unknown>)) {
+    if (llave === "metadata") continue
+    if (LLAVES_IMPUESTO.includes(llave)) out.push(valor)
+    else out.push(...impuestosParaLog(valor, profundidad + 1))
+  }
+  return out
 }
 
 /**
@@ -85,12 +107,23 @@ export async function consultarPadron(doc: string): Promise<PadronResult> {
         "getIdPersonaListByDocumento"
       )
       const cuits = parseIdPersonaList(lista)
-      if (cuits.length === 0) {
-        console.error("[padron] sin CUIT para el DNI", documento, "- respuesta:", paraLog(lista))
+      // De todos los números de 11 dígitos que trajo la respuesta nos quedamos
+      // SÓLO con los que llevan adentro el DNI buscado: el resto puede ser el
+      // CUIT del salón que ARCA nos devuelve de rebote o un id del pedido, y
+      // con ése terminaríamos facturándole a otra persona.
+      const elegido = elegirCuitParaDocumento(cuits, documento)
+      if (!elegido) {
+        console.error(
+          "[padron] sin CUIT propio para el DNI",
+          documento,
+          "- candidatos descartados:",
+          cuits.join(","),
+          "- respuesta:",
+          paraLog(lista)
+        )
         return { ok: false, kind: "no-encontrado", error: MENSAJES["no-encontrado"] }
       }
-      // Si hay más de uno (pasa con CUIT/CUIL duplicados) va el primero.
-      idPersona = cuits[0]
+      idPersona = elegido
     }
 
     const [res] = await conTimeout<unknown[]>(
@@ -102,11 +135,33 @@ export async function consultarPadron(doc: string): Promise<PadronResult> {
       console.error("[padron] respuesta sin persona reconocible:", paraLog(res))
       return { ok: false, kind: "no-encontrado", error: MENSAJES["no-encontrado"] }
     }
+    // Última barrera: que la persona que volvió siga siendo la que buscamos.
+    // Si el CUIT que usamos no era de ella (o el parseo agarró un documento de
+    // otro lado) preferimos "no encontrado" antes que emitir un CAE a nombre
+    // equivocado, que sólo se deshace con una nota de crédito.
+    if (!mismoDocumento(persona.doc, documento)) {
+      console.error(
+        `[padron] la persona devuelta (${persona.doc}) no coincide con lo buscado (${documento}) - respuesta:`,
+        paraLog(res)
+      )
+      return { ok: false, kind: "no-encontrado", error: MENSAJES["no-encontrado"] }
+    }
+
     if (!persona.nombre) {
       // Encontramos a alguien pero no le sacamos el nombre: el parseo se quedó
       // corto. Lo dejamos anotado con la respuesta cruda para poder corregirlo.
       console.error("[padron] persona sin nombre, revisar el parseo:", paraLog(res))
     }
+
+    // Log del camino feliz A PROPÓSITO: deducir la condición frente al IVA es
+    // la única suposición de todo esto que falla en silencio (sale una factura
+    // igual, con la condición equivocada). Dejando acá lo que dedujimos junto a
+    // los impuestos/categorías crudos, la primera clienta real que se facture
+    // alcanza para confirmar o corregir el mapeo sin tener que reproducir nada.
+    console.log(
+      `[padron] ok ${persona.doc} cond=${persona.condicionIva ?? "null"} (${persona.condicionIvaTexto ?? "sin dato"}) - impuestos/categorias:`,
+      paraLog(impuestosParaLog(res))
+    )
     return { ok: true, persona }
   } catch (e) {
     const kind = classifyPadronError(e)

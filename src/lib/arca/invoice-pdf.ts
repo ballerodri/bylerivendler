@@ -16,7 +16,7 @@ export async function loadInvoicePdfData(invoiceId: string): Promise<InvoicePdfD
   const { data: row } = await admin()
     .from("invoices")
     .select(
-      "pto_vta, cbte_nro, fecha_emision, cae, cae_vto, receptor_doc_tipo, receptor_doc_nro, receptor_nombre, descripcion, total_cents, qr_url, estado"
+      "pto_vta, cbte_nro, fecha_emision, cae, cae_vto, receptor_doc_tipo, receptor_doc_nro, receptor_nombre, receptor_cond_iva, descripcion, total_cents, qr_url, estado"
     )
     .eq("id", invoiceId)
     .maybeSingle()
@@ -39,6 +39,10 @@ export async function loadInvoicePdfData(invoiceId: string): Promise<InvoicePdfD
     caeVto: ddmmyyyy(row.cae_vto),
     receptorDoc: receptorDocLabel(row.receptor_doc_tipo, row.receptor_doc_nro),
     receptorNombre: row.receptor_nombre ?? "Consumidor Final",
+    // Las facturas viejas (anteriores a la columna) son todas Consumidor Final:
+    // en esa época la app mandaba 5 fijo. Por eso el null cae en 5 y no en
+    // "desconocido".
+    receptorCondIva: row.receptor_cond_iva ?? 5,
     descripcion: row.descripcion ?? "Servicios",
     totalCents: row.total_cents,
     qrUrl: row.qr_url,

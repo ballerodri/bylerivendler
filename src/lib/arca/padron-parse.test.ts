@@ -3,7 +3,9 @@ import {
   classifyPadronError,
   deducirCondicionIva,
   docTipoParaDocumento,
+  elegirCuitParaDocumento,
   etiquetaCondicionIva,
+  mismoDocumento,
   normalizarDoc,
   parseIdPersonaList,
   parsePersona,
@@ -36,6 +38,21 @@ describe("docTipoParaDocumento", () => {
 
   it("normaliza antes de medir el largo", () => {
     expect(docTipoParaDocumento("20-30.123.456-7")).toBe(80)
+  })
+
+  it("sólo el largo 11 es CUIT; el resto de los largos raros son DNI", () => {
+    expect(docTipoParaDocumento("6123456")).toBe(96) // 7
+    expect(docTipoParaDocumento("30123456")).toBe(96) // 8
+    expect(docTipoParaDocumento("3012345678")).toBe(96) // 10
+    expect(docTipoParaDocumento("20301234567")).toBe(80) // 11
+    expect(docTipoParaDocumento("203012345678")).toBe(96) // 12
+  })
+
+  it("la basura sin dígitos es Consumidor Final", () => {
+    expect(docTipoParaDocumento("abc")).toBe(99)
+    expect(docTipoParaDocumento("  ")).toBe(99)
+    expect(docTipoParaDocumento("-.-")).toBe(99)
+    expect(docTipoParaDocumento(undefined)).toBe(99)
   })
 })
 
@@ -234,12 +251,145 @@ describe("deducirCondicionIva", () => {
   })
 })
 
-describe("etiquetaCondicionIva", () => {
-  it("nombra los códigos conocidos", () => {
-    expect(etiquetaCondicionIva(1)).toBe("Responsable Inscripto")
-    expect(etiquetaCondicionIva(5)).toBe("Consumidor Final")
+describe("deducirCondicionIva — monotributista promovido (RG 5616 = 16)", () => {
+  // El error que motivó estos tests: devolvía 15, que en la tabla de ARCA es
+  // "IVA No Alcanzado". ARCA lo acepta igual en una Factura C, así que la
+  // factura salía con CAE real y la condición fiscal equivocada.
+  it("el trabajador independiente promovido es 16, NUNCA 15", () => {
+    const r = deducirCondicionIva({
+      impuesto: [
+        { idImpuesto: 20, descripcionImpuesto: "MONOTRIBUTO TRABAJADOR INDEPENDIENTE PROMOVIDO", estado: "ACTIVO" },
+      ],
+    })
+    expect(r).toEqual({ codigo: 16, texto: "Monotributista promovido" })
+    expect(r?.codigo).not.toBe(15)
+  })
+
+  it("le gana al monotributo común aunque la descripción diga las dos cosas", () => {
+    expect(
+      deducirCondicionIva({
+        impuesto: [
+          { idImpuesto: 20, descripcionImpuesto: "MONOTRIBUTO", estado: "ACTIVO" },
+          { idImpuesto: 21, descripcionImpuesto: "TRABAJADOR INDEPENDIENTE PROMOVIDO", estado: "ACTIVO" },
+        ],
+      })?.codigo
+    ).toBe(16)
+  })
+
+  it("un 'PROMOVIDO' suelto no se lleva puesto el código: exige la frase entera", () => {
+    // Antes, cualquier descripción con la palabra suelta caía en promovido
+    // porque el chequeo corría ANTES del de monotributo.
+    expect(
+      deducirCondicionIva({ impuesto: [{ idImpuesto: 20, descripcionImpuesto: "MONOTRIBUTO REGIMEN PROMOVIDO PROVINCIAL", estado: "ACTIVO" }] })?.codigo
+    ).toBe(6)
+    expect(
+      deducirCondicionIva({ impuesto: [{ idImpuesto: 11, descripcionImpuesto: "ACTIVIDAD PROMOVIDA LEY 22021" }] })
+    ).toBeNull()
+  })
+
+  it("el monotributo social sigue siendo 13 y le gana a todo", () => {
+    expect(
+      deducirCondicionIva({
+        impuesto: [
+          { idImpuesto: 21, descripcionImpuesto: "MONOTRIBUTO SOCIAL" },
+          { idImpuesto: 20, descripcionImpuesto: "TRABAJADOR INDEPENDIENTE PROMOVIDO" },
+        ],
+      })?.codigo
+    ).toBe(13)
+  })
+
+  it("nunca deduce 15 (IVA No Alcanzado) del padrón", () => {
+    const descripciones = [
+      "IVA",
+      "IVA EXENTO",
+      "MONOTRIBUTO",
+      "MONOTRIBUTO SOCIAL",
+      "REGIMEN SIMPLIFICADO (MONOTRIBUTO)",
+      "MONOTRIBUTO TRABAJADOR INDEPENDIENTE PROMOVIDO",
+      "GANANCIAS",
+    ]
+    for (const d of descripciones) {
+      expect(deducirCondicionIva({ impuesto: [{ descripcionImpuesto: d }] })?.codigo).not.toBe(15)
+    }
+  })
+})
+
+describe("etiquetaCondicionIva — tabla RG 5616 completa", () => {
+  // Si alguno de estos se mueve, se está informando una condición fiscal
+  // distinta de la que dice el PDF que recibe la clienta.
+  const TABLA: Record<number, string> = {
+    1: "Responsable Inscripto",
+    4: "Exento",
+    5: "Consumidor Final",
+    6: "Monotributista",
+    7: "Sujeto No Categorizado",
+    8: "Proveedor del Exterior",
+    9: "Cliente del Exterior",
+    10: "IVA Liberado - Ley 19.640",
+    13: "Monotributista social",
+    15: "IVA No Alcanzado",
+    16: "Monotributista promovido",
+  }
+
+  it("nombra los once códigos de la tabla de ARCA", () => {
+    for (const [codigo, etiqueta] of Object.entries(TABLA)) {
+      expect(etiquetaCondicionIva(Number(codigo))).toBe(etiqueta)
+    }
+  })
+
+  it("15 y 16 no se confunden entre sí", () => {
+    expect(etiquetaCondicionIva(15)).toBe("IVA No Alcanzado")
+    expect(etiquetaCondicionIva(16)).toBe("Monotributista promovido")
+  })
+
+  it("los códigos que no existen se muestran crudos, sin inventar", () => {
     expect(etiquetaCondicionIva(null)).toBeNull()
     expect(etiquetaCondicionIva(99)).toBe("Código 99")
+    expect(etiquetaCondicionIva(2)).toBe("Código 2")
+  })
+})
+
+describe("mismoDocumento", () => {
+  it("un DNI y su CUIT son la misma persona", () => {
+    expect(mismoDocumento("20301234567", "30123456")).toBe(true)
+    expect(mismoDocumento("30123456", "27301234564")).toBe(true)
+  })
+
+  it("el mismo documento igual a sí mismo", () => {
+    expect(mismoDocumento("30123456", "30123456")).toBe(true)
+    expect(mismoDocumento("20-30.123.456-7", "20301234567")).toBe(true)
+  })
+
+  it("un DNI viejo de 7 dígitos coincide con su CUIT (que lo lleva con un 0 adelante)", () => {
+    expect(mismoDocumento("20061234563", "6123456")).toBe(true)
+  })
+
+  it("el CUIT del salón NO es la clienta", () => {
+    expect(mismoDocumento("27123456789", "30123456")).toBe(false)
+    expect(mismoDocumento("30712345678", "30123456")).toBe(false)
+  })
+
+  it("vacío o basura nunca coincide", () => {
+    expect(mismoDocumento("", "30123456")).toBe(false)
+    expect(mismoDocumento("30123456", null)).toBe(false)
+    expect(mismoDocumento("abc", "30123456")).toBe(false)
+  })
+})
+
+describe("elegirCuitParaDocumento", () => {
+  it("descarta los CUIT que no llevan adentro el DNI buscado", () => {
+    // El segundo es el CUIT del salón que ARCA devuelve de rebote.
+    expect(elegirCuitParaDocumento(["20301234567", "27999999995"], "30123456")).toBe("20301234567")
+  })
+
+  it("con varios CUIT propios elige siempre el mismo (el menor)", () => {
+    expect(elegirCuitParaDocumento(["27301234564", "20301234567"], "30123456")).toBe("20301234567")
+    expect(elegirCuitParaDocumento(["20301234567", "27301234564"], "30123456")).toBe("20301234567")
+  })
+
+  it("si ninguno es de esa persona devuelve null en vez de adivinar", () => {
+    expect(elegirCuitParaDocumento(["27999999995"], "30123456")).toBeNull()
+    expect(elegirCuitParaDocumento([], "30123456")).toBeNull()
   })
 })
 

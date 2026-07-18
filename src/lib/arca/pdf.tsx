@@ -2,6 +2,7 @@ import "server-only"
 import { renderToBuffer, Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer"
 import QRCode from "qrcode"
 import { fmtMoneyCents } from "./format"
+import { etiquetaCondicionIva } from "./padron-parse"
 
 export interface InvoicePdfData {
   emisor: {
@@ -18,6 +19,8 @@ export interface InvoicePdfData {
   caeVto: string // dd/mm/yyyy
   receptorDoc: string
   receptorNombre: string
+  /** Código RG 5616 realmente informado a ARCA (ver `padron-parse.ts`). */
+  receptorCondIva: number
   descripcion: string
   totalCents: number
   qrUrl: string
@@ -71,8 +74,14 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
           <Text style={styles.label}>Receptor</Text>
           <Text>{data.receptorNombre}</Text>
           <Text style={styles.small}>{data.receptorDoc}</Text>
-          {/* v1: CondicionIVAReceptorId siempre 5 (Consumidor Final) */}
-          <Text style={styles.small}>Condición IVA: Consumidor Final</Text>
+          {/* Tiene que decir EXACTAMENTE la condición que se le informó a ARCA:
+              si el papel dice una cosa y el CAE registra otra, el comprobante
+              entregado contradice al fiscal. Antes acá había un "Consumidor
+              Final" fijo, que dejó de ser cierto cuando la condición empezó a
+              salir del padrón. */}
+          <Text style={styles.small}>
+            Condición IVA: {etiquetaCondicionIva(data.receptorCondIva) ?? "Consumidor Final"}
+          </Text>
         </View>
 
         <View style={styles.section}>

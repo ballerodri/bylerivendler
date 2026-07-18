@@ -4,7 +4,8 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { emitirFacturaTurno } from "@/app/admin/facturacion/actions"
 import PadronLookup from "@/app/admin/_components/padron-lookup"
-import type { PadronPersona } from "@/lib/arca/padron-parse"
+import { receptorDocLabel } from "@/lib/arca/format"
+import { docTipoParaDocumento, normalizarDoc, type PadronPersona } from "@/lib/arca/padron-parse"
 
 export default function FacturarForm({
   appointmentId,
@@ -23,6 +24,11 @@ export default function FacturarForm({
   const [identificar, setIdentificar] = useState(tieneDni)
   const [persona, setPersona] = useState<PadronPersona | null>(null)
 
+  // Lo guardado en la ficha puede ser un CUIT, no un DNI: el tilde tiene que
+  // decir lo que realmente se va a mandar.
+  const docFicha = normalizarDoc(dni)
+  const etiquetaDocFicha = receptorDocLabel(docTipoParaDocumento(docFicha), docFicha)
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       {/* Mientras no haya una persona traída de ARCA manda lo de siempre: el
@@ -32,10 +38,10 @@ export default function FacturarForm({
         (tieneDni ? (
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <input type="checkbox" checked={identificar} onChange={(e) => setIdentificar(e.target.checked)} />
-            <span>Identificar a la clienta con su DNI (sino, Consumidor Final)</span>
+            <span>Identificar a la clienta con su {etiquetaDocFicha} (sino, Consumidor Final)</span>
           </label>
         ) : (
-          <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>La clienta no tiene DNI cargado: se factura como Consumidor Final.</p>
+          <p style={{ fontSize: 13, color: "var(--ink-mute)" }}>La clienta no tiene documento cargado: se factura como Consumidor Final.</p>
         ))}
 
       <div>

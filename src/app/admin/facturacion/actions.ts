@@ -118,6 +118,13 @@ export async function emitirFacturaTurno(
   // en esta misma pantalla, o del que está guardado en la ficha si se tildó
   // "identificar". Sin ninguno de los dos, Consumidor Final (como siempre).
   const docPadron = normalizarDoc(receptor?.doc)
+  // El documento del padrón llega desde el navegador, así que el largo se
+  // vuelve a chequear acá (mismo criterio que `guardarDocumentoClienta`): si no
+  // es un DNI de 8 o un CUIT/CUIL de 11 no lo mandamos a ARCA, cortamos. Un
+  // DocNro mal formado o se rechaza, o peor, entra pegado a un CAE real.
+  if (docPadron && docPadron.length !== 8 && docPadron.length !== 11) {
+    return { ok: false, error: "El documento traído de ARCA no es válido (tiene que tener 8 u 11 dígitos)." }
+  }
   const docFicha = identificar && client?.dni ? normalizarDoc(client.dni) : ""
   const docReceptor = docPadron || docFicha
   // El tipo ya no está fijo en 96: se deduce del largo (11 = CUIT, si no DNI).

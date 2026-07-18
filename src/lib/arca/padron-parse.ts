@@ -103,14 +103,28 @@ function esObjeto(v: unknown): v is Record<string, unknown> {
 
 // ------------------------------------------------------ condición ante el IVA
 
+// ⚠️ TABLA OFICIAL — NO "CORREGIR" DE MEMORIA ⚠️
+//
 // Códigos de "condición frente al IVA del receptor" que exige ARCA en el
-// comprobante (tabla FEParamGetCondicionIvaReceptor, RG 5616):
+// comprobante (tabla FEParamGetCondicionIvaReceptor, RG 5616). Ésta es la lista
+// COMPLETA y es la única fuente de verdad de este archivo:
 //    1 = IVA Responsable Inscripto
 //    4 = IVA Sujeto Exento
 //    5 = Consumidor Final
 //    6 = Responsable Monotributo
+//    7 = Sujeto No Categorizado
+//    8 = Proveedor del Exterior
+//    9 = Cliente del Exterior
+//   10 = IVA Liberado - Ley 19.640
 //   13 = Monotributista Social
-//   15 = Monotributo Trabajador Independiente Promovido
+//   15 = IVA No Alcanzado
+//   16 = Monotributo Trabajador Independiente Promovido
+//
+// POR QUÉ ESTE COMENTARIO: el 15 y el 16 se confunden muy fácil (los dos suenan
+// a "monotributo raro") y ARCA acepta los DOS para una Factura C, así que un
+// error acá NO da error: emite una factura con la condición fiscal equivocada,
+// con CAE real, y sólo se arregla con una nota de crédito. El promovido es 16.
+// El 15 es "IVA No Alcanzado" y de este padrón NUNCA lo deducimos.
 //
 // El padrón A13 NO devuelve "la condición" en un campo: devuelve la lista de
 // impuestos y categorías en las que la persona está inscripta. La deducimos de
@@ -129,8 +143,13 @@ const ETIQUETA_IVA: Record<number, string> = {
   4: "Exento",
   5: "Consumidor Final",
   6: "Monotributista",
+  7: "Sujeto No Categorizado",
+  8: "Proveedor del Exterior",
+  9: "Cliente del Exterior",
+  10: "IVA Liberado - Ley 19.640",
   13: "Monotributista social",
-  15: "Monotributista promovido",
+  15: "IVA No Alcanzado",
+  16: "Monotributista promovido",
 }
 
 /** Nombre legible de un código de condición frente al IVA. */
@@ -147,9 +166,13 @@ function estaActivo(entrada: Record<string, unknown>): boolean {
 
 function codigoPorTexto(desc: string, id: number | null): number | null {
   const t = clave(desc)
-  // El orden importa: "MONOTRIBUTO SOCIAL" también contiene "MONOTRIBUTO".
+  // El orden importa: "MONOTRIBUTO SOCIAL" también contiene "MONOTRIBUTO", y el
+  // promovido también. Los dos casos especiales van ANTES del monotributo común.
   if (t.includes("MONOTRIBUTO SOCIAL")) return 13
-  if (t.includes("TRABAJADOR INDEPENDIENTE PROMOVIDO") || t.includes("PROMOVIDO")) return 15
+  // 16, no 15 (ver la tabla de arriba). Y exigimos la frase entera: con un
+  // "PROMOVIDO" suelto cualquier descripción que lo mencione de refilón (un
+  // "régimen promovido" provincial, por ejemplo) se llevaba este código puesto.
+  if (t.includes("TRABAJADOR INDEPENDIENTE PROMOVIDO")) return 16
   if (t.includes("MONOTRIBUT") || t.includes("REGIMEN SIMPLIFICADO") || t.includes("SIMPLIF")) return 6
   if (/\bIVA\b/.test(t) && t.includes("EXENT")) return 4
   if (/\bIVA\b/.test(t)) return 1
@@ -186,7 +209,7 @@ export function deducirCondicionIva(
   // Prioridad: si una persona figura a la vez como monotributista y como otra
   // cosa (pasa cuando quedan inscripciones viejas sin dar de baja), manda el
   // monotributo.
-  for (const preferido of [13, 15, 6, 1, 4]) {
+  for (const preferido of [13, 16, 6, 1, 4]) {
     if (codigos.includes(preferido)) {
       return { codigo: preferido, texto: ETIQUETA_IVA[preferido] }
     }
@@ -321,6 +344,57 @@ function recolectarCuits(raw: unknown, out: string[], profundidad: number): void
     if (llave === "metadata") continue
     recolectarCuits(valor, out, profundidad + 1)
   }
+}
+
+// ------------------------------------------- que el CUIT sea de ESA persona
+//
+// Un CUIT/CUIL argentino es: 2 dígitos de prefijo + el DNI en 8 posiciones
+// (con ceros adelante si el DNI es más corto) + 1 dígito verificador.
+// O sea que del CUIT se puede leer el DNI y comparar.
+//
+// POR QUÉ IMPORTA: `parseIdPersonaList` junta CUALQUIER número de 11 dígitos
+// que aparezca en la respuesta. Si ARCA nos devuelve de rebote el CUIT del
+// salón (`cuitRepresentada`) o un id de pedido, ese número se colaba como si
+// fuera el CUIT de la clienta y le facturábamos, con CAE real, a OTRA persona.
+
+/** El DNI que lleva adentro un documento, sin los ceros de relleno. */
+function nucleoDoc(doc: string): string {
+  const d = normalizarDoc(doc)
+  const base = d.length === 11 ? d.slice(2, 10) : d
+  return base.replace(/^0+/, "")
+}
+
+/**
+ * ¿Estos dos documentos son de la misma persona? Compara el DNI que llevan
+ * adentro, así un DNI y su CUIT dan verdadero (y el CUIT del salón, falso).
+ */
+export function mismoDocumento(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  const x = normalizarDoc(a)
+  const y = normalizarDoc(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  const nx = nucleoDoc(x)
+  return nx !== "" && nx === nucleoDoc(y)
+}
+
+/**
+ * De los CUIT que devolvió `getIdPersonaListByDocumento` para un DNI, elige el
+ * que REALMENTE le corresponde. Devuelve null si ninguno lo contiene (ahí no
+ * hay que adivinar: es preferible decir "no encontrado" que facturarle a otro).
+ *
+ * Si quedan varios (pasa cuando alguien tiene CUIL y CUIT, 20/23/27...) se
+ * elige el menor: cualquier criterio sirve mientras sea SIEMPRE el mismo, para
+ * que dos consultas seguidas no facturen distinto.
+ */
+export function elegirCuitParaDocumento(
+  cuits: string[],
+  documento: string
+): string | null {
+  const propios = cuits.filter((c) => mismoDocumento(c, documento)).sort()
+  return propios[0] ?? null
 }
 
 // -------------------------------------------------- clasificación de errores

@@ -6,6 +6,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { emitirFactura } from "@/lib/arca/invoice-service"
 import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
+import { docTipoParaDocumento, normalizarDoc } from "@/lib/arca/padron-parse"
 
 function adminClient() {
   return createAdminClient(
@@ -61,12 +62,18 @@ export async function venderPack(input: {
         .select("first_name, dni, email")
         .eq("id", input.clientId)
         .maybeSingle()
-      const dni = client?.dni ?? null
+      // `clients.dni` guarda DNI **o** CUIT (la búsqueda en el padrón escribe
+      // ahí el CUIT tal cual). Si acá dejáramos el 96 fijo, la primera clienta
+      // con CUIT guardado se facturaría como "DNI de 11 dígitos" y ARCA
+      // rechazaría la venta del pack. El tipo se deduce del largo, igual que en
+      // la facturación de turnos.
+      const doc = normalizarDoc(client?.dni)
+      const docTipo = docTipoParaDocumento(doc)
       const factura = await emitirFactura({
         clientId: input.clientId,
         concepto: 2,
-        docTipo: dni ? 96 : 99,
-        docNro: dni ?? "0",
+        docTipo,
+        docNro: docTipo === 99 ? "0" : doc,
         condIvaReceptor: 5,
         totalCents: pack.total_price_cents,
         descripcion: pack.name,

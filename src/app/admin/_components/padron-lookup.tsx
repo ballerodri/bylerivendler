@@ -41,19 +41,32 @@ export default function PadronLookup({
     onPersona?.(null)
   }
 
+  // `consultarPadron` no lanza, pero la llamada a la server action sí puede:
+  // `requireStaff()` tira si se venció la sesión, y la propia invocación falla
+  // si el usuario está sin internet, si se redeployó mientras tanto o si el
+  // servidor devuelve 500. Sin este try/catch la promesa rechazada dentro del
+  // `useTransition` sube al error boundary y deja la pantalla de facturar en
+  // blanco: un problema de la búsqueda opcional se llevaba puesta la factura.
   function onBuscar() {
     buscar(async () => {
       setError(null)
       setGuardado(null)
-      const r = await buscarEnPadron(doc)
-      if (r.ok) {
-        setPersona(r.persona)
-        setDoc(r.persona.doc)
-        onPersona?.(r.persona)
-      } else {
+      try {
+        const r = await buscarEnPadron(doc)
+        if (r.ok) {
+          setPersona(r.persona)
+          setDoc(r.persona.doc)
+          onPersona?.(r.persona)
+        } else {
+          setPersona(null)
+          onPersona?.(null)
+          setError(r.error)
+        }
+      } catch (e) {
+        console.error("[padron-lookup] falló la consulta:", e)
         setPersona(null)
         onPersona?.(null)
-        setError(r.error)
+        setError("No se pudo consultar. Probá de nuevo.")
       }
     })
   }
@@ -62,15 +75,28 @@ export default function PadronLookup({
     if (!clientId) return
     guardar(async () => {
       setError(null)
-      const r = await guardarDocumentoClienta(clientId, persona?.doc ?? doc)
-      if (r.ok) {
-        setGuardado(r.doc ?? null)
-        if (r.doc) setDoc(r.doc)
-        router.refresh()
-      } else {
-        setError(r.error ?? "No se pudo guardar")
+      try {
+        const r = await guardarDocumentoClienta(clientId, persona?.doc ?? doc)
+        if (r.ok) {
+          setGuardado(r.doc ?? null)
+          if (r.doc) setDoc(r.doc)
+          router.refresh()
+        } else {
+          setError(r.error ?? "No se pudo guardar")
+        }
+      } catch (e) {
+        console.error("[padron-lookup] falló el guardado:", e)
+        setError("No se pudo consultar. Probá de nuevo.")
       }
     })
+  }
+
+  /** Vuelve al estado de antes de buscar, sin tener que borrar el campo. */
+  function descartar() {
+    setPersona(null)
+    setError(null)
+    setGuardado(null)
+    onPersona?.(null)
   }
 
   return (
@@ -131,6 +157,26 @@ export default function PadronLookup({
               ? `Frente al IVA: ${persona.condicionIvaTexto}`
               : "No pudimos determinar su condición frente al IVA: se factura como Consumidor Final."}
           </div>
+          {/* Salida explícita: antes la única forma de volver atrás era borrar
+              el campo, y nadie lo adivinaba. */}
+          <button
+            type="button"
+            onClick={descartar}
+            style={{
+              alignSelf: "flex-start",
+              marginTop: 4,
+              padding: 0,
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              font: "inherit",
+              fontSize: 12,
+              color: "var(--ink-mute)",
+              textDecoration: "underline",
+            }}
+          >
+            Descartar / facturar como Consumidor Final
+          </button>
         </div>
       )}
     </div>

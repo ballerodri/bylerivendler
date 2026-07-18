@@ -1,6 +1,8 @@
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
+import { receptorDocLabel } from "@/lib/arca/format"
+import { docTipoParaDocumento } from "@/lib/arca/padron-parse"
 import { fmtPrice } from "@/app/reserva/data"
 import FacturarForm from "./facturar-form"
 
@@ -66,7 +68,9 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
           <div>
             <div className="adm-name">{client ? `${client.first_name} ${client.last_name}` : "—"}</div>
             <div className="adm-sub">{descripcion}</div>
-            <div className="adm-sub">{client?.dni ? `DNI ${client.dni}` : "Sin DNI"}{client?.email ? ` · ${client.email}` : ""}</div>
+            {/* `clients.dni` puede tener un CUIT: el rótulo sale del largo, no
+                de "DNI" fijo, para no decirle DNI a un CUIT de 11 dígitos. */}
+            <div className="adm-sub">{client?.dni ? receptorDocLabel(docTipoParaDocumento(client.dni), client.dni) : "Sin documento"}{client?.email ? ` · ${client.email}` : ""}</div>
           </div>
           <div style={{ fontFamily: "var(--serif)", fontWeight: 500 }}>{fmtPrice(appt.total_cents / 100)}</div>
         </div>
