@@ -342,6 +342,70 @@ export async function deletePackPurchase(
  * cobro entre medio, se rechaza en vez de pisarlo. Un reintento de red del
  * MISMO guardado (mismo `paidCents`) sigue siendo un éxito, no un error.
  */
+/**
+ * Registra UN cobro sobre una COMPRA entera (varios turnos), repartiéndolo en
+ * orden cronológico: llena el primer turno hasta su total, sigue con el
+ * segundo, etc. Lo usa el asistente de Nueva reserva para poder anotar en el
+ * momento lo que la clienta ya pagó, sin tener que ir turno por turno.
+ *
+ * La plata por turno sigue siendo la verdad (cada turno factura lo suyo):
+ * esto sólo evita la carga manual repetida.
+ *
+ * Todo o nada: si el monto no entra en lo que falta cobrar de la compra, no
+ * se escribe nada y se avisa.
+ */
+export async function registrarPagoCompra(
+  appointmentIds: string[],
+  montoCents: number
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  if (!Number.isFinite(montoCents) || montoCents <= 0)
+    return { ok: false, error: "El monto tiene que ser mayor a 0." }
+  const ids = [...new Set(appointmentIds.filter(Boolean))]
+  if (!ids.length) return { ok: false, error: "No hay turnos a los que aplicar el cobro." }
+
+  const admin = adminClient()
+  const { data, error: selErr } = await admin
+    .from("appointments")
+    .select("id, total_cents, paid_cents")
+    .in("id", ids)
+    .order("starts_at", { ascending: true })
+  if (selErr) return { ok: false, error: selErr.message }
+  const rows = (data ?? []) as { id: string; total_cents: number; paid_cents: number }[]
+  if (rows.length !== ids.length) return { ok: false, error: "Algún turno de la compra no existe." }
+
+  const falta = rows.reduce((a, r) => a + Math.max(0, r.total_cents - r.paid_cents), 0)
+  if (montoCents > falta)
+    return {
+      ok: false,
+      error: `Te pasás: a esta compra le falta cobrar ${"$" + (falta / 100).toLocaleString("es-AR")}.`,
+    }
+
+  // Se reparte en orden: cada turno se llena hasta su total antes de pasar al
+  // siguiente. Se escribe con la misma guarda optimista de `registrarPago`
+  // (`eq("paid_cents", …)`) para no pisar un cobro cargado en otra pantalla.
+  let resto = montoCents
+  for (const r of rows) {
+    if (resto <= 0) break
+    const suma = Math.min(resto, Math.max(0, r.total_cents - r.paid_cents))
+    if (suma <= 0) continue
+    const { data: upd, error } = await admin
+      .from("appointments")
+      .update({ paid_cents: r.paid_cents + suma })
+      .eq("id", r.id)
+      .eq("paid_cents", r.paid_cents)
+      .select("id")
+    if (error) return { ok: false, error: error.message }
+    if (!upd?.length)
+      return { ok: false, error: "El cobro cambió en otra pantalla. Refrescá y volvé a cargarlo." }
+    resto -= suma
+  }
+
+  revalidatePath("/admin")
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
 export async function registrarPago(
   appointmentId: string,
   paidCents: number,

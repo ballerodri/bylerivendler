@@ -2,7 +2,7 @@
 
 import { useState, useTransition, useRef } from "react"
 import { useRouter } from "next/navigation"
-import { searchClients, createAdminBooking, type ClientSearchResult } from "../actions"
+import { searchClients, createAdminBooking, registrarPagoCompra, type ClientSearchResult } from "../actions"
 import { createBooking, fetchSequentialAvailability, type SlotResult } from "@/app/reserva/actions"
 import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
 import { fmtPrice, slotToUtcMs, type BusinessHour } from "@/app/reserva/data"
@@ -154,6 +154,9 @@ export default function NuevaReservaForm({
 
   // Step 3 — Confirm
   const [notes, setNotes] = useState("")
+  // Lo que la clienta YA pagó, para no tener que ir después a la agenda a
+  // cargarlo turno por turno. Opcional: vacío = no se registra ningún cobro.
+  const [cobrado, setCobrado] = useState("")
   const [submitPending, startSubmitTransition] = useTransition()
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -352,8 +355,13 @@ export default function NuevaReservaForm({
           // El salón cobra en persona: el turno nace saldado, no señado.
           payChoice: "full",
         })
-        if (result.ok) router.push("/admin/turnos")
-        else setSubmitError(result.error)
+        if (!result.ok) { setSubmitError(result.error); return }
+        const cobroErr = await aplicarCobro(result.appointmentIds ?? [result.appointmentId])
+        if (cobroErr) {
+          setSubmitError(`La reserva se creó, pero el cobro no: ${cobroErr} Cargalo desde la agenda.`)
+          return
+        }
+        router.push("/admin/turnos")
         return
       }
 
@@ -377,12 +385,26 @@ export default function NuevaReservaForm({
         ),
       })
 
-      if (result.ok) {
-        router.push("/admin/turnos")
-      } else {
+      if (!result.ok) {
         setSubmitError(result.error ?? "Error al crear el turno.")
+        return
       }
+      const cobroErr = await aplicarCobro(result.appointmentId ? [result.appointmentId] : [])
+      if (cobroErr) {
+        setSubmitError(`El turno se creó, pero el cobro no: ${cobroErr} Cargalo desde la agenda.`)
+        return
+      }
+      router.push("/admin/turnos")
     })
+  }
+
+  /** Aplica el cobro sobre los turnos recién creados (si se cargó alguno).
+   *  Si falla, la reserva YA está hecha: se avisa sin perderla. */
+  async function aplicarCobro(ids: string[]): Promise<string | null> {
+    const pesos = Number(cobrado)
+    if (!cobrado.trim() || !Number.isFinite(pesos) || pesos <= 0) return null
+    const r = await registrarPagoCompra(ids, Math.round(pesos * 100))
+    return r.ok ? null : (r.error ?? "No pudimos registrar el cobro.")
   }
 
   const totalMin = selectedServices.reduce((a, s) => a + effective(s).duration, 0)
@@ -1099,6 +1121,37 @@ export default function NuevaReservaForm({
                 />
               </div>
             )}
+
+            {/* Cobro en el momento: evita tener que ir después a la agenda a
+                cargarlo turno por turno. Se reparte en orden cronológico
+                (llena un turno antes de pasar al siguiente); el turno sigue
+                siendo la unidad de la plata, esto sólo ahorra la carga. */}
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ display: "block", fontSize: 12, color: "var(--ink-mute)", marginBottom: 6 }}>
+                ¿Ya te pagó algo? (opcional)
+              </label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, color: "var(--ink-mute)" }}>$</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  className="adm-input"
+                  value={cobrado}
+                  onChange={(e) => setCobrado(e.target.value)}
+                  placeholder="0"
+                  style={{ width: 140, fontSize: 13, textAlign: "right" }}
+                />
+                <span style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                  de {fmtPrice(grandTotalCents / 100)}
+                </span>
+              </div>
+              {Number(cobrado) > grandTotalCents / 100 && (
+                <p style={{ fontSize: 12, color: "#8c463c", margin: "6px 0 0" }}>
+                  Te pasás del total de la compra.
+                </p>
+              )}
+            </div>
 
             {submitError && (
               <p style={{ fontSize: 13, color: "#8c463c", marginBottom: 12 }}>{submitError}</p>
