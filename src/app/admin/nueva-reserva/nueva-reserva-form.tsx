@@ -327,8 +327,11 @@ export default function NuevaReservaForm({
           packZoneIds: selectedPack.pricingMode === "per_zone" ? packZoneIds : undefined,
           packSlots,
           // La profesional la resuelve el motor sesión por sesión (el asistente
-          // no la pide) y el pack NUNCA se encadena con los tratamientos desde
-          // el admin: cada parte va en su propia fecha.
+          // no la pide). Desde el admin el pack NUNCA se encadena con los
+          // tratamientos: cada parte va en su propia fecha. OJO: lo que
+          // garantiza eso NO es el flag `packChainedFirst` (el motor ni lo
+          // lee), sino que el `startsAt` que mandamos es un slot de la grilla
+          // —el que eligió el buscador—; el flag va en `false` por prolijidad.
           packStaff: "auto",
           packChainedFirst: false,
           // Sin tratamientos va `[]`: el schema lo acepta porque hay pack.
