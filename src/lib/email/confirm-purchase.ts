@@ -115,7 +115,12 @@ export async function sendGroupConfirmationEmail(
       .eq("id", appts[0].client_id)
       .single()
     const client = clientRow as { email: string | null; first_name: string | null } | null
-    if (!client?.email) {
+    // `@noemail.local` es el placeholder de las clientas cargadas A MANO por el
+    // salón, que no dejaron un mail real (`admin_created_…@noemail.local`):
+    // cuenta como "sin email", mismo camino que el email vacío. Mandar ahí sólo
+    // genera un rebote.
+    const clientEmail = (client?.email ?? "").trim()
+    if (!clientEmail || clientEmail.toLowerCase().endsWith("@noemail.local")) {
       await unclaim()
       return
     }
@@ -209,7 +214,7 @@ export async function sendGroupConfirmationEmail(
         ? `<p style="font-size:13px;color:#7a6e64;margin:12px 0 0;">Te quedan <strong>${packRemaining}</strong> sesión(es) del pack por agendar. Coordinamos con vos para fijarlas.</p>`
         : ""
 
-    const firstName = (client.first_name ?? "").trim()
+    const firstName = (client?.first_name ?? "").trim()
     const subject =
       live.length === 1
         ? `Tu turno está confirmado · ${fmtDateAR(new Date(live[0].starts_at))}`
@@ -251,7 +256,7 @@ export async function sendGroupConfirmationEmail(
     //    Falla de cualquier tipo → soltar el reclamo para poder reintentar.
     const { error } = await resend.emails.send({
       from: FROM,
-      to: client.email,
+      to: clientEmail,
       subject,
       html: shell(subject, body),
     })

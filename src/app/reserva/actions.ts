@@ -4,6 +4,7 @@ import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { z } from "zod"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { isActiveStaffSession } from "@/lib/staff"
 import { notifyNewPurchase } from "@/lib/email/notify-booking"
 import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
@@ -54,13 +55,21 @@ const BookingInput = z.object({
   serviceSlots: z.record(z.string().uuid(), z.string().datetime()).optional(),
   // Profesional preferida por servicio ("auto" o un staffId).
   serviceStaff: z.record(z.string().uuid(), z.union([z.literal("auto"), z.string().uuid()])).optional(),
+  // Modo admin: el salón compra y reserva POR la clienta. NO es una preferencia
+  // del que llama: `createBooking` exige sesión de staff activa apenas parsea
+  // (ver la guarda al entrar). Que esté acá sólo significa que el campo VIAJA,
+  // no que se le crea.
+  adminMode: z.boolean().optional(),
   client: z.object({
     firstName: z.string().min(1),
     lastName: z.string().min(1),
     email: z.string().email(),
     phone: z.string().min(1),
-    dob: z.string().min(1),
-    marketingConsent: z.boolean(),
+    // Opcionales: el asistente del admin no los pide (el salón carga a la
+    // clienta con lo mínimo). El formulario de la web los sigue exigiendo en
+    // pantalla, y donde se leen se usa `?? ""` / `?? false`.
+    dob: z.string().optional(),
+    marketingConsent: z.boolean().optional(),
     isExisting: z.boolean(),
   }),
 }).refine((v) => v.serviceIds.length > 0 || !!v.packId, {
@@ -184,15 +193,21 @@ type PackPlan = {
 async function planPack(
   supabase: ReturnType<typeof adminClient>,
   input: CreateBookingInput,
-  payChoice: PayChoice
+  payChoice: PayChoice,
+  // Modo admin: el salón puede vender un pack que NO se muestra en la web.
+  // Sólo relaja `visible_reserva`; `active` se exige SIEMPRE (un pack dado de
+  // baja no se vende por ningún camino).
+  adminMode: boolean = false
 ): Promise<{ ok: true; plan: PackPlan } | { ok: false; error: string }> {
-  const { data: pack } = await supabase
+  let packQuery = supabase
     .from("packs")
     .select("id, name, sessions, interval_days, total_price_cents, zones_count, active, visible_reserva, service:services(id, name, pricing_mode, duration_min, price_cents)")
     .eq("id", input.packId)
     .eq("active", true)
-    .eq("visible_reserva", true)
-    .maybeSingle()
+  // En el camino público `visible_reserva` sigue siendo obligatorio: sin
+  // `adminMode` la consulta es exactamente la de siempre.
+  if (!adminMode) packQuery = packQuery.eq("visible_reserva", true)
+  const { data: pack } = await packQuery.maybeSingle()
   if (!pack) return { ok: false, error: "Ese pack ya no está disponible." }
   const svc = pack.service as unknown as { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
   if (!svc) return { ok: false, error: "El pack no tiene servicio asociado." }
@@ -778,6 +793,22 @@ export async function createBooking(
     return { ok: false, error: "Datos inválidos. Revisá el formulario." }
   }
   const input = parsed.data
+
+  // ── SEGURIDAD: LO PRIMERO DE TODO, apenas parseado el input ────────────────
+  // `createBooking` es una server action PÚBLICA: cualquier visitante puede
+  // invocarla con el payload que se le ocurra, incluido `adminMode: true`. En
+  // modo admin los turnos nacen `confirmed` con `deposit_paid: true` (el salón
+  // cobra en persona), así que sin esta guarda cualquiera se llevaría turnos
+  // confirmados sin transferir un peso.
+  //
+  // Va ANTES de crear el cliente de servicio (`adminClient()`) y ANTES de
+  // cualquier lectura, escritura, descuento de puntos o mail: un `adminMode`
+  // sin sesión de staff tiene que salir de acá SIN dejar ningún rastro.
+  // `isActiveStaffSession` es fail-closed y nunca lanza (ver `@/lib/staff`).
+  const adminMode = input.adminMode === true
+  if (adminMode && !(await isActiveStaffSession()))
+    return { ok: false, error: "Acceso denegado." }
+
   const supabase = adminClient()
 
   // 1) Resolve services to compute totals + ends_at
@@ -870,15 +901,25 @@ export async function createBooking(
     (a, s) => a + (s.loyalty_enabled ? (s.points_cost ?? 0) : 0),
     0
   )
-  const redeem = !!input.redeemWithPoints
+  // El canje con puntos NO existe en modo admin: los puntos son de la clienta y
+  // el asistente del salón no los ofrece. Forzarlo en `false` acá apaga de una
+  // sola vez TODO el camino del canje (descuento, precios en $0, `deposit_paid`,
+  // la nota "Canjeado con N pts" y el rechazo "los packs no se canjean").
+  // Sin `adminMode` esto es exactamente lo de siempre: `!!input.redeemWithPoints`.
+  const redeem = !adminMode && !!input.redeemWithPoints
   const startsAt = new Date(input.startsAt)
 
   // 2) Find or create client. Si ya fue guardada por saveClientEarly usamos
   // ese ID directamente y salteamos la creación.
-  const ssr = await createSsrClient()
-  const {
-    data: { user: authUser },
-  } = await ssr.auth.getUser()
+  //
+  // MODO ADMIN: la sesión activa es la del SALÓN, no la de la clienta. Se
+  // ignora POR COMPLETO — `authUser` queda en `null` de entrada, así los tres
+  // usos de abajo (vincular `clients.user_id` en una ficha existente, vincularlo
+  // al crear la ficha, y el magic link del final) quedan apagados POR
+  // CONSTRUCCIÓN y no por casualidad. Vincular la ficha de la clienta al
+  // usuario del salón le daría al salón el portal de la clienta.
+  const ssr = adminMode ? null : await createSsrClient()
+  const authUser = ssr ? (await ssr.auth.getUser()).data.user : null
 
   const email = input.client.email.trim().toLowerCase()
   let clientId: string
@@ -907,7 +948,10 @@ export async function createBooking(
       }
       alreadyLinked = !!existing.user_id
     } else {
-      const dob = parseDob(input.client.dob)
+      // `dob` y `marketingConsent` son opcionales (el asistente del admin no
+      // los pide): `parseDob("")` devuelve `null`, igual que una fecha con
+      // formato inválido. Con una fecha real el resultado no cambia.
+      const dob = parseDob(input.client.dob ?? "")
       const { data: created, error: insErr } = await supabase
         .from("clients")
         .insert({
@@ -920,7 +964,7 @@ export async function createBooking(
           email,
           phone: input.client.phone.trim(),
           date_of_birth: dob,
-          marketing_consent: input.client.marketingConsent,
+          marketing_consent: input.client.marketingConsent ?? false,
           source: "web",
         })
         .select("id")
@@ -959,7 +1003,7 @@ export async function createBooking(
   let looseMode: "separados" | "juntos" | null = null
 
   if (hasPack) {
-    const r = await planPack(supabase, input, payChoice)
+    const r = await planPack(supabase, input, payChoice, adminMode)
     if (!r.ok) return { ok: false, error: r.error }
     packPlan = r.plan
     plan.push(...r.plan.appointments)
@@ -1070,9 +1114,16 @@ export async function createBooking(
         duration_min: p.durationMin,
         total_cents: p.totalCents,
         deposit_cents: p.depositCents,
-        deposit_paid: p.depositPaid,
+        // MODO ADMIN: la compra la está cargando el propio salón y se cobra en
+        // persona, así que nace CONFIRMADA y con la seña dada por saldada (no
+        // hay transferencia que esperar). La plata NO cambia: `total_cents` y
+        // `deposit_cents` los calculó el plan igual que siempre, y `paid_cents`
+        // sigue en 0 — lo carga el salón con "Registrar pago".
+        // Sin `adminMode` las dos líneas son las de siempre: `deposit_paid` sale
+        // del plan y sólo el canje con puntos nace `confirmed`.
+        deposit_paid: adminMode ? true : p.depositPaid,
         paid_cents: 0,
-        status: redeem ? "confirmed" : "pending",
+        status: adminMode || redeem ? "confirmed" : "pending",
         source: "web",
         pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
         notes_internal: p.notesInternal,
@@ -1104,10 +1155,13 @@ export async function createBooking(
 
   // ── FASE D: avisos (best-effort, los turnos ya existen) ────────────────────
 
-  // Canje con puntos: los turnos NACIERON `confirmed`, así que el mail único de
-  // confirmación a la clienta sale ahora mismo. `sendGroupConfirmationEmail`
-  // revisa el grupo y reclama el anti-duplicado por su cuenta.
-  if (redeem) {
+  // Canje con puntos — y MODO ADMIN: en los dos casos los turnos NACIERON
+  // `confirmed`, así que no queda nada pendiente y el mail único de
+  // confirmación a la clienta sale ahora mismo (el MISMO que recibe cuando
+  // reserva por la web). `sendGroupConfirmationEmail` revisa el grupo y reclama
+  // el anti-duplicado por su cuenta. Sin `adminMode` la condición es la de
+  // siempre: sólo el canje.
+  if (redeem || adminMode) {
     try {
       await sendGroupConfirmationEmail(supabase, bookingGroupId)
     } catch {
@@ -1261,23 +1315,33 @@ export async function createBooking(
     ]
   })
 
-  try {
-    await notifyNewPurchase(supabase, {
-      clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
-      clientPhone: input.client.phone,
-      rows: purchaseRows,
-      totalCents: sumTotals(plan),
-      dueNowCents,
-    })
-  } catch {
-    // no bloquea: los turnos ya existen y el equipo los ve igual en la agenda.
+  // MODO ADMIN: no se manda. El aviso al equipo existe para enterarse de una
+  // compra que entró sola por la web; acá la compra la acaba de cargar el
+  // propio salón, mirando la pantalla.
+  if (!adminMode) {
+    try {
+      await notifyNewPurchase(supabase, {
+        clientName: `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+        clientPhone: input.client.phone,
+        rows: purchaseRows,
+        totalCents: sumTotals(plan),
+        dueNowCents,
+      })
+    } catch {
+      // no bloquea: los turnos ya existen y el equipo los ve igual en la agenda.
+    }
   }
 
   // Magic link para portal — solo si:
+  //   - NO es modo admin (el salón no le manda un link de acceso a la clienta
+  //     por haberle cargado un turno; hoy además `authUser` es `null` a
+  //     propósito en ese modo, así que sin esta condición explícita el magic
+  //     link SALDRÍA — antes quedaba salteado sólo por casualidad, porque había
+  //     sesión del salón)
   //   - no hay sesión activa
   //   - Y el clients row no está ya linkeado a un auth user
   // Se conserva igual, ahora al final, común a los tres caminos.
-  if (!authUser && !alreadyLinked) {
+  if (!adminMode && !authUser && !alreadyLinked) {
     try {
       const h = await headers()
       const proto = h.get("x-forwarded-proto") ?? "http"

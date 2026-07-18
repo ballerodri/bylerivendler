@@ -1,6 +1,7 @@
 import "server-only"
 import { redirect } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
 
 /**
  * Email "bootstrap" de la primera admin (Leri). Solo se usa una vez,
@@ -75,6 +76,30 @@ export async function isStaffUser(userId: string): Promise<boolean> {
     .eq("user_id", userId)
     .maybeSingle()
   return !!data?.active
+}
+
+/**
+ * ¿Hay en ESTE request una sesión de staff activo? Mismo criterio que el
+ * `requireStaff` privado de `admin/actions.ts` (usuario de la sesión SSR +
+ * `isStaffUser`), pero devuelve un booleano en vez de lanzar: sirve para
+ * proteger una server action PÚBLICA (`createBooking` en modo admin) sin
+ * convertir un "no sos staff" en un error 500.
+ *
+ * FAIL-CLOSED, y esto es lo importante: sin sesión, sin usuario, con la sesión
+ * vencida o ante CUALQUIER error (cookies rotas, Supabase caído, la consulta a
+ * `staff` que falla) devuelve `false`. Nunca lanza. La ÚNICA forma de que
+ * devuelva `true` es que haya un usuario autenticado con una fila `staff`
+ * activa — nada que pueda mandar quien llama influye en la respuesta.
+ */
+export async function isActiveStaffSession(): Promise<boolean> {
+  try {
+    const supabase = await createSsrClient()
+    const { data, error } = await supabase.auth.getUser()
+    if (error || !data?.user) return false
+    return await isStaffUser(data.user.id)
+  } catch {
+    return false
+  }
 }
 
 /**
