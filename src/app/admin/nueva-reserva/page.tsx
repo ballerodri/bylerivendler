@@ -4,6 +4,11 @@ import { requireAdmin } from "@/lib/staff"
 import { fetchBusinessHours } from "@/app/reserva/queries"
 import { serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
 import NuevaReservaForm from "./nueva-reserva-form"
+// El selector de sesiones del pack es el MISMO componente de la reserva
+// pública: necesita su hoja de estilos, o el calendario se ve como texto
+// plano. No pisa nada del admin — `reserva.css` no tiene selectores globales
+// y sus clases (`cal*`, `slot*`, `btn`) no se usan acá (el admin usa `adm-*`).
+import "@/app/reserva/reserva.css"
 
 export const dynamic = "force-dynamic"
 

@@ -808,6 +808,16 @@ export default function NuevaReservaForm({
                         </span>
                       ) : null}
                     </p>
+                    {/* El selector viene de la reserva pública y usa las
+                        clases de `reserva.css` (calendario, slots). Sus
+                        colores y medidas salen de las variables definidas en
+                        `.blv`: sin este wrapper el calendario se ve como
+                        texto plano, con los días y los números apilados.
+                        Se le apagan las dos reglas que `.blv` trae pensadas
+                        para una PÁGINA entera (alto de pantalla y fondo
+                        propio), que acá dejarían un bloque beige gigante
+                        dentro de la tarjeta del admin. */}
+                    <div className="blv" style={{ minHeight: 0, background: "transparent" }}>
                     <PackSessionPicker
                       businessHours={businessHours}
                       durationMin={packDurationMin}
@@ -825,6 +835,7 @@ export default function NuevaReservaForm({
                       onPick={(iso) => setPackSlot(pickingIdx, iso)}
                       onCancel={() => setPickingIdx(null)}
                     />
+                    </div>
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
