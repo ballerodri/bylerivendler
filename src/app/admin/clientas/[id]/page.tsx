@@ -12,6 +12,10 @@ import { fetchBusinessHours } from "@/app/reserva/queries"
 
 export const dynamic = "force-dynamic"
 
+// Esta página corre en el SERVIDOR (UTC en Vercel): toda fecha que se muestre
+// tiene que pedir explícitamente la zona de Argentina, o sale 3 horas adelante.
+const TZ = "America/Argentina/Buenos_Aires"
+
 type ClientRow = {
   id: string
   first_name: string
@@ -195,7 +199,7 @@ export default async function AdminClientDetailPage({
         {client.first_name} {client.last_name}
       </h1>
       <p className="adm-lede">
-        Alta {new Date(client.created_at).toLocaleDateString("es-AR")} · {client.loyalty_points} pts del Programa Cerca
+        Alta {new Date(client.created_at).toLocaleDateString("es-AR", { timeZone: TZ })} · {client.loyalty_points} pts del Programa Cerca
       </p>
 
       <h2 className="adm-section-title">Datos personales</h2>
@@ -212,6 +216,8 @@ export default async function AdminClientDetailPage({
           <div className="adm-row__label">Cumpleaños</div>
           <div>
             {client.date_of_birth
+              // Sin `timeZone` A PROPÓSITO: es una columna DATE (sin hora) y
+              // convertirla correría el cumpleaños un día para atrás.
               ? new Date(client.date_of_birth).toLocaleDateString("es-AR")
               : "—"}
           </div>
@@ -297,10 +303,14 @@ export default async function AdminClientDetailPage({
               .join(", ")
             return (
               <div key={a.id} className="adm-list-row adm-list-row--turnos">
+                {/* SIEMPRE con timeZone AR: esta página corre en el servidor
+                    (UTC en Vercel) y sin la zona mostraba 3 horas de más — el
+                    mismo turno figuraba 08:00 arriba (bloque del pack) y
+                    "11:00 a. m." acá. Y en 24h, como el resto del admin. */}
                 <div className="adm-time" style={{ fontSize: 14 }}>
-                  {date.toLocaleDateString("es-AR", { day: "2-digit", month: "short" })}
+                  {date.toLocaleDateString("es-AR", { day: "2-digit", month: "short", timeZone: TZ })}
                   <div style={{ fontFamily: "var(--sans)", fontSize: 12, color: "var(--ink-mute)" }}>
-                    {date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}
+                    {date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ })}
                   </div>
                 </div>
                 <div>

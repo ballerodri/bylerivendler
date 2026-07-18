@@ -5,6 +5,17 @@ import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
 import { schedulePackSession, confirmPackSessions, registrarSesionPasada } from "../../actions"
 import type { BusinessHour } from "@/app/reserva/data"
 
+/** Los estados en castellano, igual que en la agenda (antes se veía el valor
+ *  crudo de la base: "CONFIRMED", "COMPLETED"). */
+const STATUS_LABEL: Record<string, string> = {
+  pending: "Pendiente",
+  confirmed: "Confirmado",
+  in_progress: "En curso",
+  completed: "Completado",
+  cancelled: "Cancelado",
+  no_show: "No vino",
+}
+
 export type PackPurchaseView = {
   id: string
   packName: string
@@ -99,7 +110,9 @@ export default function PackSessions({
                 timeZone: "America/Argentina/Buenos_Aires",
               })}
             </span>
-            <span className={`adm-pill adm-pill--${s.status}`}>{s.status}</span>
+            <span className={`adm-pill adm-pill--${s.status}`}>
+              {STATUS_LABEL[s.status] ?? s.status}
+            </span>
           </div>
         ))}
       </div>

@@ -87,7 +87,7 @@ export default async function AdminClientasPage({
                   {c.first_name} {c.last_name}
                 </div>
                 <div className="adm-sub">
-                  Alta {new Date(c.created_at).toLocaleDateString("es-AR")}
+                  Alta {new Date(c.created_at).toLocaleDateString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })}
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
