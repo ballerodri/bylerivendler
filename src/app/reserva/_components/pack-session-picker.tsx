@@ -28,10 +28,16 @@ import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-ove
  * No contempla los turnos ya ocupados por otras reservas: eso requiere la
  * ida y vuelta al servidor que hace el efecto.
  */
-function allowedSlotsForDay(dateStr: string, daySlots: string[], minDate: Date | null): string[] {
-  const future = filterFutureSlots(dateStr, daySlots)
-  if (!minDate) return future
-  return future.filter((t) => slotToUtcMs(dateStr, t) >= minDate.getTime())
+function allowedSlotsForDay(
+  dateStr: string,
+  daySlots: string[],
+  minDate: Date | null,
+  /** Admin registrando algo que ya pasó: no se filtra por "futuro". */
+  allowPast = false
+): string[] {
+  const base = allowPast ? daySlots : filterFutureSlots(dateStr, daySlots)
+  if (!minDate) return base
+  return base.filter((t) => slotToUtcMs(dateStr, t) >= minDate.getTime())
 }
 
 /**
@@ -48,6 +54,7 @@ export default function PackSessionPicker({
   onPick,
   onCancel,
   blockedIntervals = [],
+  allowPast = false,
 }: {
   businessHours: BusinessHour[]
   durationMin: number
@@ -65,11 +72,21 @@ export default function PackSessionPicker({
   minDate: Date | null
   onPick: (startsAtIso: string) => void
   onCancel: () => void
+  /**
+   * SÓLO admin: permite elegir días y horarios que YA PASARON, para registrar
+   * una compra vieja que nunca se cargó al sistema. Por defecto `false` — la
+   * reserva pública nunca debe ofrecer el pasado.
+   */
+  allowPast?: boolean
 }) {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
-  const [availability] = useState(() => generateAvailability(60, businessHours))
+  // Con `allowPast` el calendario también trae los últimos 60 días: es el
+  // admin REGISTRANDO una compra vieja que nunca se cargó.
+  const [availability] = useState(() =>
+    generateAvailability(60, businessHours, allowPast ? 60 : 0)
+  )
   const [viewYear, setViewYear] = useState(today.getFullYear())
   const [viewMonth, setViewMonth] = useState(today.getMonth())
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
@@ -81,6 +98,9 @@ export default function PackSessionPicker({
   // Si no hay `minDate`, hoy.
   const todayStr = ymd(today)
   const minDayStr = (() => {
+    // Registrando algo pasado no hay piso "hoy": el único corte posible es el
+    // intervalo entre sesiones, si es que aplica.
+    if (allowPast) return minDate ? arPartsFromUtc(minDate).dateStr : ""
     if (!minDate) return todayStr
     const arDayStr = arPartsFromUtc(minDate).dateStr
     return arDayStr > todayStr ? arDayStr : todayStr
@@ -88,7 +108,7 @@ export default function PackSessionPicker({
 
   useEffect(() => {
     if (!selectedDate) { setSlots([]); return }
-    const candidates = allowedSlotsForDay(selectedDate, availability[selectedDate] ?? [], minDate)
+    const candidates = allowedSlotsForDay(selectedDate, availability[selectedDate] ?? [], minDate, allowPast)
     if (!candidates.length) { setSlots([]); return }
     let cancelled = false
     setLoading(true)
@@ -98,11 +118,13 @@ export default function PackSessionPicker({
       setLoading(false)
     })
     return () => { cancelled = true }
-  }, [selectedDate, durationMin, proHint, availability, minDate, serviceId])
+  }, [selectedDate, durationMin, proHint, availability, minDate, serviceId, allowPast])
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
   const firstDayOffset = (new Date(viewYear, viewMonth, 1).getDay() + 6) % 7
-  const canPrev = !(viewYear === today.getFullYear() && viewMonth <= today.getMonth())
+  // Registrando algo pasado se puede retroceder de mes; en la reserva normal
+  // no tiene sentido ir a meses que ya fueron.
+  const canPrev = allowPast || !(viewYear === today.getFullYear() && viewMonth <= today.getMonth())
   const selectedObj = selectedDate ? parseYmd(selectedDate) : null
 
   // Para cada horario libre que trae el servidor, ¿se pisa con algo que la
@@ -165,7 +187,7 @@ export default function PackSessionPicker({
             const hasSlots =
               !tooEarly &&
               !!availability[dateStr] &&
-              allowedSlotsForDay(dateStr, availability[dateStr], minDate).length > 0
+              allowedSlotsForDay(dateStr, availability[dateStr], minDate, allowPast).length > 0
             return (
               <button
                 key={day}

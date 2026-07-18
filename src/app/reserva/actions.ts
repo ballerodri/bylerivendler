@@ -264,10 +264,16 @@ async function planPack(
   if (slotDates.some((d) => isNaN(d.getTime())))
     return { ok: false, error: "Alguna fecha del pack es inválida." }
 
-  const nowMs = Date.now()
-  const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
-  if (pastIdx !== -1)
-    return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+  // La clienta sólo puede reservar a futuro. El salón, en cambio, a veces
+  // necesita REGISTRAR una compra que ya ocurrió (un pack vendido en persona
+  // que nunca se cargó, con sesiones ya realizadas): en modo admin no se
+  // exige que sea futuro. La guarda de staff de `createBooking` ya corrió.
+  if (!input.adminMode) {
+    const nowMs = Date.now()
+    const pastIdx = slotDates.findIndex((d) => d.getTime() <= nowMs)
+    if (pastIdx !== -1)
+      return { ok: false, error: `La sesión ${pastIdx + 1} tiene que ser en una fecha futura.` }
+  }
 
   const rules = validatePackSlots(slotDates, {
     sessionsTotal: pack.sessions,
@@ -453,7 +459,9 @@ async function planLooseServices(
       }))
       .sort((a, b) => a.startsAtMs - b.startsAtMs)
 
-    const rules = validateSeparateSlots(slots, Date.now())
+    // Mismo criterio que el pack: la clienta reserva a futuro, el salón puede
+    // registrar algo ya ocurrido (con `0` ninguna fecha real cae en "pasada").
+    const rules = validateSeparateSlots(slots, input.adminMode ? 0 : Date.now())
     if (!rules.ok) return { ok: false, error: rules.error }
 
     // Revalidar CADA horario contra la disponibilidad real (autoritativo),

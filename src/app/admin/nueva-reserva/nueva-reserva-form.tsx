@@ -90,6 +90,10 @@ export default function NuevaReservaForm({
   // el resto del pack, aunque se elija recién en el paso "Fecha y hora".
   const [packSlots, setPackSlots] = useState<string[]>([])
   const [pickingIdx, setPickingIdx] = useState<number | null>(null)
+  // Registrar una compra que YA OCURRIÓ (un pack vendido en persona que nunca
+  // se cargó). Apagado por defecto: prendido, el calendario ofrece días
+  // pasados, y no queremos que se elija uno sin querer en una reserva normal.
+  const [yaOcurrio, setYaOcurrio] = useState(false)
   const selectedPack = packs.find((p) => p.id === packId) ?? null
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [zoneSel, setZoneSel] = useState<Record<string, string[]>>({})
@@ -843,6 +847,7 @@ export default function NuevaReservaForm({
                       // eligió para esta misma compra (las sesiones anteriores
                       // o los tratamientos): `crossOverlapCheck` lo rechazaría.
                       blockedIntervals={[...packBlocks, ...treatmentBlocks]}
+                      allowPast={yaOcurrio}
                       onPick={(iso) => setPackSlot(pickingIdx, iso)}
                       onCancel={() => setPickingIdx(null)}
                     />
@@ -850,6 +855,24 @@ export default function NuevaReservaForm({
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {/* Registrar algo ya ocurrido: el calendario pasa a
+                        ofrecer los últimos 60 días. Sólo el admin puede
+                        hacerlo (el servidor lo vuelve a verificar). */}
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 4 }}>
+                      <input
+                        type="checkbox"
+                        checked={yaOcurrio}
+                        onChange={(e) => { setYaOcurrio(e.target.checked); setPackSlots([]); setSelectedSlot(null) }}
+                      />
+                      Esta compra ya ocurrió (permitir fechas pasadas)
+                    </label>
+                    {yaOcurrio && (
+                      <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "0 0 4px" }}>
+                        Las sesiones que pongas en el pasado van a quedar <strong>confirmadas</strong>:
+                        marcalas como completadas en la agenda (filtro <em>Pasados</em>) para que
+                        descuenten del pack.
+                      </p>
+                    )}
                     {Array.from({ length: selectedPack.sessions }).map((_, i) => {
                       const iso = packSlots[i]
                       // No se puede elegir la 3ª sin la 2ª: el mínimo de cada

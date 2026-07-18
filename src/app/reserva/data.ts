@@ -50,7 +50,13 @@ const FALLBACK_HOURS: BusinessHour[] = [
 
 export function generateAvailability(
   daysAhead = 60,
-  businessHours?: BusinessHour[]
+  businessHours?: BusinessHour[],
+  /**
+   * Días HACIA ATRÁS a incluir. Sólo lo usa el admin para REGISTRAR algo que
+   * ya pasó (una compra vieja que nunca se cargó); la reserva pública siempre
+   * va con 0, o le ofrecería a la clienta días que ya fueron.
+   */
+  daysBack = 0
 ): Record<string, string[]> {
   const hours = businessHours && businessHours.length > 0 ? businessHours : FALLBACK_HOURS
   const byDow = new Map(hours.map((h) => [h.day_of_week, h]))
@@ -59,7 +65,7 @@ export function generateAvailability(
   const today = new Date()
   today.setHours(0, 0, 0, 0)
 
-  for (let i = 0; i < daysAhead; i++) {
+  for (let i = -daysBack; i < daysAhead; i++) {
     const d = new Date(today)
     d.setDate(d.getDate() + i)
     const dow = d.getDay()
