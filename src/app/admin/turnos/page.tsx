@@ -8,6 +8,7 @@ import PaidBadge from "../_components/paid-badge"
 import { fmtPrice } from "../../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "../_components/whatsapp-button"
+import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 
 export const dynamic = "force-dynamic"
 
@@ -477,7 +478,12 @@ function groupPurchases(appts: ApptRow[]): ApptRow[][] {
   const groups: ApptRow[][] = []
   const byGroup = new Map<string, ApptRow[]>()
   for (const a of appts) {
-    const key = a.booking_group_id ?? a.id
+    // La clave lleva el DÍA además de la compra: las sesiones de un pack son
+    // de la misma compra pero de semanas distintas, y la agenda es
+    // cronológica — cada una tiene que aparecer en SU fecha. Agrupadas en una
+    // sola tarjeta, la del 4 de agosto quedaba escondida bajo el 21 de julio.
+    const dia = arPartsFromUtc(new Date(a.starts_at)).dateStr
+    const key = a.booking_group_id ? `${a.booking_group_id}|${dia}` : a.id
     let arr = byGroup.get(key)
     if (!arr) {
       arr = []
