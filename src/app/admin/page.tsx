@@ -9,6 +9,7 @@ import { fetchStaffServices } from "../reserva/queries"
 import { unbookableServiceIds } from "@/lib/servicios/staff-services"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "./_components/whatsapp-button"
+import { haComenzado, estadoEfectivo } from "@/lib/servicios/appointment-status"
 
 export const dynamic = "force-dynamic"
 
@@ -49,6 +50,7 @@ export default async function AdminTodayPage() {
 
   // Argentina today bounds in UTC
   const now = new Date()
+  const nowMs = now.getTime()
   const arNow = new Date(now.toLocaleString("en-US", { timeZone: TZ }))
   const arStart = new Date(Date.UTC(
     arNow.getFullYear(), arNow.getMonth(), arNow.getDate(), 3, 0, 0
@@ -168,13 +170,19 @@ export default async function AdminTodayPage() {
                   </div>
                 </div>
                 <div>
-                  <span className={`adm-pill adm-pill--${a.status}`}>
-                    {STATUS_LABEL[a.status] ?? a.status}
-                  </span>
+                  {(() => {
+                    const eff = estadoEfectivo(a.status, a.starts_at, nowMs)
+                    return (
+                      <span className={`adm-pill adm-pill--${eff}`}>
+                        {STATUS_LABEL[eff] ?? eff}
+                      </span>
+                    )
+                  })()}
                 </div>
                 <div className="adm-actions">
-                  {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
-                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
+                  {/* El recordatorio por WhatsApp sólo para turnos confirmados que
+                      todavía NO empezaron. */}
+                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && !haComenzado(a.status, a.starts_at, nowMs) && a.client?.phone && (() => {
                     const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *hoy a las ${time}hs* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
                     const link = clientWhatsappLink(a.client!.phone, msg)
                     return link ? <WhatsAppButton appointmentId={a.id} link={link} /> : null
@@ -182,6 +190,7 @@ export default async function AdminTodayPage() {
                   <StatusActions
                     appointmentId={a.id}
                     currentStatus={a.status}
+                    startedByTime={haComenzado(a.status, a.starts_at, nowMs)}
                     totalCents={a.total_cents}
                     paidCents={a.paid_cents}
                     packLinked={!!a.pack_purchase_id}

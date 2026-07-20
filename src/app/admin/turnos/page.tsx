@@ -9,6 +9,7 @@ import { fmtPrice } from "../../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "../_components/whatsapp-button"
 import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { haComenzado, estadoEfectivo } from "@/lib/servicios/appointment-status"
 
 export const dynamic = "force-dynamic"
 
@@ -118,16 +119,39 @@ export default async function AdminTurnosPage({
     `
   )
 
-  const now = new Date().toISOString()
-  if (range === "upcoming") q = q.gte("starts_at", now).order("starts_at", { ascending: true })
-  else if (range === "past") q = q.lt("starts_at", now).order("starts_at", { ascending: false })
-  else q = q.order("starts_at", { ascending: false })
+  // Un solo instante para todo (rango + "en curso"), sin skew entre filtros.
+  const nowDate = new Date()
+  const now = nowDate.toISOString()
+  const nowMs = nowDate.getTime()
 
-  if (statusFilter !== "all") q = q.eq("status", statusFilter)
+  // "En curso" = in_progress reales + confirmados cuya hora ya pasó. Es un
+  // concepto de AHORA/PASADO, así que se IGNORA el rango (con "Próximos" el
+  // clamp a futuro lo dejaría siempre vacío) y se traen SÓLO esas filas con un
+  // `.or`: nada de confirmados futuros que llenen el tope de 200 y tapen los
+  // que sí van (que ordenados por fecha desc quedarían al final).
+  const filtroEnCurso = statusFilter === "in_progress"
+  if (filtroEnCurso) {
+    q = q
+      .or(`status.eq.in_progress,and(status.eq.confirmed,starts_at.lte.${now})`)
+      .order("starts_at", { ascending: false })
+  } else {
+    if (range === "upcoming") q = q.gte("starts_at", now).order("starts_at", { ascending: true })
+    else if (range === "past") q = q.lt("starts_at", now).order("starts_at", { ascending: false })
+    else q = q.order("starts_at", { ascending: false })
+
+    if (statusFilter !== "all") q = q.eq("status", statusFilter)
+  }
   if (staffProfile?.isProfessionalOnly) q = q.eq("staff_id", staffProfile.id)
 
   const { data } = await q.limit(200)
-  const appts = (data ?? []) as unknown as ApptRow[]
+  let appts = (data ?? []) as unknown as ApptRow[]
+
+  // "Confirmados" muestra sólo los que todavía NO empezaron: los que ya
+  // empezaron se ven (y se operan) como "En curso". El `.or` de En curso ya
+  // trajo exactamente lo que va, así que ahí no hace falta recortar.
+  if (statusFilter === "confirmed") {
+    appts = appts.filter((a) => !haComenzado(a.status, a.starts_at, nowMs))
+  }
 
   const { data: facturadas } = await admin
     .from("invoices")
@@ -244,17 +268,23 @@ export default async function AdminTurnosPage({
           )}
         </div>
         <div>
-          <span className={`adm-pill adm-pill--${a.status}`}>
-            {STATUS_LABEL[a.status] ?? a.status}
-          </span>
+          {(() => {
+            const eff = estadoEfectivo(a.status, a.starts_at, nowMs)
+            return (
+              <span className={`adm-pill adm-pill--${eff}`}>
+                {STATUS_LABEL[eff] ?? eff}
+              </span>
+            )
+          })()}
           {facturadasSet.has(a.id) && (
             <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
           )}
           <MailPill sentAt={a.confirmation_email_sent_at} status={a.status} />
         </div>
         <div className="adm-actions">
-          {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
-          {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
+          {/* El recordatorio por WhatsApp sólo para turnos confirmados que
+              todavía NO empezaron: recordar uno que ya pasó no tiene sentido. */}
+          {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && !haComenzado(a.status, a.starts_at, nowMs) && a.client?.phone && (() => {
             const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
             const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
             const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
@@ -264,6 +294,7 @@ export default async function AdminTurnosPage({
           <StatusActions
             appointmentId={a.id}
             currentStatus={a.status}
+            startedByTime={haComenzado(a.status, a.starts_at, nowMs)}
             totalCents={a.total_cents}
             paidCents={a.paid_cents}
             matchingPacks={packsForAppt(a)}
@@ -299,7 +330,11 @@ export default async function AdminTurnosPage({
       month: "short",
       timeZone: TZ,
     })
-    const allSameStatus = sorted.every((a) => a.status === first.status)
+    // Se compara por estado EFECTIVO: si en la compra hay uno confirmado que ya
+    // empezó ("en curso") y otro que todavía no, no están "parejos" y cada
+    // sub-bloque muestra su propio cartelito.
+    const effFirst = estadoEfectivo(first.status, first.starts_at, nowMs)
+    const allSameStatus = sorted.every((a) => estadoEfectivo(a.status, a.starts_at, nowMs) === effFirst)
     const groupHasPending = sorted.some((a) => a.status === "pending")
 
     return (
@@ -365,15 +400,19 @@ export default async function AdminTurnosPage({
                   {facturadasSet.has(a.id) && (
                     <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
                   )}
-                  {!allSameStatus && (
-                    <span className={`adm-pill adm-pill--${a.status}`} style={{ marginLeft: 6 }}>
-                      {STATUS_LABEL[a.status] ?? a.status}
-                    </span>
-                  )}
+                  {!allSameStatus && (() => {
+                    const eff = estadoEfectivo(a.status, a.starts_at, nowMs)
+                    return (
+                      <span className={`adm-pill adm-pill--${eff}`} style={{ marginLeft: 6 }}>
+                        {STATUS_LABEL[eff] ?? eff}
+                      </span>
+                    )
+                  })()}
                 </div>
                 <div className="adm-actions" style={{ justifyContent: "flex-start", marginTop: 4 }}>
-                  {/* El recordatorio por WhatsApp sólo para turnos confirmados. */}
-                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && a.client?.phone && (() => {
+                  {/* El recordatorio por WhatsApp sólo para turnos confirmados que
+                      todavía NO empezaron. */}
+                  {!staffProfile?.isProfessionalOnly && a.status === "confirmed" && !haComenzado(a.status, a.starts_at, nowMs) && a.client?.phone && (() => {
                     const isToday = new Date(a.starts_at).toLocaleDateString("sv", { timeZone: TZ }) === new Date().toLocaleDateString("sv", { timeZone: TZ })
                     const when = isToday ? `hoy a las ${time}hs` : `el ${fmtDateLong(a.starts_at)} a las ${time}hs`
                     const msg = `Hola ${a.client!.first_name}! Te recordamos que tenés turno *${when}* en By Leri Vendler.\n\nEstamos en *Sanguinetti 297, Villa Morra · Pilar*.\n\nCualquier consulta estamos acá. ¡Te esperamos!`
@@ -383,6 +422,7 @@ export default async function AdminTurnosPage({
                   <StatusActions
                     appointmentId={a.id}
                     currentStatus={a.status}
+                    startedByTime={haComenzado(a.status, a.starts_at, nowMs)}
                     totalCents={a.total_cents}
                     paidCents={a.paid_cents}
                     matchingPacks={packsForAppt(a)}
@@ -407,8 +447,8 @@ export default async function AdminTurnosPage({
           {/* Un solo pill cuando toda la compra está pareja; si no, cada
               sub-bloque ya mostró el suyo. */}
           {allSameStatus && (
-            <span className={`adm-pill adm-pill--${first.status}`}>
-              {STATUS_LABEL[first.status] ?? first.status}
+            <span className={`adm-pill adm-pill--${effFirst}`}>
+              {STATUS_LABEL[effFirst] ?? effFirst}
             </span>
           )}
           <MailPill sentAt={group.find((a) => a.confirmation_email_sent_at)?.confirmation_email_sent_at ?? null} status={first.status} />

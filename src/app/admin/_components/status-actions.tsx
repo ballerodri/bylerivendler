@@ -23,6 +23,16 @@ const NEXT_ACTIONS: Record<string, { status: string; label: string; variant?: st
   no_show: [{ status: "pending", label: "Reactivar" }],
 }
 
+// Acciones cuando el turno está "en curso": o lo inició la usuaria a mano
+// (in_progress), o es un confirmado cuya hora ya pasó y arrancó solo
+// (startedByTime). "Completar" al toque y "No vino" a mano para las que
+// faltaron — así ya no hace falta apretar "Iniciar" antes de completar.
+const EN_CURSO_ACTIONS = [
+  { status: "completed", label: "Completar", variant: "primary" },
+  { status: "no_show", label: "No vino", variant: "danger" },
+  { status: "cancelled", label: "Cancelar", variant: "danger" },
+]
+
 const RESCHEDULABLE = new Set(["pending", "confirmed"])
 
 /** Centavos → pesos para mostrar (mismo estilo que fmtPrice de reserva/data). */
@@ -115,6 +125,7 @@ function OverflowMenu({ itemCount, children }: { itemCount: number; children: Re
 export default function StatusActions({
   appointmentId,
   currentStatus,
+  startedByTime = false,
   totalCents,
   paidCents,
   matchingPacks = [],
@@ -125,6 +136,11 @@ export default function StatusActions({
 }: {
   appointmentId: string
   currentStatus: string
+  /** Confirmado cuya hora ya pasó: se opera como "en curso" (Completar / No
+   *  vino directos) sin haber apretado "Iniciar". Lo calcula la agenda con la
+   *  hora del servidor y lo pasa ya resuelto (así no hay desajuste con el
+   *  cartelito ni parpadeo de hidratación). */
+  startedByTime?: boolean
   totalCents: number
   paidCents: number
   matchingPacks?: { id: string; label: string }[]
@@ -226,7 +242,11 @@ export default function StatusActions({
     })
   }
 
-  const actions = NEXT_ACTIONS[currentStatus] ?? []
+  // "En curso" = lo inició la usuaria (in_progress) o es un confirmado cuya
+  // hora ya pasó (startedByTime). En ese caso las acciones son Completar / No
+  // vino / Cancelar, salteando el "Iniciar".
+  const enCurso = currentStatus === "in_progress" || (currentStatus === "confirmed" && startedByTime)
+  const actions = enCurso ? EN_CURSO_ACTIONS : (NEXT_ACTIONS[currentStatus] ?? [])
   const isCompleted = currentStatus === "completed"
   const canReschedule = RESCHEDULABLE.has(currentStatus)
   const primaryAction = actions[0]
