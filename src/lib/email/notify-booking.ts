@@ -73,10 +73,13 @@ export async function notifyNewBooking(
 }
 
 /**
- * Avisa UNA compra entera (uno o varios turnos) por email al equipo: mismos
- * destinatarios que `notifyNewBooking` (admins/recepción activos + las
- * profesionales asignadas, sin duplicados, `excludeEmail` opcional), pero en
- * UN solo mail itemizado en vez de uno por turno. Best-effort: nunca lanza.
+ * Avisa UNA compra entera (uno o varios turnos) por email al equipo, en UN
+ * solo mail itemizado en vez de uno por turno. Best-effort: nunca lanza.
+ *
+ * Destinatarios: SÓLO admins/recepción activos (sin duplicados, con
+ * `excludeEmail` opcional). Las profesionales NO entran acá: se enteran
+ * cuando el turno queda confirmado (`sendGroupConfirmationEmail`), porque
+ * hasta que no está la seña la compra puede caerse.
  */
 export async function notifyNewPurchase(
   supabase: SupabaseClient,

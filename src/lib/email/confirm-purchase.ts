@@ -253,12 +253,30 @@ export async function sendGroupConfirmationEmail(
     ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
   `
 
-    // 7) Avisar a CADA profesional los turnos SUYOS de esta compra. Es el
-    //    único aviso que reciben: al comprarse no se les manda nada, porque
-    //    hasta que no está confirmado el turno puede no existir.
-    //    Best-effort y DESPUÉS del reclamo: si uno de estos falla no se
-    //    des-reclama nada — desandar acá volvería a mandarle el mail a la
-    //    clienta, que es peor que un aviso interno perdido.
+    // 7) EL MAIL DE LA CLIENTA VA PRIMERO. Es el más importante del sistema y
+    //    corre dentro de la ventana que protege el reclamo: si se metieran
+    //    antes los avisos internos y el proceso muriera a mitad, el reclamo
+    //    quedaría puesto y la clienta se quedaría sin confirmación PARA
+    //    SIEMPRE (el botón de reintentar ve el reclamo y se va).
+    //    Resend (v6) no lanza ante un error de API: devuelve { error }.
+    const { error } = await resend.emails.send({
+      from: FROM,
+      to: clientEmail,
+      subject,
+      html: shell(subject, body),
+    })
+    if (error) {
+      await unclaim()
+      return
+    }
+
+    // 8) Recién ahora, los avisos a las profesionales: los turnos SUYOS de
+    //    esta compra. Es el único aviso que reciben (al comprarse no se les
+    //    manda nada: hasta que no está confirmado, el turno puede no existir).
+    //    Acá abajo nada des-reclama: si uno falla se pierde un aviso interno,
+    //    que es mucho menos grave que re-mandarle el mail a la clienta. Y al
+    //    correr DESPUÉS del envío exitoso, un reintento por fallo de la
+    //    clienta no puede duplicarlos.
     const porProfesional = new Map<string, { nombre: string; email: string; filas: { startsAt: Date; label: string; durationMin: number }[] }>()
     for (const a of live) {
       for (const l of a.appointment_services ?? []) {
@@ -271,7 +289,9 @@ export async function sendGroupConfirmationEmail(
         }
         entry.filas.push({
           startsAt: new Date(l.starts_at ?? a.starts_at),
-          label: l.service?.name ?? packName ?? "Turno",
+          // `||` y no `??`: `packName` arranca en "" y un `??` dejaría la
+          // etiqueta vacía en vez de caer al texto genérico.
+          label: l.service?.name || packName || "Turno",
           durationMin: l.duration_min ?? a.duration_min ?? 0,
         })
         porProfesional.set(st.id, entry)
@@ -291,16 +311,6 @@ export async function sendGroupConfirmationEmail(
         // best-effort: el turno ya está confirmado igual
       }
     }
-
-    // 8) Manda. Resend (v6) no lanza ante un error de API: devuelve { error }.
-    //    Falla de cualquier tipo → soltar el reclamo para poder reintentar.
-    const { error } = await resend.emails.send({
-      from: FROM,
-      to: clientEmail,
-      subject,
-      html: shell(subject, body),
-    })
-    if (error) await unclaim()
   } catch {
     await unclaim()
   }

@@ -186,7 +186,7 @@ export async function sendStaffConfirmationAlert(data: {
   const rows = [...data.rows].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
   const subject =
     rows.length > 1
-      ? `Turnos confirmados · ${data.clientName} · ${rows.length}`
+      ? `Turnos confirmados · ${data.clientName} · ${rows.length} turnos`
       : `Turno confirmado · ${data.clientName} · ${fmtDateAR(rows[0].startsAt)}`
 
   const rowsHtml = rows
