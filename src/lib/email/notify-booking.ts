@@ -44,6 +44,9 @@ export async function notifyNewBooking(
     const exclude = (opts.excludeEmail ?? "").toLowerCase()
     const seen = new Set<string>()
     const to: string[] = []
+    // Acá SÍ van las profesionales asignadas: este aviso es de un turno que el
+    // salón cargó a mano, y esos nacen CONFIRMADOS — o sea que la profesional
+    // se entera igual que la clienta, cuando el turno ya es firme.
     for (const row of [...((adminRows ?? []) as { email: string | null }[]), ...profRows]) {
       const e = row.email
       if (!e) continue
@@ -89,15 +92,14 @@ export async function notifyNewPurchase(
   try {
     const staffIds = [...new Set(opts.rows.map((r) => r.staffId).filter((id): id is string => !!id))]
 
-    // UN solo select a staff por los ids de las filas: de ahí salen los
-    // nombres para el mail y, de paso, los mails de las profesionales
-    // asignadas (destinatarias del aviso, sólo activas y con email).
-    let staffRows: { id: string; full_name: string | null; email: string | null; active: boolean }[] = []
+    // Un select a staff por los ids de las filas, SÓLO para poner el nombre de
+    // cada profesional en el mail. Las profesionales NO reciben este aviso: se
+    // enteran recién cuando el turno queda confirmado, igual que la clienta
+    // (hasta entonces la compra puede caerse por falta de seña, y no tiene
+    // sentido mandarles a agendar algo que todavía no es firme).
+    let staffRows: { id: string; full_name: string | null }[] = []
     if (staffIds.length) {
-      const { data } = await supabase
-        .from("staff")
-        .select("id, full_name, email, active")
-        .in("id", staffIds)
+      const { data } = await supabase.from("staff").select("id, full_name").in("id", staffIds)
       staffRows = (data ?? []) as typeof staffRows
     }
     const nameById = new Map(staffRows.map((s) => [s.id, s.full_name]))
@@ -109,12 +111,10 @@ export async function notifyNewPurchase(
       .eq("active", true)
       .not("email", "is", null)
 
-    const profRows = staffRows.filter((s) => s.active && s.email).map((s) => ({ email: s.email }))
-
     const exclude = (opts.excludeEmail ?? "").toLowerCase()
     const seen = new Set<string>()
     const to: string[] = []
-    for (const row of [...((adminRows ?? []) as { email: string | null }[]), ...profRows]) {
+    for (const row of (adminRows ?? []) as { email: string | null }[]) {
       const e = row.email
       if (!e) continue
       const k = e.toLowerCase()

@@ -12,6 +12,7 @@ import {
   ctaButtons,
   calChip,
   gcalLink,
+  sendStaffConfirmationAlert,
 } from "./booking-emails"
 
 const resend = process.env.RESEND_API_KEY
@@ -40,7 +41,7 @@ type GroupApptRow = {
     starts_at: string | null
     duration_min: number | null
     service: { name: string } | null
-    staff: { full_name: string } | null
+    staff: { id: string; full_name: string; email: string | null; active: boolean } | null
   }[]
 }
 
@@ -71,7 +72,7 @@ export async function sendGroupConfirmationEmail(
     .from("appointments")
     .select(
       `id, starts_at, status, duration_min, pack_purchase_id, client_id,
-       appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))`
+       appointment_services(starts_at, duration_min, service:services(name), staff:staff(id, full_name, email, active))`
     )
     .eq("booking_group_id", bookingGroupId)
   const appts = (data ?? []) as unknown as GroupApptRow[]
@@ -111,10 +112,10 @@ export async function sendGroupConfirmationEmail(
     // 4) La clienta: sin email no hay a quién mandarle.
     const { data: clientRow } = await admin
       .from("clients")
-      .select("email, first_name")
+      .select("email, first_name, last_name, phone")
       .eq("id", appts[0].client_id)
       .single()
-    const client = clientRow as { email: string | null; first_name: string | null } | null
+    const client = clientRow as { email: string | null; first_name: string | null; last_name: string | null; phone: string | null } | null
     // `@noemail.local` es el placeholder de las clientas cargadas A MANO por el
     // salón, que no dejaron un mail real (`admin_created_…@noemail.local`):
     // cuenta como "sin email", mismo camino que el email vacío. Mandar ahí sólo
@@ -252,7 +253,46 @@ export async function sendGroupConfirmationEmail(
     ${ctaButtons(SITE + "/portal", "Ver mis turnos")}
   `
 
-    // 7) Manda. Resend (v6) no lanza ante un error de API: devuelve { error }.
+    // 7) Avisar a CADA profesional los turnos SUYOS de esta compra. Es el
+    //    único aviso que reciben: al comprarse no se les manda nada, porque
+    //    hasta que no está confirmado el turno puede no existir.
+    //    Best-effort y DESPUÉS del reclamo: si uno de estos falla no se
+    //    des-reclama nada — desandar acá volvería a mandarle el mail a la
+    //    clienta, que es peor que un aviso interno perdido.
+    const porProfesional = new Map<string, { nombre: string; email: string; filas: { startsAt: Date; label: string; durationMin: number }[] }>()
+    for (const a of live) {
+      for (const l of a.appointment_services ?? []) {
+        const st = l.staff
+        if (!st?.email || !st.active) continue
+        const entry = porProfesional.get(st.id) ?? {
+          nombre: st.full_name,
+          email: st.email,
+          filas: [] as { startsAt: Date; label: string; durationMin: number }[],
+        }
+        entry.filas.push({
+          startsAt: new Date(l.starts_at ?? a.starts_at),
+          label: l.service?.name ?? packName ?? "Turno",
+          durationMin: l.duration_min ?? a.duration_min ?? 0,
+        })
+        porProfesional.set(st.id, entry)
+      }
+    }
+    const nombreClienta = `${client?.first_name ?? ""} ${client?.last_name ?? ""}`.trim() || "una clienta"
+    for (const prof of porProfesional.values()) {
+      try {
+        await sendStaffConfirmationAlert({
+          to: prof.email,
+          staffName: prof.nombre,
+          clientName: nombreClienta,
+          clientPhone: client?.phone ?? null,
+          rows: prof.filas,
+        })
+      } catch {
+        // best-effort: el turno ya está confirmado igual
+      }
+    }
+
+    // 8) Manda. Resend (v6) no lanza ante un error de API: devuelve { error }.
     //    Falla de cualquier tipo → soltar el reclamo para poder reintentar.
     const { error } = await resend.emails.send({
       from: FROM,

@@ -165,6 +165,59 @@ export async function sendNewPurchaseAlert(data: {
 }
 
 /**
+ * Aviso a UNA profesional de que un turno SUYO quedó confirmado.
+ *
+ * Distinto del aviso de "nueva reserva" (que sale al comprar, cuando todavía
+ * no está saldado): éste sale cuando el turno ya es firme y va a la agenda.
+ * Lleva SÓLO los turnos de esa profesional, no la compra entera — es lo que
+ * ella tiene que hacer.
+ */
+export async function sendStaffConfirmationAlert(data: {
+  to: string
+  staffName: string
+  clientName: string
+  clientPhone?: string | null
+  rows: { startsAt: Date; label: string; durationMin: number }[]
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!resend) return { ok: false, error: "Resend no configurado" }
+  if (!data.to) return { ok: false, error: "Sin destinatario" }
+  if (!data.rows.length) return { ok: false, error: "Sin turnos" }
+
+  const rows = [...data.rows].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
+  const subject =
+    rows.length > 1
+      ? `Turnos confirmados · ${data.clientName} · ${rows.length}`
+      : `Turno confirmado · ${data.clientName} · ${fmtDateAR(rows[0].startsAt)}`
+
+  const rowsHtml = rows
+    .map(
+      (r) =>
+        `<p style="font-family:Georgia,serif;font-size:15px;margin:0 0 6px;">${fmtDateAR(r.startsAt)} — ${escape(r.label)} <span style="font-size:13px;color:#7a6e64;">· ${r.durationMin} min</span></p>`
+    )
+    .join("")
+
+  const body = `
+    <p style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#7a6e64;margin:0 0 8px;">Turno confirmado</p>
+    <h1 style="font-family:Georgia,serif;font-size:30px;font-weight:400;line-height:1.15;margin:0 0 16px;">
+      ${escape(data.staffName)}, tenés turno con <em style="color:#b68a5f;">${escape(data.clientName)}</em>
+    </h1>
+    <div style="background:#fff;border:1px solid rgba(43,38,35,0.1);border-radius:14px;padding:24px;margin-bottom:24px;">
+      <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">${rows.length > 1 ? "Tus turnos" : "Tu turno"}</p>
+      ${rowsHtml}
+      ${data.clientPhone ? `<div style="height:8px;"></div><p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Contacto</p><p style="font-family:Georgia,serif;font-size:15px;margin:0;">${escape(data.clientPhone)}</p>` : ""}
+    </div>
+    ${ctaButtons(SITE + "/admin/turnos", "Ver en la agenda")}
+  `
+  try {
+    const { error } = await resend.emails.send({ from: FROM, to: data.to, subject, html: shell(subject, body) })
+    if (error) return { ok: false, error: error.message }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
  * UN solo mail cuando la clienta cancela desde el portal: una línea por turno
  * cancelado (una compra puede tener varios). Reemplaza al viejo
  * sendBookingCancellation, que salía una vez POR turno.
