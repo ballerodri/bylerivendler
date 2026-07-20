@@ -4,8 +4,8 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
-import { isStaffUser } from "@/lib/staff"
-import { emitirFactura } from "@/lib/arca/invoice-service"
+import { isStaffUser, requireAdmin } from "@/lib/staff"
+import { emitirFactura, anularFactura } from "@/lib/arca/invoice-service"
 import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
 import { pesosToCents } from "@/lib/arca/format"
 import { docTipoParaDocumento, normalizarDoc } from "@/lib/arca/padron-parse"
@@ -198,4 +198,26 @@ export async function reenviarFacturaEmail(
 
   const r = await renderAndEmailInvoice(invoiceId, to, firstName)
   return r.ok ? { ok: true } : { ok: false, error: r.error }
+}
+
+/**
+ * Anula una factura emitiendo una Nota de Crédito C (la referencia y le resta
+ * el importe). Sólo admin: es un comprobante fiscal, no una edición.
+ * Best-effort del mail: la nota de crédito vale por su CAE, no por el mail.
+ */
+export async function anularFacturaAction(
+  invoiceId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  if (!user || !(await isStaffUser(user.id))) return { ok: false, error: "Acceso denegado" }
+  await requireAdmin(user.id)
+
+  try {
+    await anularFactura(invoiceId)
+    revalidatePath("/admin/facturacion")
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "No se pudo anular" }
+  }
 }

@@ -31,7 +31,10 @@ export async function solicitarCae(input: InvoiceInput): Promise<CaeResult> {
   const cfg = getArcaConfig()
   const auth = await getAuth("wsfe")
   const client = await createArcaSoapClient(cfg.wsfeUrl)
-  const ultimo = await getUltimoComprobante(auth, input.ptoVta, 11, client)
+  // El número corre por tipo de comprobante: la nota de crédito (13) tiene su
+  // propia numeración, aparte de las facturas (11).
+  const cbteTipo = input.cbteTipo ?? 11
+  const ultimo = await getUltimoComprobante(auth, input.ptoVta, cbteTipo, client)
   const cbteNro = ultimo + 1
 
   const [res] = await client.FECAESolicitarAsync(buildFeCAEReq(auth, input, cbteNro))

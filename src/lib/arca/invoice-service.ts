@@ -92,3 +92,113 @@ export async function emitirFactura(input: EmitInput) {
   if (error) throw new Error(`Factura autorizada pero falló al guardar: ${error.message}`)
   return data
 }
+
+/**
+ * Anula una factura ya emitida con una NOTA DE CRÉDITO C. En ARCA una factura
+ * con CAE no se borra ni edita: se la cancela con una nota de crédito por el
+ * mismo importe, que la referencia. La nota de crédito es un comprobante
+ * propio (cbte_tipo 13) con su propio CAE y su propia numeración; se guarda
+ * como una fila más de `invoices` apuntando a la original, y la original queda
+ * marcada `anulada`.
+ *
+ * Copia EXACTO el receptor, el total, el concepto y la descripción de la
+ * original: la nota de crédito tiene que reflejar lo mismo que anula.
+ */
+export async function anularFactura(invoiceId: string) {
+  const cfg = getArcaConfig()
+  const db = admin()
+
+  const { data: orig, error: readErr } = await db
+    .from("invoices")
+    .select(
+      "id, cbte_tipo, pto_vta, cbte_nro, concepto, receptor_doc_tipo, receptor_doc_nro, receptor_nombre, receptor_cond_iva, total_cents, descripcion, cae, fecha_emision, estado, anulada, environment, client_id, appointment_id"
+    )
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (readErr) throw new Error(`No se pudo leer la factura: ${readErr.message}`)
+  if (!orig) throw new Error("No encontramos la factura.")
+
+  // Barreras: sólo se anula una FACTURA (11) EMITIDA que no esté ya anulada, y
+  // que sea del entorno actual (no anular una de homologación desde producción).
+  if (orig.cbte_tipo !== 11) throw new Error("Sólo se puede anular una factura, no una nota de crédito.")
+  if (orig.estado !== "emitida" || !orig.cae) throw new Error("Esta factura no está emitida.")
+  if (orig.anulada) throw new Error("Esta factura ya fue anulada.")
+  if (orig.environment !== cfg.env) throw new Error("Esta factura es de otro entorno de ARCA.")
+
+  const fecha = new Date()
+  const wsInput: InvoiceInput = {
+    ptoVta: cfg.ptoVta,
+    concepto: orig.concepto as 1 | 2 | 3,
+    docTipo: orig.receptor_doc_tipo as DocTipo,
+    docNro: orig.receptor_doc_nro,
+    condIvaReceptor: orig.receptor_cond_iva,
+    totalCents: orig.total_cents,
+    fecha,
+    cbteTipo: 13, // Nota de Crédito C
+    cbteAsoc: {
+      tipo: orig.cbte_tipo,
+      ptoVta: orig.pto_vta,
+      nro: Number(orig.cbte_nro),
+      cuit: cfg.cuit,
+      fecha: new Date(`${orig.fecha_emision}T12:00:00-03:00`),
+    },
+  }
+
+  const cae = await solicitarCae(wsInput)
+
+  const qrUrl = buildQrUrl({
+    fecha: isoDateAr(fecha),
+    cuit: Number(cfg.cuit),
+    ptoVta: cfg.ptoVta,
+    tipoCmp: 13,
+    nroCmp: cae.cbteNro,
+    importe: pesos(orig.total_cents),
+    moneda: "PES",
+    ctz: 1,
+    tipoDocRec: orig.receptor_doc_tipo,
+    nroDocRec: Number(orig.receptor_doc_nro),
+    codAut: Number(cae.cae),
+  })
+
+  // La nota de crédito, como comprobante propio.
+  const { data: nc, error: insErr } = await db
+    .from("invoices")
+    .insert({
+      client_id: orig.client_id,
+      appointment_id: orig.appointment_id,
+      cbte_tipo: 13,
+      pto_vta: cfg.ptoVta,
+      cbte_nro: cae.cbteNro,
+      concepto: orig.concepto,
+      receptor_doc_tipo: orig.receptor_doc_tipo,
+      receptor_doc_nro: orig.receptor_doc_nro,
+      receptor_nombre: orig.receptor_nombre,
+      receptor_cond_iva: orig.receptor_cond_iva,
+      total_cents: orig.total_cents,
+      cae: cae.cae,
+      cae_vto: caeVtoToDate(cae.caeVto),
+      fecha_emision: isoDateAr(fecha),
+      estado: "emitida",
+      qr_url: qrUrl,
+      environment: cfg.env,
+      descripcion: `Anula Factura C ${String(orig.pto_vta).padStart(4, "0")}-${String(orig.cbte_nro).padStart(8, "0")}`,
+      anula_invoice_id: orig.id,
+    })
+    .select("id, cbte_nro")
+    .single()
+  // La nota de crédito YA tiene CAE de ARCA: si falla el guardado local, el
+  // comprobante existe igual en ARCA. Se avisa para no re-emitir (sería una
+  // segunda nota de crédito), pero no se marca la original como anulada porque
+  // no quedó registro local — hay que resolverlo a mano.
+  if (insErr)
+    throw new Error(
+      `La nota de crédito se emitió en ARCA (N° ${cae.cbteNro}) pero falló al guardar: ${insErr.message}. No re-emitas: avisá a soporte.`
+    )
+
+  // Marcar la original como anulada. Si esto fallara, la nota de crédito ya
+  // está guardada y bien vinculada (anula_invoice_id), así que la relación no
+  // se pierde; el flag es sólo para mostrarlo rápido en la lista.
+  await db.from("invoices").update({ anulada: true }).eq("id", orig.id)
+
+  return nc
+}

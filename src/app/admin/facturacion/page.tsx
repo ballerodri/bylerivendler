@@ -5,11 +5,13 @@ import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "@/app/reserva/data"
 import { ddmmyyyy, receptorDocLabel } from "@/lib/arca/format"
 import ReenviarButton from "./reenviar-button"
+import AnularButton from "./anular-button"
 
 export const dynamic = "force-dynamic"
 
 type InvoiceRow = {
   id: string
+  cbte_tipo: number
   cbte_nro: number
   pto_vta: number
   fecha_emision: string
@@ -19,6 +21,7 @@ type InvoiceRow = {
   total_cents: number
   estado: string
   environment: string
+  anulada: boolean
 }
 
 export default async function FacturacionPage() {
@@ -34,7 +37,7 @@ export default async function FacturacionPage() {
 
   const { data } = await admin
     .from("invoices")
-    .select("id, cbte_nro, pto_vta, fecha_emision, receptor_doc_tipo, receptor_doc_nro, receptor_nombre, total_cents, estado, environment")
+    .select("id, cbte_tipo, cbte_nro, pto_vta, fecha_emision, receptor_doc_tipo, receptor_doc_nro, receptor_nombre, total_cents, estado, environment, anulada")
     .order("created_at", { ascending: false })
     .limit(200)
 
@@ -57,14 +60,22 @@ export default async function FacturacionPage() {
         ) : (
           invoices.map((f) => {
             const nro = `${String(f.pto_vta).padStart(4, "0")}-${String(f.cbte_nro).padStart(8, "0")}`
+            const esNota = f.cbte_tipo === 13
+            // Sólo se anula una FACTURA emitida que no esté ya anulada. Una nota
+            // de crédito no se anula (se emitiría una factura nueva si hiciera
+            // falta), y una ya anulada tampoco.
+            const sePuedeAnular = !esNota && f.estado === "emitida" && !f.anulada
             return (
               <div key={f.id} className="adm-list-row" style={{ gridTemplateColumns: "auto 1fr auto auto auto" }}>
                 <div className="adm-time" style={{ fontSize: 15 }}>{ddmmyyyy(f.fecha_emision)}</div>
                 <div>
                   <div className="adm-name">
-                    Factura C {nro}
+                    {esNota ? "Nota de Crédito C" : "Factura C"} {nro}
                     {f.environment === "homologacion" && (
                       <span className="adm-pill" style={{ marginLeft: 8, background: "#eae2d7", color: "#8c6a3c", fontSize: 10 }}>PRUEBA</span>
+                    )}
+                    {f.anulada && (
+                      <span className="adm-pill" style={{ marginLeft: 8, background: "#f3dede", color: "#8c463c", fontSize: 10 }}>ANULADA</span>
                     )}
                   </div>
                   <div className="adm-sub">
@@ -77,6 +88,7 @@ export default async function FacturacionPage() {
                 </div>
                 <div className="adm-actions">
                   <ReenviarButton invoiceId={f.id} />
+                  {sePuedeAnular && <AnularButton invoiceId={f.id} nro={nro} />}
                 </div>
               </div>
             )

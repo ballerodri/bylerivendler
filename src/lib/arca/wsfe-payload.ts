@@ -6,6 +6,16 @@ export interface Auth {
 
 export type DocTipo = 99 | 96 | 80 // 99=Consumidor Final, 96=DNI, 80=CUIT
 
+/** Un comprobante al que este apunta (una nota de crédito referencia la
+ *  factura que anula). ARCA lo exige en las notas de crédito. */
+export interface CbteAsociado {
+  tipo: number // 11 = Factura C
+  ptoVta: number
+  nro: number
+  cuit: string // CUIT del emisor (el mismo salón)
+  fecha: Date // fecha de emisión del comprobante original
+}
+
 export interface InvoiceInput {
   ptoVta: number
   concepto: 1 | 2 | 3 // 1=Productos, 2=Servicios, 3=Productos y Servicios
@@ -17,6 +27,10 @@ export interface InvoiceInput {
   servDesde?: Date
   servHasta?: Date
   vtoPago?: Date
+  /** 11 = Factura C (default), 13 = Nota de Crédito C. */
+  cbteTipo?: number
+  /** Sólo en una nota de crédito: la factura que anula. */
+  cbteAsoc?: CbteAsociado
 }
 
 export function pesos(cents: number): number {
@@ -62,10 +76,22 @@ export function buildFeCAEReq(auth: Auth, input: InvoiceInput, cbteNro: number) 
     det.FchServHasta = ymd(input.servHasta ?? input.fecha)
     det.FchVtoPago = ymd(input.vtoPago ?? input.fecha)
   }
+  // Nota de crédito: apunta a la factura que anula (ARCA lo exige).
+  if (input.cbteAsoc) {
+    det.CbtesAsoc = {
+      CbteAsoc: {
+        Tipo: input.cbteAsoc.tipo,
+        PtoVta: input.cbteAsoc.ptoVta,
+        Nro: input.cbteAsoc.nro,
+        Cuit: input.cbteAsoc.cuit,
+        CbteFch: ymd(input.cbteAsoc.fecha),
+      },
+    }
+  }
   return {
     Auth: auth,
     FeCAEReq: {
-      FeCabReq: { CantReg: 1, PtoVta: input.ptoVta, CbteTipo: 11 },
+      FeCabReq: { CantReg: 1, PtoVta: input.ptoVta, CbteTipo: input.cbteTipo ?? 11 },
       FeDetReq: { FECAEDetRequest: det },
     },
   }

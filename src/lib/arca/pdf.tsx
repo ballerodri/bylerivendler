@@ -12,6 +12,8 @@ export interface InvoicePdfData {
     inicioActividades: string
     iibb: string
   }
+  /** 11 = Factura C, 13 = Nota de Crédito C. */
+  cbteTipo: number
   ptoVta: number
   nro: number
   fecha: string // dd/mm/yyyy
@@ -63,8 +65,8 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
             <Text style={styles.small}>Inicio de actividades: {data.emisor.inicioActividades}</Text>
           </View>
           <View style={styles.compBox}>
-            <Text style={styles.tipo}>FACTURA C</Text>
-            <Text style={styles.small}>Cód. 011</Text>
+            <Text style={styles.tipo}>{data.cbteTipo === 13 ? "NOTA DE CRÉDITO C" : "FACTURA C"}</Text>
+            <Text style={styles.small}>Cód. {data.cbteTipo === 13 ? "013" : "011"}</Text>
             <Text style={styles.small}>N° {ptoFmt}-{nroFmt}</Text>
             <Text style={styles.small}>Fecha: {data.fecha}</Text>
           </View>
