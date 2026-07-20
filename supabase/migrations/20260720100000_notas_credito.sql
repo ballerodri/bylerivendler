@@ -9,5 +9,8 @@ alter table public.invoices
   add column if not exists anula_invoice_id uuid references public.invoices(id) on delete set null,
   add column if not exists anulada boolean not null default false;
 
-create index if not exists invoices_anula_invoice_id_idx
+-- ÚNICO a propósito: una factura sólo puede tener UNA nota de crédito. Es el
+-- respaldo de base contra un doble clic que se cuele por la carrera del código
+-- (dos notas de crédito = sobre-crédito). La segunda inserción rebota acá.
+create unique index if not exists invoices_anula_invoice_id_uidx
   on public.invoices (anula_invoice_id) where anula_invoice_id is not null;

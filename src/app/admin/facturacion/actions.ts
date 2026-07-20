@@ -112,13 +112,21 @@ export async function emitirFacturaTurno(
     }
   }
 
-  const { data: yaFacturada } = await admin
+  // Ya facturado = tiene una FACTURA (11) emitida y VIVA (no anulada). Ojo:
+  //  - `cbte_tipo = 11`: una nota de crédito (13) del mismo turno no cuenta.
+  //  - `anulada = false`: si se anuló, el turno se puede volver a facturar.
+  //  - `limit(1)` + largo, NO `maybeSingle()`: tras anular hay 2 filas emitidas
+  //    (la factura anulada + la nota de crédito) y `maybeSingle` devolvería
+  //    null por "más de una fila" → la guarda se abría y se podía duplicar.
+  const { data: vivas } = await admin
     .from("invoices")
     .select("id")
     .eq("appointment_id", appointmentId)
+    .eq("cbte_tipo", 11)
     .eq("estado", "emitida")
-    .maybeSingle()
-  if (yaFacturada) return { ok: false, error: "Este turno ya tiene una factura emitida." }
+    .eq("anulada", false)
+    .limit(1)
+  if (vivas && vivas.length > 0) return { ok: false, error: "Este turno ya tiene una factura emitida." }
 
   const client = appt.client as unknown as { id: string; first_name: string; last_name: string; email: string | null; dni: string | null } | null
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]

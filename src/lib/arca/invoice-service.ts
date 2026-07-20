@@ -101,8 +101,9 @@ export async function emitirFactura(input: EmitInput) {
  * como una fila más de `invoices` apuntando a la original, y la original queda
  * marcada `anulada`.
  *
- * Copia EXACTO el receptor, el total, el concepto y la descripción de la
- * original: la nota de crédito tiene que reflejar lo mismo que anula.
+ * Copia EXACTO el receptor, el total y el concepto de la original (la
+ * descripción se reemplaza por "Anula Factura C …" para que quede claro en el
+ * PDF): la nota de crédito refleja lo mismo que anula.
  */
 export async function anularFactura(invoiceId: string) {
   const cfg = getArcaConfig()
@@ -125,6 +126,26 @@ export async function anularFactura(invoiceId: string) {
   if (orig.anulada) throw new Error("Esta factura ya fue anulada.")
   if (orig.environment !== cfg.env) throw new Error("Esta factura es de otro entorno de ARCA.")
 
+  // RECLAMO ATÓMICO antes de llamar a ARCA: marca la original anulada SÓLO si
+  // todavía no lo estaba (`.eq("anulada", false)`). Si dos clics entran a la
+  // vez (dos pestañas), uno reclama y el otro ve 0 filas y corta ACÁ, antes de
+  // emitir — así nunca se emiten DOS notas de crédito (sobre-crédito). Si ARCA
+  // falla después, se suelta el reclamo (abajo) para poder reintentar.
+  const { data: reclamada } = await db
+    .from("invoices")
+    .update({ anulada: true })
+    .eq("id", orig.id)
+    .eq("anulada", false)
+    .select("id")
+  if (!reclamada?.length) throw new Error("Esta factura ya fue anulada (o se está anulando).")
+  const soltarReclamo = async () => {
+    try {
+      await db.from("invoices").update({ anulada: false }).eq("id", orig.id)
+    } catch {
+      // best-effort
+    }
+  }
+
   const fecha = new Date()
   const wsInput: InvoiceInput = {
     ptoVta: cfg.ptoVta,
@@ -144,7 +165,15 @@ export async function anularFactura(invoiceId: string) {
     },
   }
 
-  const cae = await solicitarCae(wsInput)
+  let cae
+  try {
+    cae = await solicitarCae(wsInput)
+  } catch (e) {
+    // ARCA rechazó o falló: la factura NO quedó anulada. Se suelta el reclamo
+    // para poder reintentar, y se propaga el error.
+    await soltarReclamo()
+    throw e
+  }
 
   const qrUrl = buildQrUrl({
     fecha: isoDateAr(fecha),
@@ -191,14 +220,15 @@ export async function anularFactura(invoiceId: string) {
   // segunda nota de crédito), pero no se marca la original como anulada porque
   // no quedó registro local — hay que resolverlo a mano.
   if (insErr)
+    // El CAE ya existe en ARCA. La original quedó marcada `anulada` desde el
+    // reclamo, así que el botón "Anular" YA NO aparece: no se puede re-emitir
+    // por accidente. Sólo falta el registro local de la nota de crédito, que
+    // se resuelve a mano.
     throw new Error(
       `La nota de crédito se emitió en ARCA (N° ${cae.cbteNro}) pero falló al guardar: ${insErr.message}. No re-emitas: avisá a soporte.`
     )
 
-  // Marcar la original como anulada. Si esto fallara, la nota de crédito ya
-  // está guardada y bien vinculada (anula_invoice_id), así que la relación no
-  // se pierde; el flag es sólo para mostrarlo rápido en la lista.
-  await db.from("invoices").update({ anulada: true }).eq("id", orig.id)
-
+  // La original ya quedó `anulada` en el reclamo de arriba; no hay nada más
+  // que marcar.
   return nc
 }

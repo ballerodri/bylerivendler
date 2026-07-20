@@ -46,11 +46,19 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
   const services = (appt.appointment_services ?? []) as unknown as { service: { name: string } | null }[]
   const descripcion = services.map((s) => s.service?.name).filter(Boolean).join(", ") || "Servicios"
 
-  const { data: yaFacturada } = await admin
+  // Igual que la guarda del servidor: sólo una FACTURA (11) emitida y NO
+  // anulada cuenta como "ya facturado". Con `limit(1)` y no `maybeSingle`,
+  // porque tras anular hay 2 filas emitidas (factura + nota de crédito) y
+  // `maybeSingle` devolvería null, escondiendo el aviso.
+  const { data: vivas } = await admin
     .from("invoices")
     .select("id")
     .eq("appointment_id", appointmentId)
-    .maybeSingle()
+    .eq("cbte_tipo", 11)
+    .eq("estado", "emitida")
+    .eq("anulada", false)
+    .limit(1)
+  const yaFacturada = (vivas?.length ?? 0) > 0
 
   return (
     <>
