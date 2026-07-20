@@ -127,7 +127,7 @@
   display: none; /* oculto en desktop */
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .adm-shell {
     grid-template-columns: 1fr;
   }
@@ -195,8 +195,12 @@
   }
   .adm-main {
     padding: 64px 18px 32px;
+    /* Sin esto, una fila ancha estira el contenedor y la página entera se va
+       para el costado (con media pantalla en blanco al scrollear). */
+    overflow-x: hidden;
   }
 }
+
 
 .adm-h1 {
   font-family: var(--serif);
@@ -560,4 +564,61 @@
 
 .adm-alert strong {
   font-weight: 600;
+}
+
+/* ── Sólo CELULARES: las filas de lista se apilan ───────────────────────────
+   Hasta 1024px se colapsa el menú lateral (arriba), pero con ~1000px de ancho
+   las columnas de siempre entran bien. Recién abajo de 768px hay que apilar:
+   en desktop son 100px 1fr 110px 260px ≈ 550px mínimo, y en un celular de
+   390px eso dejaba contenido cortado. */
+@media (max-width: 768px) {
+  .adm-list-row,
+  .adm-list-row--turnos,
+  .adm-list-row--clientas,
+  .adm-list-row--staff {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  /* La hora/fecha, que en desktop es la primera columna, queda como
+     encabezado de la fila. */
+  .adm-list-row .adm-time {
+    font-size: 15px;
+  }
+
+  /* Los botones de acción pasan al ancho completo, alineados a la izquierda
+     como el resto del bloque (a la derecha quedaban colgando solos). */
+  .adm-list-row .adm-actions {
+    justify-content: flex-start;
+  }
+
+  /* Nada adentro de una fila puede empujar el ancho: un nombre largo o un
+     email sin espacios rompían el layout. */
+  .adm-list-row > * {
+    min-width: 0;
+  }
+  .adm-list-row a,
+  .adm-list-row .adm-sub {
+    overflow-wrap: anywhere;
+  }
+
+  /* Dos columnas → una sola (tarjetas de configuración, fichas). */
+  .adm-grid,
+  .adm-row {
+    grid-template-columns: 1fr;
+  }
+
+  /* Los formularios anchos (selectores de fecha, inputs con ancho fijo en
+     línea) no se pasan de la pantalla. */
+  .adm-input,
+  .adm-select {
+    max-width: 100%;
+  }
+
+  /* Las tarjetas con tablas anchas scrollean SOLAS, sin arrastrar la página. */
+  .adm-card {
+    overflow-x: auto;
+  }
 }
