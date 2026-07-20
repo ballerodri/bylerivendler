@@ -51,9 +51,9 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
   const [clientPending, startClientSearch] = useTransition()
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Documento que se le pasa al buscador de ARCA para que consulte SOLO al
-  // elegir una clienta que ya lo tiene guardado. Cambia de valor cada vez que
-  // se elige (con un contador atrás) para forzar la búsqueda aunque sea el
-  // mismo documento que la vez anterior.
+  // elegir una clienta que ya lo tiene guardado. El widget deduplica: no
+  // vuelve a buscar el mismo documento (re-elegir la MISMA clienta no
+  // re-consulta — para eso está el botón "Buscar en ARCA", que siempre corre).
   const [docParaArca, setDocParaArca] = useState<string | null>(null)
 
   function onClientQuery(q: string) {
