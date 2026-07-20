@@ -27,6 +27,9 @@ export async function notifyNewBooking(
       .select("email")
       .in("role", ["admin", "reception"])
       .eq("active", true)
+      // Quién quiere recibir estos avisos: se elige en Admin → Personal. Sin
+      // esto los recibía todo el que tuviera rol admin, sin forma de optar.
+      .eq("notify_bookings", true)
       .not("email", "is", null)
 
     const staffIds = [...new Set((opts.assignedStaffIds ?? []).filter((id): id is string => !!id))]
@@ -112,6 +115,9 @@ export async function notifyNewPurchase(
       .select("email")
       .in("role", ["admin", "reception"])
       .eq("active", true)
+      // Quién quiere recibir estos avisos: se elige en Admin → Personal. Sin
+      // esto los recibía todo el que tuviera rol admin, sin forma de optar.
+      .eq("notify_bookings", true)
       .not("email", "is", null)
 
     const exclude = (opts.excludeEmail ?? "").toLowerCase()

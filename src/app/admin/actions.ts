@@ -996,6 +996,29 @@ export async function updateStaffProfessional(
   return { ok: true }
 }
 
+/**
+ * Si esta persona recibe por email los avisos de reserva (los que salen
+ * cuando una clienta compra por la web). Antes los recibía TODO el que
+ * tuviera rol admin o recepción, sin forma de optar.
+ *
+ * No afecta el mail de confirmación de la profesional: ese va a quien tiene
+ * el turno asignado, que es información de su propio trabajo.
+ */
+export async function updateStaffNotifyBookings(
+  staffId: string,
+  notify: boolean
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+  const { error } = await admin
+    .from("staff")
+    .update({ notify_bookings: notify })
+    .eq("id", staffId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/admin/staff")
+  return { ok: true }
+}
+
 // ─── Profesionales por servicio ───────────────────────────────────────────────
 
 // Programa Cerca: participación + puntos (suma/canje) de todos los servicios de una.

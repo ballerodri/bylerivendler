@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { updateStaffProfessional, updateStaffBlockedSlots } from "../../actions"
+import { updateStaffProfessional, updateStaffBlockedSlots, updateStaffNotifyBookings } from "../../actions"
 import type { StaffRow, BlockedSlotRow, BusinessHourRow, ServiceRow, CommissionRow } from "./page"
 import CommissionsEditor from "./commissions-editor"
 import CalendarColorPicker from "./calendar-color-picker"
@@ -37,6 +37,8 @@ export default function StaffEditor({
   commissions: CommissionRow[]
 }) {
   const [isProfessional, setIsProfessional] = useState(staff.is_professional)
+  const [notifyBookings, setNotifyBookings] = useState(staff.notify_bookings ?? true)
+  const [notifyStatus, setNotifyStatus] = useState<"idle" | "saved" | "error">("idle")
   const [blocked, setBlocked] = useState<Record<number, Set<string>>>(() => initBlocked(blockedSlots))
 
   const [rolePending, startRoleTransition] = useTransition()
@@ -109,6 +111,48 @@ export default function StaffEditor({
             El rol de acceso se cambia contactando al administrador del sistema.
           </p>
         </div>
+
+        {/* Sólo tiene sentido para quien recibe los avisos: admins y
+            recepción. Una profesional no está en esa lista. */}
+        {staff.role !== "professional" && (
+          <div style={{ marginBottom: 24 }}>
+            <div className="adm-row__label" style={{ marginBottom: 8 }}>
+              Avisos por email
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={notifyBookings}
+                disabled={rolePending}
+                onChange={(e) => {
+                  const v = e.target.checked
+                  setNotifyBookings(v)
+                  setNotifyStatus("idle")
+                  startRoleTransition(async () => {
+                    const r = await updateStaffNotifyBookings(staff.id, v)
+                    setNotifyStatus(r.ok ? "saved" : "error")
+                    if (!r.ok) setNotifyBookings(!v)
+                  })
+                }}
+                style={{ width: 16, height: 16 }}
+              />
+              <span>
+                <strong>Recibir los avisos de reserva</strong>
+                <br />
+                <span style={{ color: "var(--ink-mute)", fontSize: 12 }}>
+                  El mail que llega cuando una clienta reserva por la web, con la seña a esperar.
+                  Apagalo si no querés recibirlos.
+                </span>
+              </span>
+            </label>
+            {notifyStatus === "saved" && (
+              <span style={{ fontSize: 12, color: "#4d6b3e", marginLeft: 26 }}>Guardado ✓</span>
+            )}
+            {notifyStatus === "error" && (
+              <span style={{ fontSize: 12, color: "#8c463c", marginLeft: 26 }}>No se pudo guardar</span>
+            )}
+          </div>
+        )}
 
         <div style={{ marginBottom: 24 }}>
           <div className="adm-row__label" style={{ marginBottom: 8 }}>
