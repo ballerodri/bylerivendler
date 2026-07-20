@@ -16,8 +16,15 @@ export type SelectableItem = {
 }
 
 type LineItem = { key: number; name: string; priceCents: number }
+type StaffFacturable = { id: string; full_name: string; dni: string }
 
-export default function ManualForm({ items = [] }: { items?: SelectableItem[] }) {
+export default function ManualForm({
+  items = [],
+  staff = [],
+}: {
+  items?: SelectableItem[]
+  staff?: StaffFacturable[]
+}) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -51,10 +58,16 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
   const [clientPending, startClientSearch] = useTransition()
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Documento que se le pasa al buscador de ARCA para que consulte SOLO al
-  // elegir una clienta que ya lo tiene guardado. El widget deduplica: no
-  // vuelve a buscar el mismo documento (re-elegir la MISMA clienta no
-  // re-consulta — para eso está el botón "Buscar en ARCA", que siempre corre).
+  // elegir una clienta/profesional que ya lo tiene guardado.
   const [docParaArca, setDocParaArca] = useState<string | null>(null)
+  // Se incrementa en CADA elección explícita de receptor (clienta o
+  // profesional) y va como `key` del buscador de ARCA, que se remonta limpio:
+  // (1) re-elegir a la MISMA persona vuelve a consultar el padrón —antes el
+  // widget deduplicaba por documento y no re-consultaba, y una condición de
+  // IVA descartada quedaba pegada—; (2) la tarjeta de la persona anterior no
+  // sobrevive al cambio de receptor. Para el receptor tipeado a mano no se
+  // toca: el `key` no cambia y el widget conserva su estado.
+  const [padronKey, setPadronKey] = useState(0)
 
   function onClientQuery(q: string) {
     setClientQuery(q)
@@ -95,6 +108,24 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
     setCondIva(null)
     setClientQuery("")
     setClientResults([])
+    setPadronKey((k) => k + 1)
+  }
+
+  /** Elegir un profesional: completa el receptor con su nombre y documento,
+   *  igual que una clienta (el documento ya está cargado, así que siempre
+   *  existe). Sin email — al profesional no se le manda el PDF por defecto. */
+  function elegirStaff(s: StaffFacturable) {
+    setNombre(s.full_name)
+    setEmail("")
+    const doc = normalizarDoc(s.dni)
+    setDocNro(doc)
+    const t = docTipoParaDocumento(doc)
+    if (t === 96 || t === 80) setDocTipo(t)
+    setDocParaArca(doc.length === 11 ? doc : null)
+    setCondIva(null)
+    setClientQuery("")
+    setClientResults([])
+    setPadronKey((k) => k + 1)
   }
 
   const services = items.filter((i) => i.kind === "service")
@@ -246,7 +277,33 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
               )}
             </div>
 
-            <PadronLookup onPersona={aplicarPersona} autoBuscarDoc={docParaArca} />
+            {/* Elegir un PROFESIONAL del salón (a veces se les factura). Su
+                documento se carga en Admin → Personal; acá se elige y completa
+                el receptor igual que una clienta. Sólo aparecen los que tienen
+                documento cargado. */}
+            {staff.length > 0 && (
+              <div>
+                <label className="adm-label">…o un profesional del salón</label>
+                <select
+                  className="adm-input"
+                  value=""
+                  onChange={(e) => {
+                    const s = staff.find((x) => x.id === e.target.value)
+                    if (s) elegirStaff(s)
+                  }}
+                  style={{ maxWidth: 320 }}
+                >
+                  <option value="">Elegí un profesional…</option>
+                  {staff.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.full_name} · {normalizarDoc(s.dni).length === 11 ? "CUIT" : "DNI"} {normalizarDoc(s.dni)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <PadronLookup key={padronKey} onPersona={aplicarPersona} autoBuscarDoc={docParaArca} />
             <div>
               <label className="adm-label">Tipo de documento</label>
               <select

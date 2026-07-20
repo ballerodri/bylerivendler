@@ -60,3 +60,28 @@ export async function guardarDocumentoClienta(
   revalidatePath("/admin/clientas")
   return { ok: true, doc: documento }
 }
+
+/**
+ * Guarda el DNI/CUIT de UNA persona del PERSONAL (para poder facturarle). Mismo
+ * criterio que el de la clienta: 8 ó 11 dígitos, normalizado.
+ */
+export async function guardarDocumentoStaff(
+  staffId: string,
+  doc: string
+): Promise<{ ok: boolean; error?: string; doc?: string }> {
+  await requireStaff()
+
+  const id = z.string().uuid().safeParse(staffId)
+  if (!id.success) return { ok: false, error: "Profesional inválido" }
+
+  const documento = normalizarDoc(doc)
+  if (documento.length !== 8 && documento.length !== 11) {
+    return { ok: false, error: "Ingresá un DNI (8 dígitos) o un CUIT/CUIL (11 dígitos)." }
+  }
+
+  const { error } = await adminClient().from("staff").update({ dni: documento }).eq("id", id.data)
+  if (error) return { ok: false, error: `No se pudo guardar: ${error.message}` }
+
+  revalidatePath(`/admin/staff/${id.data}`)
+  return { ok: true, doc: documento }
+}

@@ -17,6 +17,8 @@ export type StaffRow = {
   calendar_color_id: string | null
   /** Si recibe por email los avisos de reserva (sólo aplica a admin/recepción). */
   notify_bookings: boolean
+  /** DNI o CUIT, para poder facturarle. */
+  dni: string | null
 }
 
 export type BlockedSlotRow = {
@@ -63,7 +65,7 @@ export default async function AdminStaffDetailPage({
   const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }, { data: assignedData }] = await Promise.all([
     admin
       .from("staff")
-      .select("id, full_name, role, email, active, is_professional, calendar_color_id, notify_bookings")
+      .select("id, full_name, role, email, active, is_professional, calendar_color_id, notify_bookings, dni")
       .eq("id", id)
       .maybeSingle<StaffRow>(),
     admin

@@ -15,13 +15,19 @@ const CONDICIONES_MANUALES = [6, 1, 4, 5] // Monotributo · Resp. Inscripto · E
 // documento se puede guardar igual y la factura se emite como siempre.
 export default function PadronLookup({
   clientId,
+  guardarFn,
   docInicial,
   onPersona,
   ayuda,
   autoBuscarDoc,
 }: {
-  /** Si viene, aparece el botón "Guardar en la ficha". */
+  /** Si viene, aparece el botón "Guardar en la ficha" (guarda en la clienta). */
   clientId?: string
+  /**
+   * Guardar en OTRO lado que no sea la ficha de la clienta (ej. el personal):
+   * si viene, el botón "Guardar" la usa en vez de guardar en `clients`.
+   */
+  guardarFn?: (doc: string) => Promise<{ ok: boolean; error?: string; doc?: string }>
   docInicial?: string | null
   /** El padre se entera de a quién encontramos (o de que se limpió). */
   onPersona?: (persona: PadronPersona | null) => void
@@ -116,11 +122,14 @@ export default function PadronLookup({
   }, [autoBuscarDoc])
 
   function onGuardar() {
-    if (!clientId) return
+    if (!clientId && !guardarFn) return
     guardar(async () => {
       setError(null)
       try {
-        const r = await guardarDocumentoClienta(clientId, persona?.doc ?? doc)
+        const documento = persona?.doc ?? doc
+        const r = guardarFn
+          ? await guardarFn(documento)
+          : await guardarDocumentoClienta(clientId!, documento)
         if (r.ok) {
           setGuardado(r.doc ?? null)
           if (r.doc) setDoc(r.doc)
@@ -163,7 +172,7 @@ export default function PadronLookup({
         >
           {buscando ? "Buscando…" : "Buscar en ARCA"}
         </button>
-        {clientId && (
+        {(clientId || guardarFn) && (
           <button
             type="button"
             className="adm-btn"

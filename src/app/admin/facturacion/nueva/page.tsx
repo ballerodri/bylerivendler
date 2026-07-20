@@ -18,10 +18,15 @@ export default async function NuevaFacturaPage() {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: svc }, { data: pks }] = await Promise.all([
+  const [{ data: svc }, { data: pks }, { data: stf }] = await Promise.all([
     admin.from("services").select("id, name, price_cents").eq("active", true).order("name", { ascending: true }),
     admin.from("packs").select("id, name, total_price_cents").eq("active", true).order("name", { ascending: true }),
+    // El personal con DNI/CUIT cargado: se le puede facturar.
+    admin.from("staff").select("id, full_name, dni").eq("active", true).not("dni", "is", null).order("full_name"),
   ])
+
+  const staff = ((stf ?? []) as { id: string; full_name: string; dni: string | null }[])
+    .filter((s): s is { id: string; full_name: string; dni: string } => !!s.dni)
 
   const items: SelectableItem[] = [
     ...((svc ?? []) as { id: string; name: string; price_cents: number }[]).map(
@@ -37,7 +42,7 @@ export default async function NuevaFacturaPage() {
       <p className="adm-eyebrow">Facturación</p>
       <h1 className="adm-h1">Factura <em>manual</em></h1>
       <p className="adm-lede">Para señas, ventas sueltas o un servicio puntual. Emite una Factura C.</p>
-      <ManualForm items={items} />
+      <ManualForm items={items} staff={staff} />
     </>
   )
 }

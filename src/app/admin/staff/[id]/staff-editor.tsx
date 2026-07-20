@@ -2,6 +2,8 @@
 
 import { useState, useTransition } from "react"
 import { updateStaffProfessional, updateStaffBlockedSlots, updateStaffNotifyBookings } from "../../actions"
+import { guardarDocumentoStaff } from "../../padron-actions"
+import PadronLookup from "@/app/admin/_components/padron-lookup"
 import type { StaffRow, BlockedSlotRow, BusinessHourRow, ServiceRow, CommissionRow } from "./page"
 import CommissionsEditor from "./commissions-editor"
 import CalendarColorPicker from "./calendar-color-picker"
@@ -264,6 +266,21 @@ export default function StaffEditor({
           staffId={staff.id}
           initialColorId={staff.calendar_color_id}
         />
+      )}
+
+      {/* DNI/CUIT del profesional, para poder facturarle (se elige al emitir
+          una factura manual). Sólo lo edita quien administra al personal. */}
+      {canEditRole && (
+        <div style={{ marginTop: 24 }}>
+          <div className="adm-row__label" style={{ marginBottom: 8 }}>
+            DNI o CUIT (para facturarle)
+          </div>
+          <PadronLookup
+            docInicial={staff.dni}
+            guardarFn={(doc) => guardarDocumentoStaff(staff.id, doc)}
+            ayuda="Se usa al emitir una factura a este profesional."
+          />
+        </div>
       )}
     </>
   )
