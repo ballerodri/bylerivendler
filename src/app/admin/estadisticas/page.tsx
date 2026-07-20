@@ -16,7 +16,11 @@ type ApptRow = {
   starts_at: string
   status: string
   total_cents: number
-  appointment_services: { service: { name: string } | null; staff: { id: string } | null }[]
+  appointment_services: {
+    price_cents: number | null
+    service: { name: string } | null
+    staff: { id: string; full_name: string } | null
+  }[]
 }
 
 export default async function EstadisticasPage() {
@@ -40,7 +44,7 @@ export default async function EstadisticasPage() {
     .from("appointments")
     .select(`
       id, starts_at, status, total_cents,
-      appointment_services(service:services(name), staff:staff(id))
+      appointment_services(price_cents, service:services(name), staff:staff(id, full_name))
     `)
     .gte("starts_at", since.toISOString())
     .not("status", "in", '("cancelled","no_show")')
@@ -87,6 +91,27 @@ export default async function EstadisticasPage() {
       revenue: byMonth[key]?.revenue ?? 0,
     })
   }
+
+  // ── Rendimiento por profesional ──────────────────────────────────────────
+  // Los turnos se cuentan UNA vez por profesional (un turno con dos servicios
+  // de la misma persona es un turno, no dos), y la plata se atribuye POR PATA
+  // (`appointment_services.price_cents`): en un turno compartido, cada una
+  // suma lo suyo en vez de llevarse el total.
+  const porProfesional: Record<string, { nombre: string; turnos: Set<string>; servicios: number; ingresos: number }> = {}
+  for (const a of appts) {
+    for (const as of a.appointment_services) {
+      const st = as.staff
+      if (!st) continue
+      const p = (porProfesional[st.id] ??= { nombre: st.full_name, turnos: new Set(), servicios: 0, ingresos: 0 })
+      p.turnos.add(a.id)
+      p.servicios++
+      if (a.status === "completed") p.ingresos += as.price_cents ?? 0
+    }
+  }
+  const ranking = Object.values(porProfesional)
+    .map((p) => ({ nombre: p.nombre, turnos: p.turnos.size, servicios: p.servicios, ingresos: p.ingresos }))
+    .sort((x, y) => y.turnos - x.turnos)
+  const maxTurnosProf = Math.max(...ranking.map((r) => r.turnos), 1)
 
   const topServices = Object.entries(serviceCounts)
     .sort((a, b) => b[1] - a[1])
@@ -139,9 +164,17 @@ export default async function EstadisticasPage() {
       {/* Bar chart: turnos por mes */}
       <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
         <p className="adm-eyebrow" style={{ marginBottom: 16 }}>Turnos por mes</p>
+        {/* La altura de la barra va en PÍXELES, no en %. En porcentaje se
+            calculaba contra la columna, que no tiene altura propia (la define
+            su contenido), así que resolvía a 0 y NINGUNA barra se dibujaba:
+            se veía sólo el número flotando. */}
         <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 140, marginBottom: 8 }}>
           {months.map((m) => (
-            <div key={m.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <div
+              key={m.key}
+              title={`${m.label}: ${m.count} turno${m.count === 1 ? "" : "s"}`}
+              style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, height: "100%", justifyContent: "flex-end" }}
+            >
               <span style={{ fontSize: 11, color: "var(--ink-soft)", fontVariantNumeric: "tabular-nums" }}>
                 {m.count || ""}
               </span>
@@ -150,16 +183,29 @@ export default async function EstadisticasPage() {
                   width: "100%",
                   background: m.count > 0 ? "var(--gold)" : "var(--linen)",
                   borderRadius: "4px 4px 0 0",
-                  height: `${Math.max(m.count / maxCount * 100, m.count > 0 ? 8 : 2)}%`,
+                  height: m.count > 0 ? Math.max(Math.round((m.count / maxCount) * 112), 6) : 2,
                   transition: "height 0.3s",
                 }}
               />
             </div>
           ))}
         </div>
+        {/* Línea de base: sin ella las barras cortas flotan y no se lee de
+            dónde arrancan. */}
+        <div style={{ borderTop: "1px solid var(--line)", marginBottom: 6 }} />
         <div style={{ display: "flex", gap: 6 }}>
           {months.map((m) => (
-            <div key={m.key} style={{ flex: 1, fontSize: 9, color: "var(--ink-mute)", textAlign: "center", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            <div
+              key={m.key}
+              style={{
+                flex: 1,
+                fontSize: 9,
+                color: m.count > 0 ? "var(--ink-soft)" : "var(--ink-mute)",
+                textAlign: "center",
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+              }}
+            >
               {m.label.slice(0, 3)}
             </div>
           ))}
@@ -195,6 +241,44 @@ export default async function EstadisticasPage() {
               </p>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Rendimiento por profesional — sólo admins (una profesional ve su
+          propia página filtrada, ahí un ranking de una sola fila no aporta). */}
+      {!isProfessionalOnly && ranking.length > 0 && (
+        <div className="adm-card" style={{ padding: 24, marginBottom: 24 }}>
+          <p className="adm-eyebrow" style={{ marginBottom: 12 }}>Por profesional</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {ranking.map((r) => (
+              <div key={r.nombre} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+                <span style={{ flex: 1, color: "var(--ink)", minWidth: 0 }}>{r.nombre}</span>
+                <div style={{ width: 120, background: "var(--linen)", borderRadius: 4, height: 8, overflow: "hidden", flexShrink: 0 }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      background: "var(--gold)",
+                      width: `${(r.turnos / maxTurnosProf) * 100}%`,
+                      borderRadius: 4,
+                    }}
+                  />
+                </div>
+                <span
+                  style={{ width: 108, textAlign: "right", color: "var(--ink-soft)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
+                  title={`${r.servicios} servicio${r.servicios === 1 ? "" : "s"} realizados`}
+                >
+                  {r.turnos} turno{r.turnos === 1 ? "" : "s"}
+                </span>
+                <span style={{ width: 90, textAlign: "right", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                  {fmtPrice(r.ingresos / 100)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "12px 0 0" }}>
+            Los ingresos son de los turnos completados, atribuidos por servicio: en un turno
+            compartido cada una suma lo suyo.
+          </p>
         </div>
       )}
 
