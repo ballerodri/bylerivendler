@@ -57,6 +57,16 @@ export default async function EstadisticasPage() {
   const { data } = await q
   const appts = (data ?? []) as unknown as ApptRow[]
 
+  // Quién es LA CASA: la dueña (role 'admin') no se cobra comisión a sí misma
+  // — lo que factura con sus propias manos ya es del salón. El resto son
+  // profesionales a las que el salón les retiene lo configurado.
+  const { data: staffRoles } = await admin.from("staff").select("id, role")
+  const esDeLaCasa = new Set(
+    ((staffRoles ?? []) as { id: string; role: string }[])
+      .filter((s) => s.role !== "professional")
+      .map((s) => s.id)
+  )
+
   // Comisiones configuradas por (profesional, servicio). El porcentaje/monto
   // es lo que se queda EL SALÓN; el resto es de la profesional.
   const { data: comisionesData } = await admin
@@ -70,20 +80,22 @@ export default async function EstadisticasPage() {
   )
 
   /**
-   * Cuánto de esta pata se queda el salón. Sin comisión configurada se asume
-   * que NO hay comisión que pagar (el salón se queda con todo): es el caso de
-   * la dueña con sus propios turnos. Los servicios sin configurar se cuentan
-   * aparte para poder avisarlo — si a una profesional le corresponde un corte
-   * y nadie lo cargó, acá figuraría de más para el salón.
+   * Cuánto de esta pata se queda el salón.
+   *  - Si la hizo la DUEÑA: todo (ella es el salón, no se cobra comisión a sí
+   *    misma).
+   *  - Si la hizo otra profesional: lo que diga su comisión para ese servicio.
+   *    SIN comisión cargada = el salón no retiene nada y va todo para ella
+   *    (si no se cargó, es porque no se le cobra).
    */
-  function parteDelSalon(precioCents: number, staffId: string, serviceId: string | null): { salon: number; sinConfigurar: boolean } {
+  function parteDelSalon(precioCents: number, staffId: string, serviceId: string | null): number {
+    if (esDeLaCasa.has(staffId)) return precioCents
     const c = serviceId ? comisiones.get(`${staffId}|${serviceId}`) : undefined
-    if (!c) return { salon: precioCents, sinConfigurar: true }
+    if (!c) return 0
     const salon =
       c.commission_type === "percentage"
         ? Math.round((precioCents * Number(c.commission_value)) / 100)
         : Math.min(Math.round(Number(c.commission_value) * 100), precioCents)
-    return { salon: Math.max(0, Math.min(salon, precioCents)), sinConfigurar: false }
+    return Math.max(0, Math.min(salon, precioCents))
   }
 
   const byMonth: Record<string, { count: number; revenue: number }> = {}
@@ -128,23 +140,21 @@ export default async function EstadisticasPage() {
   // suma lo suyo en vez de llevarse el total.
   const porProfesional: Record<string, {
     nombre: string; turnos: Set<string>; servicios: number
-    ingresos: number; salon: number; sinConfigurar: number
+    ingresos: number; salon: number
   }> = {}
   for (const a of appts) {
     for (const as of a.appointment_services) {
       const st = as.staff
       if (!st) continue
       const p = (porProfesional[st.id] ??= {
-        nombre: st.full_name, turnos: new Set(), servicios: 0, ingresos: 0, salon: 0, sinConfigurar: 0,
+        nombre: st.full_name, turnos: new Set(), servicios: 0, ingresos: 0, salon: 0,
       })
       p.turnos.add(a.id)
       p.servicios++
       if (a.status === "completed") {
         const precio = as.price_cents ?? 0
         p.ingresos += precio
-        const { salon, sinConfigurar } = parteDelSalon(precio, st.id, as.service?.id ?? null)
-        p.salon += salon
-        if (sinConfigurar && precio > 0) p.sinConfigurar++
+        p.salon += parteDelSalon(precio, st.id, as.service?.id ?? null)
       }
     }
   }
@@ -152,10 +162,8 @@ export default async function EstadisticasPage() {
     .map((p) => ({
       nombre: p.nombre, turnos: p.turnos.size, servicios: p.servicios,
       ingresos: p.ingresos, salon: p.salon, profesional: p.ingresos - p.salon,
-      sinConfigurar: p.sinConfigurar,
     }))
     .sort((x, y) => y.turnos - x.turnos)
-  const totalSinConfigurar = ranking.reduce((a, r) => a + r.sinConfigurar, 0)
   const maxTurnosProf = Math.max(...ranking.map((r) => r.turnos), 1)
 
   const topServices = Object.entries(serviceCounts)
@@ -347,16 +355,10 @@ export default async function EstadisticasPage() {
           </div>
           <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: "12px 0 0" }}>
             Sobre turnos completados, atribuido por servicio: en un turno compartido cada una
-            suma lo suyo. El reparto sale de las comisiones cargadas en Personal (el porcentaje
-            es lo que se queda el salón).
+            suma lo suyo. Lo que factura la dueña es del salón; de las demás, el salón retiene
+            lo que diga su comisión (Personal → Comisiones) y sin comisión cargada va todo
+            para la profesional.
           </p>
-          {totalSinConfigurar > 0 && (
-            <p style={{ fontSize: 11, color: "#8a6a3c", margin: "6px 0 0" }}>
-              Ojo: {totalSinConfigurar} servicio{totalSinConfigurar === 1 ? "" : "s"} sin comisión
-              cargada — ahí se está contando todo para el salón. Se configura en{" "}
-              <strong>Personal → la profesional → Comisiones</strong>.
-            </p>
-          )}
         </div>
       )}
 
