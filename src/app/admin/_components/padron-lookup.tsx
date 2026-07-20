@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { buscarEnPadron, guardarDocumentoClienta } from "../padron-actions"
 import { normalizarDoc, etiquetaCondicionIva, type PadronPersona } from "@/lib/arca/padron-parse"
@@ -18,6 +18,7 @@ export default function PadronLookup({
   docInicial,
   onPersona,
   ayuda,
+  autoBuscarDoc,
 }: {
   /** Si viene, aparece el botón "Guardar en la ficha". */
   clientId?: string
@@ -25,6 +26,13 @@ export default function PadronLookup({
   /** El padre se entera de a quién encontramos (o de que se limpió). */
   onPersona?: (persona: PadronPersona | null) => void
   ayuda?: string
+  /**
+   * Documento a buscar SOLO: cuando cambia a un valor válido, se dispara la
+   * consulta a ARCA automáticamente (lo usa la factura manual al elegir una
+   * clienta que ya tiene DNI/CUIT guardado). El padre lo cambia de valor cada
+   * vez que quiere forzar una búsqueda.
+   */
+  autoBuscarDoc?: string | null
 }) {
   const router = useRouter()
   const [doc, setDoc] = useState(docInicial ?? "")
@@ -37,6 +45,8 @@ export default function PadronLookup({
   const docNormalizado = normalizarDoc(doc)
   const largoValido = docNormalizado.length === 8 || docNormalizado.length === 11
   const ocupado = buscando || guardando
+
+  const ultimoAuto = useRef<string | null>(null)
 
   function cambiar(valor: string) {
     setDoc(valor)
@@ -53,11 +63,18 @@ export default function PadronLookup({
   // `useTransition` sube al error boundary y deja la pantalla de facturar en
   // blanco: un problema de la búsqueda opcional se llevaba puesta la factura.
   function onBuscar() {
+    ejecutarBusqueda(doc)
+  }
+
+  // El documento se pasa EXPLÍCITO: cuando la búsqueda la dispara el
+  // auto-disparo (abajo), el estado `doc` recién se está seteando y el closure
+  // vería el valor viejo.
+  function ejecutarBusqueda(docABuscar: string) {
     buscar(async () => {
       setError(null)
       setGuardado(null)
       try {
-        const r = await buscarEnPadron(doc)
+        const r = await buscarEnPadron(docABuscar)
         if (r.ok) {
           setPersona(r.persona)
           setDoc(r.persona.doc)
@@ -84,6 +101,19 @@ export default function PadronLookup({
       }
     })
   }
+
+  // Auto-disparo: al elegir una clienta con documento guardado, el padre nos
+  // pasa ese documento y buscamos en ARCA sin que la usuaria toque nada.
+  // (Declarado DESPUÉS de `ejecutarBusqueda` para poder llamarla.)
+  useEffect(() => {
+    const d = normalizarDoc(autoBuscarDoc ?? "")
+    if (!d || (d.length !== 8 && d.length !== 11)) return
+    if (ultimoAuto.current === d) return // no re-buscar lo mismo
+    ultimoAuto.current = d
+    setDoc(d)
+    ejecutarBusqueda(d)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoBuscarDoc])
 
   function onGuardar() {
     if (!clientId) return

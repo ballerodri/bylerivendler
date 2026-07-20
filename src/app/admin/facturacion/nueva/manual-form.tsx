@@ -50,6 +50,11 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
   const [clientResults, setClientResults] = useState<ClientSearchResult[]>([])
   const [clientPending, startClientSearch] = useTransition()
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Documento que se le pasa al buscador de ARCA para que consulte SOLO al
+  // elegir una clienta que ya lo tiene guardado. Cambia de valor cada vez que
+  // se elige (con un contador atrás) para forzar la búsqueda aunque sea el
+  // mismo documento que la vez anterior.
+  const [docParaArca, setDocParaArca] = useState<string | null>(null)
 
   function onClientQuery(q: string) {
     setClientQuery(q)
@@ -76,11 +81,17 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
       setDocNro(doc)
       const t = docTipoParaDocumento(doc)
       if (t === 96 || t === 80) setDocTipo(t)
+      // Auto-buscar en ARCA SÓLO si es un CUIT (11 dígitos): ahí puede haber
+      // una condición de IVA que traer. Con un DNI (8) NO: la persona es casi
+      // siempre consumidor final, y buscarla daría vuelta la factura a su CUIT
+      // —que para una consumidor final estaría MAL—. Con DNI queda como hoy
+      // (DNI + Consumidor Final); si igual la quiere identificar como
+      // contribuyente, está el botón "Buscar en ARCA" a mano.
+      setDocParaArca(doc.length === 11 ? doc : null)
     } else {
       setDocNro("")
+      setDocParaArca(null)
     }
-    // La condición frente al IVA no se guarda en la ficha: si hace falta, se
-    // trae con "Buscar en ARCA" (que además completa el documento faltante).
     setCondIva(null)
     setClientQuery("")
     setClientResults([])
@@ -235,7 +246,7 @@ export default function ManualForm({ items = [] }: { items?: SelectableItem[] })
               )}
             </div>
 
-            <PadronLookup onPersona={aplicarPersona} />
+            <PadronLookup onPersona={aplicarPersona} autoBuscarDoc={docParaArca} />
             <div>
               <label className="adm-label">Tipo de documento</label>
               <select
