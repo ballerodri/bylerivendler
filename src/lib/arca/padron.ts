@@ -162,12 +162,13 @@ export async function consultarPadron(doc: string): Promise<PadronResult> {
       `[padron] ok ${persona.doc} cond=${persona.condicionIva ?? "null"} (${persona.condicionIvaTexto ?? "sin dato"}) - impuestos/categorias:`,
       paraLog(impuestosParaLog(res))
     )
-    // Cuando NO se pudo deducir la condición, además volcamos la respuesta
-    // CRUDA entera: el A13 puede traer el dato en otro campo (tipoClave CUIT vs
-    // CUIL, datosMonotributo, datosRegimenGeneral…) y con esto se ve dónde está
-    // de verdad, sin tener que reproducir la llamada. Se saca una vez ajustado.
-    if (persona.condicionIva == null) {
-      console.log(`[padron] SIN CONDICION — respuesta cruda de ${persona.doc}:`, paraLog(res))
+    // Sabemos que el A13 no informa el régimen de un contribuyente activo (lo
+    // elige el salón: `contribuyenteSinRegimen`). Sólo si NO es ese caso y aún
+    // así no hay condición volcamos la respuesta CRUDA — sería una forma nueva
+    // e inesperada — sin llenar el log con los datos personales de cada
+    // contribuyente que se consulte.
+    if (persona.condicionIva == null && !persona.contribuyenteSinRegimen) {
+      console.log(`[padron] SIN CONDICION (forma inesperada) — cruda de ${persona.doc}:`, paraLog(res))
     }
     return { ok: true, persona }
   } catch (e) {

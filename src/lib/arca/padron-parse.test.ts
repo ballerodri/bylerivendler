@@ -74,8 +74,11 @@ describe("parsePersona — formas posibles del sobre", () => {
       doc: "20301234567",
       docTipo: 80,
       nombre: "LUCIA GOMEZ",
+      // CUIT activo sin impuestos en el A13 → es contribuyente pero no sabemos
+      // el régimen: lo elige el salón (condicionIva queda null).
       condicionIva: null,
       condicionIvaTexto: null,
+      contribuyenteSinRegimen: true,
     })
   })
 
@@ -108,6 +111,47 @@ describe("parsePersona — formas posibles del sobre", () => {
 
   it("devuelve null si hay persona pero sin documento usable", () => {
     expect(parsePersona({ persona: { apellido: "GOMEZ", nombre: "LUCIA" } })).toBeNull()
+  })
+})
+
+describe("parsePersona — contribuyente sin régimen (el A13 no informa la condición)", () => {
+  // Respuesta REAL del A13: identidad + domicilio + actividad, SIN impuestos.
+  const agustina = {
+    apellido: "BAEZ",
+    nombre: "AGUSTINA SARAH",
+    descripcionActividadPrincipal: "SERVICIOS DE PUBLICIDAD N.C.P.",
+    idActividadPrincipal: 731009,
+    estadoClave: "ACTIVO",
+    idPersona: 27462057259,
+    numeroDocumento: "46205725",
+    tipoClave: "CUIT",
+    tipoDocumento: "DNI",
+    tipoPersona: "FISICA",
+  }
+
+  it("CUIT activo sin impuestos → contribuyente, condición a elegir", () => {
+    const p = parsePersona({ personaReturn: { persona: agustina } })
+    expect(p?.condicionIva).toBeNull()
+    expect(p?.contribuyenteSinRegimen).toBe(true)
+  })
+
+  it("un CUIL (empleado) NO es contribuyente → Consumidor Final", () => {
+    const p = parsePersona({ persona: { ...agustina, tipoClave: "CUIL" } })
+    expect(p?.condicionIva).toBe(5)
+    expect(p?.contribuyenteSinRegimen).toBe(false)
+  })
+
+  it("clave inactiva → no se le pide régimen (no es contribuyente vigente)", () => {
+    const p = parsePersona({ persona: { ...agustina, estadoClave: "INACTIVO" } })
+    expect(p?.contribuyenteSinRegimen).toBe(false)
+  })
+
+  it("si el A13 SÍ trajera el impuesto (monotributo), se usa y no se pregunta", () => {
+    const p = parsePersona({
+      persona: { ...agustina, impuesto: [{ idImpuesto: 20, descripcionImpuesto: "MONOTRIBUTO", estado: "ACTIVO" }] },
+    })
+    expect(p?.condicionIva).toBe(6)
+    expect(p?.contribuyenteSinRegimen).toBe(false)
   })
 })
 

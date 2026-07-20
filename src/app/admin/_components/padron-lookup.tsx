@@ -3,7 +3,12 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { buscarEnPadron, guardarDocumentoClienta } from "../padron-actions"
-import { normalizarDoc, type PadronPersona } from "@/lib/arca/padron-parse"
+import { normalizarDoc, etiquetaCondicionIva, type PadronPersona } from "@/lib/arca/padron-parse"
+
+// Las condiciones que el salón puede elegir a mano cuando ARCA confirma que la
+// persona es contribuyente pero no dice el régimen (el A13 da la identidad, no
+// el régimen). Monotributista primero: es lo más común entre las clientas.
+const CONDICIONES_MANUALES = [6, 1, 4, 5] // Monotributo · Resp. Inscripto · Exento · Cons. Final
 
 // Campo "DNI o CUIT" + botón "Buscar en ARCA", compartido por la ficha de la
 // clienta y la pantalla de facturar. Si la búsqueda falla NO bloquea nada: el
@@ -56,7 +61,16 @@ export default function PadronLookup({
         if (r.ok) {
           setPersona(r.persona)
           setDoc(r.persona.doc)
-          onPersona?.(r.persona)
+          // Contribuyente sin régimen: arranca en Monotributista (lo más
+          // común), pero el salón lo puede cambiar. Se emite ya con esa
+          // condición elegida para que la factura no salga como Cons. Final.
+          if (r.persona.contribuyenteSinRegimen) {
+            const inicial = { ...r.persona, condicionIva: 6, condicionIvaTexto: etiquetaCondicionIva(6) }
+            setPersona(inicial)
+            onPersona?.(inicial)
+          } else {
+            onPersona?.(r.persona)
+          }
         } else {
           setPersona(null)
           onPersona?.(null)
@@ -152,11 +166,39 @@ export default function PadronLookup({
           <div className="adm-sub">
             {persona.docTipo === 80 ? "CUIT" : "DNI"} {persona.doc}
           </div>
-          <div className="adm-sub">
-            {persona.condicionIvaTexto
-              ? `Frente al IVA: ${persona.condicionIvaTexto}`
-              : "No pudimos determinar su condición frente al IVA: se factura como Consumidor Final."}
-          </div>
+          {persona.contribuyenteSinRegimen ? (
+            // ARCA confirma que factura, pero el A13 no dice el régimen: lo
+            // elige el salón. El cambio se emite al padre al instante.
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span className="adm-sub">Frente al IVA:</span>
+              <select
+                className="adm-select"
+                style={{ fontSize: 13, padding: "4px 8px" }}
+                value={persona.condicionIva ?? 6}
+                onChange={(e) => {
+                  const cod = Number(e.target.value)
+                  const actualizada = { ...persona, condicionIva: cod, condicionIvaTexto: etiquetaCondicionIva(cod) }
+                  setPersona(actualizada)
+                  onPersona?.(actualizada)
+                }}
+              >
+                {CONDICIONES_MANUALES.map((c) => (
+                  <option key={c} value={c}>{etiquetaCondicionIva(c)}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="adm-sub">
+              {persona.condicionIvaTexto
+                ? `Frente al IVA: ${persona.condicionIvaTexto}`
+                : "No pudimos determinar su condición frente al IVA: se factura como Consumidor Final."}
+            </div>
+          )}
+          {persona.contribuyenteSinRegimen && (
+            <div className="adm-sub" style={{ fontSize: 11, color: "var(--ink-mute)" }}>
+              ARCA confirma que es contribuyente pero no informa el régimen. Elegí el correcto.
+            </div>
+          )}
           {/* Salida explícita: antes la única forma de volver atrás era borrar
               el campo, y nadie lo adivinaba. */}
           <button

@@ -19,6 +19,15 @@ export interface PadronPersona {
   nombre: string
   condicionIva: number | null
   condicionIvaTexto: string | null
+  /**
+   * La persona tiene CUIT ACTIVO (es contribuyente) pero el A13 NO informa su
+   * régimen: no se puede saber si es monotributista o responsable inscripto.
+   * En ese caso `condicionIva` queda null y el que factura tiene que ELEGIR la
+   * condición (el A13 da la identidad, no el régimen — verificado con una
+   * respuesta real). Con CUIL/CDI, o clave inactiva, esto es false y la
+   * condición es Consumidor Final.
+   */
+  contribuyenteSinRegimen: boolean
 }
 
 export type PadronErrorKind =
@@ -307,12 +316,22 @@ export function parsePersona(raw: unknown): PadronPersona | null {
   if (!doc) return null
 
   const condicion = deducirCondicionIva(p)
+  // ¿Contribuyente sin régimen conocido? Sólo cuando NO se pudo deducir la
+  // condición, la clave es un CUIT (no CUIL/CDI) y está activa: ahí el A13 sabe
+  // que factura pero no dice cómo, y hay que preguntarle al que emite.
+  const tipoClave = clave(texto(p.tipoClave))
+  const estado = clave(texto(p.estadoClave))
+  // OJO: "INACTIVO" contiene "ACTIVO" como substring, así que se chequea por lo
+  // NEGATIVO (igual que `estaActivo`). Sin dato = se asume vigente.
+  const claveVigente = estado === "" || !(estado.includes("INACTIV") || estado.includes("BAJA"))
+  const contribuyenteSinRegimen = condicion == null && tipoClave === "CUIT" && claveVigente
   return {
     doc: doc.doc,
     docTipo: doc.docTipo,
     nombre: armarNombre(p),
     condicionIva: condicion?.codigo ?? null,
     condicionIvaTexto: condicion?.texto ?? null,
+    contribuyenteSinRegimen,
   }
 }
 
