@@ -74,6 +74,11 @@ export default async function PortalPage() {
         .select("id, storage_path, type")
         .eq("client_id", client.id)
         .eq("visible_to_client", true)
+        // Doble candado: la tabla también guarda las hojas del consentimiento
+        // en papel (type='consent'), que son de la ficha médica y NUNCA se le
+        // muestran a la clienta. Nacen con visible_to_client=false, pero el
+        // filtro por tipo hace que ni marcándolas por error puedan aparecer.
+        .in("type", ["before", "after"])
         .order("created_at", { ascending: true }),
     ])
     appointments = (apptRes.data ?? []) as unknown as AppointmentRow[]

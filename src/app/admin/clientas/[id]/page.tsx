@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
+import ConsentManager from "./consent-manager"
 import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
@@ -173,15 +174,25 @@ export default async function AdminClientDetailPage({
   const sellablePacks: SellablePack[] = ((activePacksData ?? []) as { id: string; name: string; sessions: number; total_price_cents: number }[])
     .map((p) => ({ id: p.id, label: `${p.name} · ${p.sessions} sesiones · ${fmtPrice(p.total_price_cents / 100)}` }))
 
-  type PhotoRow = { id: string; storage_path: string; type: "before" | "after"; visible_to_client: boolean }
+  // Misma tabla y mismo bucket privado para las fotos antes/después y para las
+  // hojas del consentimiento en papel (type='consent'); se separan más abajo
+  // para que cada cosa viva en SU sección.
+  type PhotoRow = {
+    id: string
+    storage_path: string
+    type: "before" | "after" | "consent"
+    visible_to_client: boolean
+    note: string | null
+    created_at: string
+  }
   const { data: photosData } = await admin
     .from("client_photos")
-    .select("id, storage_path, type, visible_to_client")
+    .select("id, storage_path, type, visible_to_client, note, created_at")
     .eq("client_id", id)
     .order("created_at", { ascending: false })
   const rawPhotos = (photosData ?? []) as PhotoRow[]
 
-  const photos = await Promise.all(
+  const firmadas = await Promise.all(
     rawPhotos.map(async (p) => {
       const { data } = await admin.storage
         .from("client-photos")
@@ -189,6 +200,15 @@ export default async function AdminClientDetailPage({
       return { ...p, signedUrl: data?.signedUrl ?? "" }
     })
   )
+
+  const photos = firmadas.filter(
+    (p): p is typeof p & { type: "before" | "after" } => p.type !== "consent"
+  )
+  // Las hojas del consentimiento, al revés que las fotos: de la más vieja a la
+  // más nueva, para que se lean en el orden en que se subieron (hoja 1, 2, 3).
+  const consentPages = firmadas
+    .filter((p) => p.type === "consent")
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
 
   return (
     <>
@@ -241,6 +261,9 @@ export default async function AdminClientDetailPage({
           </div>
         </div>
       </div>
+
+      <h2 className="adm-section-title">Ficha y consentimiento (en papel)</h2>
+      <ConsentManager clientId={client.id} pages={consentPages} />
 
       <h2 className="adm-section-title">Fotos antes / después</h2>
       <PhotosManager clientId={client.id} photos={photos} />

@@ -755,7 +755,12 @@ export async function uploadClientPhoto(
   const type = formData.get("type")
 
   if (!(file instanceof File) || !file.size) return { ok: false, error: "Archivo requerido" }
-  if (type !== "before" && type !== "after") return { ok: false, error: "Tipo inválido" }
+  // 'consent' = una hoja del consentimiento en papel (misma tabla y mismo
+  // bucket privado que las fotos; se muestra en su propia sección y NUNCA se
+  // le muestra a la clienta).
+  if (type !== "before" && type !== "after" && type !== "consent") {
+    return { ok: false, error: "Tipo inválido" }
+  }
 
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "jpg"
   const path = `${clientId}/${crypto.randomUUID()}.${ext}`
@@ -800,8 +805,38 @@ export async function deleteClientPhoto(
 
   if (!photo) return { ok: false, error: "Foto no encontrada" }
 
-  await admin.storage.from("client-photos").remove([photo.storage_path])
-  await admin.from("client_photos").delete().eq("id", photoId)
+  // Primero el archivo: si falla, se corta y la fila queda: con la fila todavía
+  // ahí se puede reintentar desde la pantalla. Al revés (borrar la fila y que
+  // el archivo quede) la imagen se vuelve inborrable.
+  const { error: rmErr } = await admin.storage.from("client-photos").remove([photo.storage_path])
+  if (rmErr) return { ok: false, error: `No se pudo borrar la imagen: ${rmErr.message}` }
+
+  const { error: delErr } = await admin.from("client_photos").delete().eq("id", photoId)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  revalidatePath(`/admin/clientas/${clientId}`)
+  return { ok: true }
+}
+
+/**
+ * Nota opcional de una hoja (ej. "firmado el 12/07"). Vacía => se guarda NULL,
+ * así "sin nota" es un solo valor y no queda "" dando vueltas.
+ */
+export async function updateClientPhotoNote(
+  photoId: string,
+  clientId: string,
+  note: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+
+  const limpia = note.trim().slice(0, 300)
+
+  const { error } = await adminClient()
+    .from("client_photos")
+    .update({ note: limpia || null })
+    .eq("id", photoId)
+
+  if (error) return { ok: false, error: error.message }
 
   revalidatePath(`/admin/clientas/${clientId}`)
   return { ok: true }
@@ -819,6 +854,10 @@ export async function togglePhotoVisibility(
     .from("client_photos")
     .update({ visible_to_client: visible })
     .eq("id", photoId)
+    // Las hojas del consentimiento NUNCA se le muestran a la clienta. El portal
+    // ya las filtra por tipo, pero la regla se cierra también acá, del lado de
+    // la ESCRITURA: así el invariante no depende de que ese filtro sobreviva.
+    .neq("type", "consent")
 
   if (error) return { ok: false, error: error.message }
 
@@ -839,6 +878,24 @@ export async function deleteClient(
 
   const { error: apptErr } = await admin.from("appointments").delete().eq("client_id", clientId)
   if (apptErr) return { ok: false, error: `No se pudieron borrar los turnos: ${apptErr.message}` }
+
+  // Las FILAS de client_photos caen por cascada, pero los ARCHIVOS del bucket
+  // no: hay que borrarlos a mano ANTES, o quedan huérfanos para siempre (sin
+  // fila, ninguna pantalla puede volver a borrarlos). Con el consentimiento en
+  // papel eso sería creer que se borró una ficha médica firmada y que siga ahí.
+  const { data: archivos } = await admin
+    .from("client_photos")
+    .select("storage_path")
+    .eq("client_id", clientId)
+  const paths = (archivos ?? []).map((f) => f.storage_path as string)
+  if (paths.length) {
+    const { error: rmErr } = await admin.storage.from("client-photos").remove(paths)
+    // Fail closed: si los archivos no se pudieron borrar, NO se borra la
+    // clienta. Mejor reintentar que dejar las imágenes sueltas y sin dueño.
+    if (rmErr) {
+      return { ok: false, error: `No se pudieron borrar las imágenes: ${rmErr.message}` }
+    }
+  }
 
   const { error } = await admin.from("clients").delete().eq("id", clientId)
   if (error) return { ok: false, error: error.message }
