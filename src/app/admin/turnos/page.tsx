@@ -229,11 +229,18 @@ export default async function AdminTurnosPage({
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Para una profesional el nombre NO es link: la ficha de la clienta
+              es sólo de admin/recepción y el link la rebotaría. Mismo criterio
+              que el panel de inicio. */}
           <div className="adm-name">
             {a.client ? (
-              <Link href={`/admin/clientas/${a.client.id}`}>
-                {a.client.first_name} {a.client.last_name}
-              </Link>
+              staffProfile?.isProfessionalOnly ? (
+                `${a.client.first_name} ${a.client.last_name}`
+              ) : (
+                <Link href={`/admin/clientas/${a.client.id}`}>
+                  {a.client.first_name} {a.client.last_name}
+                </Link>
+              )
             ) : "—"}
           </div>
           {isMulti ? (
@@ -346,11 +353,16 @@ export default async function AdminTurnosPage({
           </div>
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Igual que arriba: sin link para una profesional. */}
           <div className="adm-name">
             {first.client ? (
-              <Link href={`/admin/clientas/${first.client.id}`}>
-                {first.client.first_name} {first.client.last_name}
-              </Link>
+              staffProfile?.isProfessionalOnly ? (
+                `${first.client.first_name} ${first.client.last_name}`
+              ) : (
+                <Link href={`/admin/clientas/${first.client.id}`}>
+                  {first.client.first_name} {first.client.last_name}
+                </Link>
+              )
             ) : "—"}
           </div>
           {sorted.map((a) => {

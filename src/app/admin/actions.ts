@@ -44,6 +44,31 @@ function adminClient() {
   )
 }
 
+/**
+ * Como `requireStaff`, pero además exige que NO sea una profesional pura: el
+ * consentimiento firmado es ficha médica y sólo lo ven (y lo tocan)
+ * admin/recepción, igual que la ficha de la clienta.
+ *
+ * Lanza en vez de redirigir (`requireAdmin` de lib/staff redirige, que sirve
+ * para páginas): esto corre en server actions.
+ *
+ * FAIL-CLOSED de verdad: si la consulta del rol falla o no devuelve fila, se
+ * bloquea. Mirar sólo `data?.role === "professional"` dejaría pasar el caso
+ * "no pude leer el rol", que es justo cuando no hay que arriesgar. `requireStaff`
+ * ya probó que hay una fila de staff activa, así que quedarse sin fila acá es
+ * una anomalía, no el caso normal.
+ */
+async function requireAdminStaff() {
+  const user = await requireStaff()
+  const { data, error } = await adminClient()
+    .from("staff")
+    .select("role")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (error || !data || data.role === "professional") throw new Error("Acceso denegado")
+  return user
+}
+
 // "Vivo" = no cancelado ni no_show. Un turno cancelado/no_show no cuenta
 // como sesión ocupada del pack a efectos de plata (estadísticas ya los
 // excluye de la facturación) ni de superposición de horarios.
@@ -761,6 +786,8 @@ export async function uploadClientPhoto(
   if (type !== "before" && type !== "after" && type !== "consent") {
     return { ok: false, error: "Tipo inválido" }
   }
+  // El consentimiento es sólo de admin/recepción, igual que la ficha.
+  if (type === "consent") await requireAdminStaff()
 
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "jpg"
   const path = `${clientId}/${crypto.randomUUID()}.${ext}`
@@ -799,11 +826,13 @@ export async function deleteClientPhoto(
   const admin = adminClient()
   const { data: photo } = await admin
     .from("client_photos")
-    .select("storage_path")
+    .select("storage_path, type")
     .eq("id", photoId)
     .maybeSingle()
 
   if (!photo) return { ok: false, error: "Foto no encontrada" }
+  // Una hoja del consentimiento sólo la puede borrar admin/recepción.
+  if (photo.type === "consent") await requireAdminStaff()
 
   // Primero el archivo: si falla, se corta y la fila queda: con la fila todavía
   // ahí se puede reintentar desde la pantalla. Al revés (borrar la fila y que
@@ -827,7 +856,8 @@ export async function updateClientPhotoNote(
   clientId: string,
   note: string
 ): Promise<{ ok: boolean; error?: string }> {
-  await requireStaff()
+  // Hoy la nota se usa sólo en el consentimiento, que es de admin/recepción.
+  await requireAdminStaff()
 
   const limpia = note.trim().slice(0, 300)
 

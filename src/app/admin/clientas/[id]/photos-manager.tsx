@@ -67,7 +67,10 @@ export default function PhotosManager({
   const handleDelete = (photoId: string) => {
     if (!window.confirm("¿Eliminar esta foto? No se puede deshacer.")) return
     startTransition(async () => {
-      await deleteClientPhoto(photoId, clientId)
+      // Se muestra el error: si el archivo no se pudo borrar del almacenamiento
+      // la foto sigue ahí, y sin este aviso el clic parecía no hacer nada.
+      const r = await deleteClientPhoto(photoId, clientId)
+      if (!r.ok) setError(r.error ?? "No se pudo eliminar la foto")
     })
   }
 

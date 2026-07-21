@@ -1,6 +1,8 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
+import { createClient as createSsrClient } from "@/lib/supabase/server"
+import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import ConsentManager from "./consent-manager"
@@ -53,6 +55,13 @@ export default async function AdminClientDetailPage({
 }: {
   params: Promise<{ id: string }>
 }) {
+  // La ficha tiene datos personales, notas y el CONSENTIMIENTO firmado (ficha
+  // médica): sólo admin/recepción. La lista de clientas ya se protegía así,
+  // pero a la ficha se llegaba igual escribiendo la dirección a mano.
+  const ssr = await createSsrClient()
+  const { data: { user } } = await ssr.auth.getUser()
+  if (user) await requireAdmin(user.id)
+
   const { id } = await params
   const admin = createAdminClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
