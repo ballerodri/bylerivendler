@@ -5,6 +5,7 @@ import { getStaffProfile } from "@/lib/staff"
 import StatusActions from "../_components/status-actions"
 import ConfirmPurchaseButton from "../_components/confirm-purchase-button"
 import PaidBadge from "../_components/paid-badge"
+import ResendConfirmationButton from "../_components/resend-confirmation-button"
 import { fmtPrice } from "../../reserva/data"
 import { clientWhatsappLink } from "@/lib/whatsapp"
 import WhatsAppButton from "../_components/whatsapp-button"
@@ -30,8 +31,33 @@ type ApptRow = {
   booking_group_id: string | null
   /** Cuándo salió el mail de confirmación de la compra (null = no salió). */
   confirmation_email_sent_at: string | null
-  client: { id: string; first_name: string; last_name: string; phone: string | null } | null
+  client: { id: string; first_name: string; last_name: string; phone: string | null; email: string | null } | null
   appointment_services: ApptService[]
+}
+
+// ¿Se puede (re)enviar el mail de confirmación de esta reserva? Sirve para un
+// turno suelto (array de uno) y para una compra agrupada. Condición: que a
+// NADIE del grupo se le haya mandado todavía, que no quede ninguno pendiente
+// (si no, todavía no es momento), que haya al menos uno firme para anunciar, y
+// que la clienta tenga un email REAL. Devuelve el turno firme sobre el que
+// disparar la acción (el motor manda por todo el grupo). Misma condición que
+// muestra "Sin mail".
+const FIRMES = ["confirmed", "in_progress", "completed"]
+function datosReenvioConfirmacion(
+  appts: ApptRow[],
+  gruposConPendiente: Set<string>
+): { mostrar: boolean; appointmentId?: string } {
+  if (appts.some((a) => a.confirmation_email_sent_at)) return { mostrar: false }
+  if (appts.some((a) => a.status === "pending")) return { mostrar: false }
+  // Pendiente en OTRO día/filtro de la misma compra: el motor no manda hasta
+  // que TODO el grupo está firme, así que el botón daría un error confuso.
+  if (appts.some((a) => a.booking_group_id && gruposConPendiente.has(a.booking_group_id)))
+    return { mostrar: false }
+  const target = appts.find((a) => FIRMES.includes(a.status))
+  if (!target) return { mostrar: false }
+  const email = (appts[0].client?.email ?? "").trim().toLowerCase()
+  if (!email || email.endsWith("@noemail.local")) return { mostrar: false }
+  return { mostrar: true, appointmentId: target.id }
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -110,7 +136,7 @@ export default async function AdminTurnosPage({
     `
       id, starts_at, status, duration_min, total_cents, paid_cents, pack_purchase_id, booking_group_id,
       confirmation_email_sent_at,
-      client:clients(id, first_name, last_name, phone),
+      client:clients(id, first_name, last_name, phone, email),
       appointment_services(
         starts_at,
         service:services(id, name),
@@ -158,6 +184,24 @@ export default async function AdminTurnosPage({
     .select("appointment_id")
     .in("appointment_id", appts.map((a) => a.id))
   const facturadasSet = new Set((facturadas ?? []).map((f) => f.appointment_id as string))
+
+  // Grupos (compras) que tienen ALGÚN turno todavía pendiente — incluidos los
+  // que no están en esta vista (otro día, otro filtro). El mail de confirmación
+  // sale recién cuando toda la compra quedó firme, así que el botón "Enviar
+  // confirmación" no debe ofrecerse si el grupo tiene un pendiente escondido.
+  const groupIds = Array.from(
+    new Set(appts.map((a) => a.booking_group_id).filter((g): g is string => !!g))
+  )
+  const { data: pendientesData } = groupIds.length
+    ? await admin
+        .from("appointments")
+        .select("booking_group_id")
+        .in("booking_group_id", groupIds)
+        .eq("status", "pending")
+    : { data: [] as { booking_group_id: string | null }[] }
+  const gruposConPendiente = new Set(
+    (pendientesData ?? []).map((r) => r.booking_group_id).filter((g): g is string => !!g)
+  )
 
   const clientIds = Array.from(new Set(appts.map((a) => a.client?.id).filter(Boolean))) as string[]
   type ActivePackRow = { id: string; client_id: string; service_id: string | null; pack_name: string; sessions_total: number; sessions_used: number }
@@ -287,6 +331,14 @@ export default async function AdminTurnosPage({
             <span className="adm-pill" style={{ marginLeft: 6, background: "#dfe9df", color: "#3c6a3c", fontSize: 10 }}>Facturada</span>
           )}
           <MailPill sentAt={a.confirmation_email_sent_at} status={a.status} />
+          {!staffProfile?.isProfessionalOnly && (() => {
+            const rc = datosReenvioConfirmacion([a], gruposConPendiente)
+            return rc.mostrar ? (
+              <div style={{ marginTop: 6 }}>
+                <ResendConfirmationButton appointmentId={rc.appointmentId!} />
+              </div>
+            ) : null
+          })()}
         </div>
         <div className="adm-actions">
           {/* El recordatorio por WhatsApp sólo para turnos confirmados que
@@ -464,6 +516,14 @@ export default async function AdminTurnosPage({
             </span>
           )}
           <MailPill sentAt={group.find((a) => a.confirmation_email_sent_at)?.confirmation_email_sent_at ?? null} status={first.status} />
+          {!staffProfile?.isProfessionalOnly && (() => {
+            const rc = datosReenvioConfirmacion(sorted, gruposConPendiente)
+            return rc.mostrar ? (
+              <div style={{ marginTop: 6 }}>
+                <ResendConfirmationButton appointmentId={rc.appointmentId!} />
+              </div>
+            ) : null
+          })()}
         </div>
         <div className="adm-actions">
           {groupHasPending && first.booking_group_id && (

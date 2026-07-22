@@ -61,7 +61,12 @@ type GroupApptRow = {
  */
 export async function sendGroupConfirmationEmail(
   admin: SupabaseClient,
-  bookingGroupId: string
+  bookingGroupId: string,
+  // `skipStaffAlerts`: no manda los avisos a las profesionales, sólo el mail a
+  // la clienta. Lo usa el turno suelto cargado por el salón, donde a la
+  // profesional YA se le avisa por `notifyNewBooking` — sin esto le llegaría
+  // duplicado. En la web / los packs va en false y se avisa a todas como siempre.
+  opts?: { skipStaffAlerts?: boolean }
 ): Promise<void> {
   // Sin Resend configurado no reclamamos nada: un deploy sin la key no debe
   // "quemar" el anti-duplicado del grupo para siempre.
@@ -277,6 +282,9 @@ export async function sendGroupConfirmationEmail(
     //    que es mucho menos grave que re-mandarle el mail a la clienta. Y al
     //    correr DESPUÉS del envío exitoso, un reintento por fallo de la
     //    clienta no puede duplicarlos.
+    //    Se saltea cuando quien llama ya avisó a las profesionales por otro
+    //    lado (el turno suelto del admin, vía `notifyNewBooking`).
+    if (opts?.skipStaffAlerts) return
     const porProfesional = new Map<string, { nombre: string; email: string; filas: { startsAt: Date; label: string; durationMin: number }[] }>()
     for (const a of live) {
       for (const l of a.appointment_services ?? []) {

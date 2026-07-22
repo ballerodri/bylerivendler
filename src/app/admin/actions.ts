@@ -1551,6 +1551,9 @@ export async function createAdminBooking(
     : Object.values(input.resolvedStaff)[0] ?? null
 
   // 5) Create appointment
+  // `booking_group_id`: el mail de confirmación a la clienta se manda por grupo
+  // (mismo motor que la web y los packs). Un turno suelto es un grupo de uno.
+  const bookingGroupId = crypto.randomUUID()
   const { data: appt, error: apptErr } = await admin
     .from("appointments")
     .insert({
@@ -1565,6 +1568,7 @@ export async function createAdminBooking(
       deposit_paid: true,
       status: "confirmed",
       source: "admin",
+      booking_group_id: bookingGroupId,
       notes_internal: input.notes?.trim() || null,
     })
     .select("id")
@@ -1640,6 +1644,13 @@ export async function createAdminBooking(
     // Non-fatal
   }
 
+  // Mail de confirmación a la CLIENTA (el mismo que recibe por la web o al
+  // comprar un pack): día, hora y detalle del turno. Best-effort, nunca lanza,
+  // y sólo sale si la clienta tiene un email real cargado. `skipStaffAlerts`
+  // porque a la profesional se le avisa abajo con `notifyNewBooking` — sin eso
+  // le llegaría duplicado.
+  await sendGroupConfirmationEmail(admin, bookingGroupId, { skipStaffAlerts: true })
+
   // Aviso a Leri + profesional(es) asignado(s) — no a quien la cargó (best-effort).
   const { data: notifClient } = await admin
     .from("clients")
@@ -1660,6 +1671,82 @@ export async function createAdminBooking(
   revalidatePath("/admin")
   revalidatePath("/admin/turnos")
   return { ok: true, appointmentId: appt.id }
+}
+
+/**
+ * Manda (o re-manda) el mail de confirmación de UN turno a la clienta. Lo usa
+ * el botón "Enviar confirmación" que aparece en los turnos firmes que quedaron
+ * SIN MAIL (ej. uno cargado antes de que esto existiera, o un envío que falló).
+ *
+ * Reutiliza el mismo motor por grupo. Si el turno no tiene `booking_group_id`
+ * (turnos viejos, de antes de este cambio), se le asigna uno al vuelo. El
+ * anti-duplicado sigue intacto: `sendGroupConfirmationEmail` sólo manda si
+ * `confirmation_email_sent_at` está en null, así que dos clics no lo duplican.
+ * `skipStaffAlerts`: sólo se le manda a la clienta (a la profesional ya se le
+ * avisó al crear el turno).
+ */
+export async function reenviarConfirmacion(
+  appointmentId: string
+): Promise<{ ok: boolean; error?: string }> {
+  // Mandar mails a la clienta es tarea de admin/recepción, no de las
+  // profesionales (mismo criterio que el resto de la comunicación con la
+  // clienta). El botón ya se les esconde; esto lo cierra del lado del servidor.
+  await requireAdminStaff()
+  const admin = adminClient()
+
+  const { data: appt } = await admin
+    .from("appointments")
+    .select("id, status, booking_group_id, confirmation_email_sent_at, client_id")
+    .eq("id", appointmentId)
+    .maybeSingle()
+  if (!appt) return { ok: false, error: "Turno no encontrado" }
+
+  // Sólo tiene sentido para un turno firme: uno pendiente todavía no se
+  // confirma, y uno cancelado/no vino no se anuncia.
+  if (!["confirmed", "in_progress", "completed"].includes(appt.status)) {
+    return { ok: false, error: "El turno no está confirmado." }
+  }
+  if (appt.confirmation_email_sent_at) {
+    return { ok: false, error: "El mail de confirmación ya se había enviado." }
+  }
+
+  // Sin email real no hay a quién mandarle: se avisa claro en vez de "fallar".
+  const { data: client } = await admin
+    .from("clients")
+    .select("email")
+    .eq("id", appt.client_id)
+    .maybeSingle()
+  const email = (client?.email ?? "").trim().toLowerCase()
+  if (!email || email.endsWith("@noemail.local")) {
+    return { ok: false, error: "La clienta no tiene un email cargado en su ficha." }
+  }
+
+  // Turnos viejos no tienen grupo: se les asigna uno (de uno) para poder usar
+  // el motor por grupo.
+  let groupId = appt.booking_group_id as string | null
+  if (!groupId) {
+    groupId = crypto.randomUUID()
+    const { error: gErr } = await admin
+      .from("appointments")
+      .update({ booking_group_id: groupId })
+      .eq("id", appointmentId)
+    if (gErr) return { ok: false, error: "No se pudo preparar el envío. Probá de nuevo." }
+  }
+
+  await sendGroupConfirmationEmail(admin, groupId, { skipStaffAlerts: true })
+
+  // ¿Salió? El motor pone `confirmation_email_sent_at` al reclamar y lo suelta
+  // si el envío falla, así que releer esa marca es la señal de éxito.
+  const { data: after } = await admin
+    .from("appointments")
+    .select("confirmation_email_sent_at")
+    .eq("id", appointmentId)
+    .maybeSingle()
+
+  revalidatePath("/admin/turnos")
+  revalidatePath("/admin")
+  if (after?.confirmation_email_sent_at) return { ok: true }
+  return { ok: false, error: "No se pudo enviar el mail. Probá de nuevo en un momento." }
 }
 
 // ─── Eliminar miembro del personal ───────────────────────────────────────────
