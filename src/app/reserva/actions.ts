@@ -7,6 +7,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isActiveStaffSession } from "@/lib/staff"
 import { notifyNewPurchase } from "@/lib/email/notify-booking"
 import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
+import { parseDob } from "@/lib/servicios/dob"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -2317,13 +2318,3 @@ export async function joinWaitlist(data: {
 }
 
 // Parses "DD / MM / AAAA" or "DD/MM/YYYY" or ISO; returns ISO date or null.
-function parseDob(raw: string): string | null {
-  const cleaned = raw.replace(/\s/g, "")
-  const m = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
-  if (m) {
-    const [, d, mo, y] = m
-    return `${y}-${mo.padStart(2, "0")}-${d.padStart(2, "0")}`
-  }
-  if (/^\d{4}-\d{2}-\d{2}/.test(cleaned)) return cleaned.slice(0, 10)
-  return null
-}

@@ -48,7 +48,7 @@ function sinEmail(email: string | null | undefined): boolean {
 
 type SelectedClient =
   | { mode: "existing" } & ClientSearchResult
-  | { mode: "new"; firstName: string; lastName: string; phone: string; email: string }
+  | { mode: "new"; firstName: string; lastName: string; phone: string; email: string; dob: string }
 
 /**
  * El email que viaja en el payload de `createBooking`. Sin uno real va el
@@ -78,7 +78,7 @@ export default function NuevaReservaForm({
   const [clientResults, setClientResults] = useState<ClientSearchResult[]>([])
   const [selectedClient, setSelectedClient] = useState<SelectedClient | null>(null)
   const [clientMode, setClientMode] = useState<"search" | "new">("search")
-  const [newClient, setNewClient] = useState({ firstName: "", lastName: "", phone: "", email: "" })
+  const [newClient, setNewClient] = useState({ firstName: "", lastName: "", phone: "", email: "", dob: "" })
   const [searchPending, startSearchTransition] = useTransition()
 
   // Step 1 — Qué reserva (pack + tratamientos)
@@ -333,6 +333,9 @@ export default function NuevaReservaForm({
             // El motor pide un teléfono; una ficha vieja puede no tenerlo. Con
             // `savedClientId` no se guarda en ningún lado (la ficha ya existe).
             phone: client.phone?.trim() || "-",
+            // Cumpleaños sólo para una clienta NUEVA (a la existente el motor no
+            // la re-escribe, usa `savedClientId`).
+            dob: client.mode === "new" ? client.dob || undefined : undefined,
             isExisting: client.mode === "existing",
           },
           packId: selectedPack.id,
@@ -379,7 +382,7 @@ export default function NuevaReservaForm({
       const result = await createAdminBooking({
         clientId: client.mode === "existing" ? client.id : undefined,
         newClient: client.mode === "new"
-          ? { firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email || undefined }
+          ? { firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email || undefined, dob: client.dob || undefined }
           : undefined,
         serviceIds: Array.from(selectedIds),
         serviceOrder: orderedIds,
@@ -626,6 +629,16 @@ export default function NuevaReservaForm({
                   onChange={(e) => setNewClient((p) => ({ ...p, email: e.target.value }))}
                   style={{ fontSize: 13, padding: "8px 12px" }}
                 />
+                <label style={{ fontSize: 12, color: "var(--ink-mute)", display: "flex", flexDirection: "column", gap: 4 }}>
+                  Cumpleaños (opcional)
+                  <input
+                    className="adm-select"
+                    type="date"
+                    value={newClient.dob}
+                    onChange={(e) => setNewClient((p) => ({ ...p, dob: e.target.value }))}
+                    style={{ fontSize: 13, padding: "8px 12px" }}
+                  />
+                </label>
               </div>
             )}
           </div>

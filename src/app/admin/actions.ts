@@ -6,6 +6,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { validatePayment, distributePayment } from "@/lib/servicios/payments"
+import { parseDob } from "@/lib/servicios/dob"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
@@ -1445,9 +1446,141 @@ export async function searchClients(q: string): Promise<ClientSearchResult[]> {
 
 // ─── Crear turno desde admin ──────────────────────────────────────────────────
 
+// Formato de email mínimo: algo@algo.algo. No pretende validar RFC completo,
+// sólo atajar tipeos obvios antes de guardar.
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+
+export type ClientFormInput = {
+  firstName: string
+  lastName: string
+  email?: string
+  phone?: string
+  dob?: string
+  notes?: string
+  marketingConsent?: boolean
+}
+
+/**
+ * Carga una clienta NUEVA desde el panel (Clientas → Nueva), sin pasar por una
+ * reserva. Sólo admin/recepción (misma regla que la ficha). El email es
+ * OPCIONAL: si no viene, se guarda un placeholder `@noemail.local` —igual que
+ * la reserva del salón— porque la columna es NOT NULL y así una clienta sin
+ * mail no bloquea la carga.
+ */
+export async function createClientManual(
+  input: ClientFormInput
+): Promise<{ ok: boolean; error?: string; clientId?: string }> {
+  await requireAdminStaff()
+  const admin = adminClient()
+
+  const firstName = (input.firstName ?? "").trim()
+  const lastName = (input.lastName ?? "").trim()
+  if (!firstName || !lastName) return { ok: false, error: "El nombre y el apellido son obligatorios." }
+
+  const emailRaw = (input.email ?? "").trim().toLowerCase()
+  if (emailRaw && !EMAIL_RE.test(emailRaw)) return { ok: false, error: "El email no tiene un formato válido." }
+
+  // Cumpleaños: vacío → null; con algo cargado que no se entiende → error (no
+  // se traga en silencio una fecha mal escrita).
+  if ((input.dob ?? "").trim() && !parseDob(input.dob ?? "")) {
+    return { ok: false, error: "La fecha de nacimiento no es válida." }
+  }
+  const dob = parseDob(input.dob ?? "")
+
+  if (emailRaw) {
+    const { data: existing } = await admin.from("clients").select("id").eq("email", emailRaw).maybeSingle()
+    if (existing) return { ok: false, error: "Ya existe una clienta con ese email." }
+  }
+  const email = emailRaw || `admin_created_${Date.now()}@noemail.local`
+
+  const { data: created, error } = await admin
+    .from("clients")
+    .insert({
+      first_name: firstName,
+      last_name: lastName,
+      email,
+      phone: (input.phone ?? "").trim() || null,
+      date_of_birth: dob,
+      notes: (input.notes ?? "").trim() || null,
+      marketing_consent: !!input.marketingConsent,
+      source: "admin",
+    })
+    .select("id")
+    .single()
+  if (error || !created) {
+    // 23505 = unique violation: alguien creó ese email entre el chequeo y el insert.
+    if (error?.code === "23505") return { ok: false, error: "Ya existe una clienta con ese email." }
+    return { ok: false, error: `No se pudo crear la clienta: ${error?.message}` }
+  }
+
+  revalidatePath("/admin/clientas")
+  return { ok: true, clientId: created.id }
+}
+
+/**
+ * Edita los datos de una clienta (nombre, contacto, cumpleaños, notas). El DNI
+ * se maneja aparte con el buscador de ARCA de la ficha. Sólo admin/recepción.
+ *
+ * El email vacío NO borra el existente (la columna es NOT NULL y borrarlo no
+ * tiene sentido): si el campo llega vacío, el email queda como estaba. Para
+ * cargarle o corregirle el mail, se escribe el nuevo.
+ */
+export async function updateClient(
+  clientId: string,
+  input: ClientFormInput
+): Promise<{ ok: boolean; error?: string }> {
+  await requireAdminStaff()
+  const id = z.string().uuid().safeParse(clientId)
+  if (!id.success) return { ok: false, error: "Clienta inválida" }
+  const admin = adminClient()
+
+  const firstName = (input.firstName ?? "").trim()
+  const lastName = (input.lastName ?? "").trim()
+  if (!firstName || !lastName) return { ok: false, error: "El nombre y el apellido son obligatorios." }
+
+  if ((input.dob ?? "").trim() && !parseDob(input.dob ?? "")) {
+    return { ok: false, error: "La fecha de nacimiento no es válida." }
+  }
+  const dob = parseDob(input.dob ?? "")
+
+  const updateData: Record<string, unknown> = {
+    first_name: firstName,
+    last_name: lastName,
+    phone: (input.phone ?? "").trim() || null,
+    date_of_birth: dob,
+    notes: (input.notes ?? "").trim() || null,
+    marketing_consent: !!input.marketingConsent,
+    updated_at: new Date().toISOString(),
+  }
+
+  const emailRaw = (input.email ?? "").trim().toLowerCase()
+  if (emailRaw) {
+    if (!EMAIL_RE.test(emailRaw)) return { ok: false, error: "El email no tiene un formato válido." }
+    // Único, sin contarse a sí misma.
+    const { data: dup } = await admin
+      .from("clients")
+      .select("id")
+      .eq("email", emailRaw)
+      .neq("id", id.data)
+      .maybeSingle()
+    if (dup) return { ok: false, error: "Otra clienta ya tiene ese email." }
+    updateData.email = emailRaw
+  }
+
+  const { error } = await admin.from("clients").update(updateData).eq("id", id.data)
+  if (error) {
+    if (error.code === "23505") return { ok: false, error: "Otra clienta ya tiene ese email." }
+    return { ok: false, error: `No se pudo guardar: ${error.message}` }
+  }
+
+  revalidatePath(`/admin/clientas/${id.data}`)
+  revalidatePath("/admin/clientas")
+  return { ok: true }
+}
+
 export type AdminBookingInput = {
   clientId?: string
-  newClient?: { firstName: string; lastName: string; phone: string; email?: string }
+  newClient?: { firstName: string; lastName: string; phone: string; email?: string; dob?: string }
   serviceIds: string[]
   serviceOrder: string[]
   resolvedStaff: Record<string, string>
@@ -1526,6 +1659,7 @@ export async function createAdminBooking(
           last_name: nc.lastName.trim(),
           email: email ?? `admin_created_${Date.now()}@noemail.local`,
           phone: nc.phone.trim(),
+          date_of_birth: parseDob(nc.dob ?? ""),
           source: "admin",
         })
         .select("id")

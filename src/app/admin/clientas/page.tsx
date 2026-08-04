@@ -47,11 +47,18 @@ export default async function AdminClientasPage({
 
   return (
     <>
-      <p className="adm-eyebrow">Clientas</p>
-      <h1 className="adm-h1">
-        Todas las <em>clientas</em>
-      </h1>
-      <p className="adm-lede">{clients.length} resultados.</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <p className="adm-eyebrow">Clientas</p>
+          <h1 className="adm-h1">
+            Todas las <em>clientas</em>
+          </h1>
+          <p className="adm-lede">{clients.length} resultados.</p>
+        </div>
+        <Link href="/admin/clientas/nueva" className="adm-btn adm-btn--primary" style={{ whiteSpace: "nowrap" }}>
+          + Nueva clienta
+        </Link>
+      </div>
 
       <form className="adm-toolbar" method="get">
         <input

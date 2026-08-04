@@ -6,6 +6,7 @@ import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "../../../reserva/data"
 import PhotosManager from "./photos-manager"
 import ConsentManager from "./consent-manager"
+import ClientDataEditor from "./client-data-editor"
 import SellPack, { type SellablePack } from "./sell-pack"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
@@ -28,6 +29,7 @@ type ClientRow = {
   date_of_birth: string | null
   dni: string | null
   notes: string | null
+  marketing_consent: boolean
   loyalty_points: number
   created_at: string
 }
@@ -71,7 +73,7 @@ export default async function AdminClientDetailPage({
 
   const { data: client } = await admin
     .from("clients")
-    .select("id, first_name, last_name, email, phone, date_of_birth, dni, notes, loyalty_points, created_at")
+    .select("id, first_name, last_name, email, phone, date_of_birth, dni, notes, marketing_consent, loyalty_points, created_at")
     .eq("id", id)
     .maybeSingle<ClientRow>()
   if (!client) notFound()
@@ -232,43 +234,30 @@ export default async function AdminClientDetailPage({
       </p>
 
       <h2 className="adm-section-title">Datos personales</h2>
-      <div className="adm-card" style={{ padding: "8px 16px" }}>
-        <div className="adm-row">
-          <div className="adm-row__label">Email</div>
-          <div>{client.email}</div>
-        </div>
-        <div className="adm-row">
-          <div className="adm-row__label">Teléfono</div>
-          <div>{client.phone ?? "—"}</div>
-        </div>
-        <div className="adm-row">
-          <div className="adm-row__label">Cumpleaños</div>
-          <div>
-            {client.date_of_birth
-              // Sin `timeZone` A PROPÓSITO: es una columna DATE (sin hora) y
-              // convertirla correría el cumpleaños un día para atrás.
-              ? new Date(client.date_of_birth).toLocaleDateString("es-AR")
-              : "—"}
-          </div>
-        </div>
-        <div className="adm-row">
-          <div className="adm-row__label">Notas internas</div>
-          <div>{client.notes ?? "—"}</div>
-        </div>
-        <div className="adm-row">
-          <div className="adm-row__label">DNI o CUIT</div>
-          <div>
-            <PadronLookup
-              clientId={client.id}
-              docInicial={client.dni}
-              ayuda={
-                client.dni
-                  ? "Con esto la factura sale identificada en vez de Consumidor Final."
-                  : "Cargalo una vez y las facturas de esta clienta salen identificadas."
-              }
-            />
-          </div>
-        </div>
+      <ClientDataEditor
+        client={{
+          id: client.id,
+          first_name: client.first_name,
+          last_name: client.last_name,
+          email: client.email,
+          phone: client.phone,
+          date_of_birth: client.date_of_birth,
+          notes: client.notes,
+          marketing_consent: client.marketing_consent,
+        }}
+      />
+
+      <h2 className="adm-section-title">DNI o CUIT (para facturar)</h2>
+      <div className="adm-card" style={{ padding: 24, maxWidth: 560 }}>
+        <PadronLookup
+          clientId={client.id}
+          docInicial={client.dni}
+          ayuda={
+            client.dni
+              ? "Con esto la factura sale identificada en vez de Consumidor Final."
+              : "Cargalo una vez y las facturas de esta clienta salen identificadas."
+          }
+        />
       </div>
 
       <h2 className="adm-section-title">Ficha y consentimiento (en papel)</h2>
