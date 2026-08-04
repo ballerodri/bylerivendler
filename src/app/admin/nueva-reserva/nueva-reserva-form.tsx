@@ -253,11 +253,16 @@ export default function NuevaReservaForm({
       .map((s) => ({ id: s.id, name: s.name, duration: effective(s).duration, staffId: "auto" }))
     if (!svcs.length) return
     startSlotsTransition(async () => {
-      // Con un pack en la compra, el turno lo escribe `createBooking`, que
-      // aplica `staff_services` a rajatabla: el buscador tiene que ser igual de
-      // estricto o terminaría ofreciendo horarios que el servidor rechaza. Sin
-      // pack, el camino es el de siempre (`createAdminBooking`, sin esa regla).
-      const res = await fetchSequentialAvailability(svcs, d, 1, { enforceStaffServices: !!selectedPack })
+      // El buscador SIEMPRE respeta `staff_services`: sólo ofrece (y auto-asigna)
+      // a las profesionales que hacen ese servicio, igual que la web y el pack.
+      // Antes, sin pack, iba en `false` y terminaba asignando a cualquiera —
+      // justo lo que no debía. La profesional se resuelve sobre las asignadas y
+      // `createAdminBooking` escribe la que resolvió el buscador. (Los 27
+      // servicios activos tienen al menos una asignada, así que ninguno queda
+      // sin horarios; el cartel del inicio avisa si alguno se queda sin
+      // profesional.) El cambio manual de profesional post-reserva sigue
+      // teniendo su propio escape hatch (`reasignarProfesional`).
+      const res = await fetchSequentialAvailability(svcs, d, 1, { enforceStaffServices: true })
       setSlots(res.slotsForDate)
     })
   }
