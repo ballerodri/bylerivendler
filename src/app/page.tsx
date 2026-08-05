@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { isStaffUser } from "@/lib/staff"
+import LogoutButton from "@/app/portal/logout-button"
 
 export const dynamic = "force-dynamic"
 
@@ -199,6 +200,7 @@ function LoggedInView({
           Ver mi historial
         </Link>
       </div>
+      <LogoutButton />
     </div>
   )
 }
