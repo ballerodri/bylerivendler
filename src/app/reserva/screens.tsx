@@ -18,6 +18,7 @@ import {
 } from "./data"
 import type { BookingState, Category, Combo, Professional, ReservaPack, Service } from "./data"
 import { Check, Icon, Progress, TopBar, Wordmark } from "./primitives"
+import LogoutButton from "@/app/portal/logout-button"
 import { createBooking, saveClientEarly, fetchSequentialAvailability, joinWaitlist } from "./actions"
 import { sendMagicLink, signInWithGoogle } from "../login/actions"
 import { whatsappLink } from "@/lib/whatsapp"
@@ -2097,6 +2098,7 @@ export function Screen3Details({
             style={{
               display: "flex",
               alignItems: "center",
+              justifyContent: "space-between",
               gap: 10,
               padding: "10px 14px",
               background: "var(--linen)",
@@ -2106,15 +2108,18 @@ export function Screen3Details({
               color: "var(--ink-soft)",
             }}
           >
-            <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden style={{ flexShrink: 0 }}>
-              <path d="M17.6 9.2c0-.6 0-1.2-.1-1.7H9v3.3h4.8c-.2 1.1-.8 2-1.7 2.6v2.2h2.7c1.6-1.5 2.5-3.7 2.5-6.4z" fill="#4285F4"/>
-              <path d="M9 18c2.3 0 4.2-.8 5.6-2.1l-2.7-2.1c-.8.5-1.7.8-2.9.8-2.2 0-4.1-1.5-4.8-3.5H1.4v2.2C2.8 16 5.7 18 9 18z" fill="#34A853"/>
-              <path d="M4.2 11.1c-.2-.5-.3-1.1-.3-1.6s.1-1.1.3-1.6V5.6H1.4C.5 7 0 8.5 0 9.5s.5 2.5 1.4 3.9l2.8-2.3z" fill="#FBBC04"/>
-              <path d="M9 3.6c1.3 0 2.4.4 3.3 1.3l2.4-2.4C13.2.9 11.3 0 9 0 5.7 0 2.8 2 1.4 4.6l2.8 2.2C5 5.1 6.8 3.6 9 3.6z" fill="#EA4335"/>
-            </svg>
-            <span>
-              <strong>{f.firstName} {f.lastName}</strong> · {f.email}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden style={{ flexShrink: 0 }}>
+                <path d="M17.6 9.2c0-.6 0-1.2-.1-1.7H9v3.3h4.8c-.2 1.1-.8 2-1.7 2.6v2.2h2.7c1.6-1.5 2.5-3.7 2.5-6.4z" fill="#4285F4"/>
+                <path d="M9 18c2.3 0 4.2-.8 5.6-2.1l-2.7-2.1c-.8.5-1.7.8-2.9.8-2.2 0-4.1-1.5-4.8-3.5H1.4v2.2C2.8 16 5.7 18 9 18z" fill="#34A853"/>
+                <path d="M4.2 11.1c-.2-.5-.3-1.1-.3-1.6s.1-1.1.3-1.6V5.6H1.4C.5 7 0 8.5 0 9.5s.5 2.5 1.4 3.9l2.8-2.3z" fill="#FBBC04"/>
+                <path d="M9 3.6c1.3 0 2.4.4 3.3 1.3l2.4-2.4C13.2.9 11.3 0 9 0 5.7 0 2.8 2 1.4 4.6l2.8 2.2C5 5.1 6.8 3.6 9 3.6z" fill="#EA4335"/>
+              </svg>
+              <span>
+                <strong>{f.firstName} {f.lastName}</strong> · {f.email}
+              </span>
+            </div>
+            <LogoutButton />
           </div>
           <div className="field__row">
             <div className="field">
