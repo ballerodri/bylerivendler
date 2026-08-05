@@ -50,9 +50,7 @@ export default function LoginForm({
     setGoogleSubmitting(true)
     setError(null)
     const r = await signInWithGoogle(next)
-    if (r.ok) {
-      window.location.href = r.url
-    } else {
+    if (r) {
       setGoogleSubmitting(false)
       setError(r.error)
     }

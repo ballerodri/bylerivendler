@@ -2040,9 +2040,7 @@ export function Screen3Details({
   const handleGoogle = async () => {
     setGoogleLoading(true)
     const r = await signInWithGoogle("/reserva")
-    if (r.ok) {
-      window.location.href = r.url
-    } else {
+    if (r) {
       setGoogleLoading(false)
       setLinkError(r.error)
     }

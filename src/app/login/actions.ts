@@ -1,6 +1,7 @@
 "use server"
 
 import { headers, cookies } from "next/headers"
+import { redirect } from "next/navigation"
 import { z } from "zod"
 import { createClient } from "@/lib/supabase/server"
 
@@ -13,9 +14,7 @@ export type SendMagicLinkResult =
   | { ok: true }
   | { ok: false; error: string }
 
-export type GoogleSignInResult =
-  | { ok: true; url: string }
-  | { ok: false; error: string }
+export type GoogleSignInResult = { ok: false; error: string }
 
 async function getOrigin() {
   const h = await headers()
@@ -26,7 +25,7 @@ async function getOrigin() {
 
 export async function signInWithGoogle(
   next?: string
-): Promise<GoogleSignInResult> {
+): Promise<GoogleSignInResult | void> {
   const supabase = await createClient()
   const origin = await getOrigin()
   const safeNext = next && next.startsWith("/") ? next : null
@@ -59,7 +58,7 @@ export async function signInWithGoogle(
   if (error || !data.url) {
     return { ok: false, error: error?.message ?? "No pudimos iniciar sesión con Google" }
   }
-  return { ok: true, url: data.url }
+  redirect(data.url)
 }
 
 export async function sendMagicLink(
