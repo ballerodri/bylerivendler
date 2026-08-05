@@ -6,6 +6,7 @@ import { emitirFacturaManual } from "../actions"
 import { searchClients, type ClientSearchResult } from "@/app/admin/actions"
 import PadronLookup from "@/app/admin/_components/padron-lookup"
 import { docTipoParaDocumento, normalizarDoc, type PadronPersona } from "@/lib/arca/padron-parse"
+import { emailParaMostrar } from "@/lib/servicios/email-placeholder"
 import { fmtPrice } from "@/app/reserva/data"
 
 export type SelectableItem = {
@@ -88,7 +89,10 @@ export default function ManualForm({
    *  documento, el buscador de ARCA de abajo lo resuelve. */
   function elegirClienta(c: ClientSearchResult) {
     setNombre(`${c.first_name} ${c.last_name}`.trim())
-    setEmail(c.email ?? "")
+    // Si la clienta no tiene email real (placeholder del salón), el campo queda
+    // vacío: no queremos que un `admin_created_…@noemail.local` termine como
+    // destinatario de la factura.
+    setEmail(emailParaMostrar(c.email))
     const doc = normalizarDoc(c.dni)
     if (doc) {
       setDocNro(doc)

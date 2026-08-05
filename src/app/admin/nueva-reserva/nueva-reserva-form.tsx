@@ -8,6 +8,7 @@ import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
 import { fmtPrice, slotToUtcMs, type BusinessHour } from "@/app/reserva/data"
 import { minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-overlap"
+import { esEmailPlaceholder, emailParaMostrar } from "@/lib/servicios/email-placeholder"
 import type { ServiceOption, PackOption } from "./page"
 
 const TZ = "America/Argentina/Buenos_Aires"
@@ -34,16 +35,6 @@ function fmtMoment(ms: number): string {
     weekday: "long", day: "numeric", month: "long",
     hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ,
   })
-}
-
-/**
- * ¿Esta clienta se queda sin el mail de confirmación? Sin email, o con el
- * placeholder que el salón le pone a quien no dejó uno real: los dos casos son
- * "sin email" para `sendGroupConfirmationEmail`.
- */
-function sinEmail(email: string | null | undefined): boolean {
-  const e = (email ?? "").trim().toLowerCase()
-  return !e || e.endsWith("@noemail.local")
 }
 
 type SelectedClient =
@@ -484,7 +475,7 @@ export default function NuevaReservaForm({
     : clientMode === "new" && newClient.firstName
       ? newClient.email
       : null
-  const avisaSinEmail = clientLabel !== null && sinEmail(clientEmail)
+  const avisaSinEmail = clientLabel !== null && esEmailPlaceholder(clientEmail)
 
   return (
     <div>
@@ -552,7 +543,7 @@ export default function NuevaReservaForm({
                   }}>
                     <span style={{ flex: 1 }}>
                       <strong>{selectedClient.first_name} {selectedClient.last_name}</strong>
-                      <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{selectedClient.phone ?? selectedClient.email}</span>
+                      <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{selectedClient.phone ?? emailParaMostrar(selectedClient.email)}</span>
                     </span>
                     <button
                       className="adm-btn"
@@ -589,7 +580,7 @@ export default function NuevaReservaForm({
                             }}
                           >
                             <strong>{c.first_name} {c.last_name}</strong>
-                            <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{c.phone ?? c.email}</span>
+                            <span style={{ color: "var(--ink-mute)", marginLeft: 8 }}>{c.phone ?? emailParaMostrar(c.email)}</span>
                           </button>
                         ))}
                       </div>

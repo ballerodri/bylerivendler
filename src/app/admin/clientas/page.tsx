@@ -2,6 +2,7 @@ import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
+import { esEmailPlaceholder } from "@/lib/servicios/email-placeholder"
 
 export const dynamic = "force-dynamic"
 
@@ -98,7 +99,9 @@ export default async function AdminClientasPage({
                 </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
-                {c.email}
+                {esEmailPlaceholder(c.email)
+                  ? <span style={{ fontStyle: "italic" }}>sin email</span>
+                  : c.email}
                 <div className="adm-sub">{c.phone ?? "—"}</div>
               </div>
               <div style={{ fontSize: 12, color: "var(--ink-mute)" }}>
