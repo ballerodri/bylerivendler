@@ -136,20 +136,37 @@ describe("placeOnGridMerged — fase 3 (misma profesional pegados siempre)", () 
     expect(placeOnGridMerged([it2(60, "A"), it2(60, "A"), it2(60, "A")], GRID, 1020)).toBeNull()
   })
 
-  it("tope del día con grilla de MEDIA HORA: el tope es el último slot + 30, no + 60", () => {
-    // Grilla 14:00–15:30 de a 30 min. Último slot 15:30 → tope 16:00.
+  it("tope del día con grilla de MEDIA HORA: el cierre es el último slot + 30 (todo tiene que TERMINAR ahí)", () => {
+    // Grilla 14:00–15:30 de a 30 min. Último slot 15:30 → cierre 16:00.
     const G30 = [840, 870, 900, 930]
-    // 20@A 15:30–15:50 + 20@A pegado 15:50 (< 16:00) → OK
-    expect(placeOnGridMerged([it2(20, "A"), it2(20, "A")], G30, 930)).toEqual([930, 950])
-    // 40@A 15:30–16:10 + otro pegado arrancaría 16:10 (≥ 16:00) → null
-    expect(placeOnGridMerged([it2(40, "A"), it2(20, "A")], G30, 930)).toBeNull()
+    // 20@A 15:30–15:50 + 10@A pegado 15:50–16:00 → termina justo al cierre → OK
+    expect(placeOnGridMerged([it2(20, "A"), it2(10, "A")], G30, 930)).toEqual([930, 950])
+    // 20@A + 20@A: el 2º termina 16:10 (pasado el cierre) → null
+    expect(placeOnGridMerged([it2(20, "A"), it2(20, "A")], G30, 930)).toBeNull()
+    // 40@A solo en el último slot: 15:30–16:10 (pasado el cierre) → null
+    expect(placeOnGridMerged([it2(40, "A")], G30, 930)).toBeNull()
   })
 
-  it("tope del día: un pegado DENTRO de la última hora sigue OK (y un turno solo largo en el último slot también)", () => {
-    // 30@A 18:00–18:30 + 20@A pegado 18:30 (< 19:00) → OK
+  it("tope del día: un turno que TERMINA dentro del horario sigue OK; uno que se pasa NO (ni siquiera un turno solo)", () => {
+    // 30@A 18:00–18:30 + 20@A pegado 18:30–18:50 → termina 18:50 (< 19:00) → OK
     expect(placeOnGridMerged([it2(30, "A"), it2(20, "A")], GRID, 1080)).toEqual([1080, 1110])
-    // Un solo turno de 75 min en el último slot NO es pegado → sigue permitido (igual que Fase 1)
-    expect(placeOnGridMerged([it2(75, "A")], GRID, 1080)).toEqual([1080])
+    // Un turno de 60 min en el último slot: 18:00–19:00 → termina JUSTO al cierre → OK
+    expect(placeOnGridMerged([it2(60, "A")], GRID, 1080)).toEqual([1080])
+    // Un turno de 75 min en el último slot: 18:00–19:15 → pasa el cierre → null
+    expect(placeOnGridMerged([it2(75, "A")], GRID, 1080)).toBeNull()
+  })
+
+  it("EL CASO REAL DE LA USUARIA: 60+75 misma profe no se ofrece si el 2º termina pasado el cierre", () => {
+    // Grilla de 30 min, 16:00–18:30 → cierre 19:00 (1140).
+    const G = [960, 990, 1020, 1050, 1080, 1110]
+    // 16:00: 60@A 16:00–17:00, 75@A 17:00–18:15 → termina 18:15 (< 19:00) → OK
+    expect(placeOnGridMerged([it2(60, "A"), it2(75, "A")], G, 960)).toEqual([960, 1020])
+    // 16:30: termina 18:45 (< 19:00) → OK (último arranque que entra)
+    expect(placeOnGridMerged([it2(60, "A"), it2(75, "A")], G, 990)).toEqual([990, 1050])
+    // 17:00: 75@A terminaría 19:15 (pasado el cierre) → null (ya no se ofrece)
+    expect(placeOnGridMerged([it2(60, "A"), it2(75, "A")], G, 1020)).toBeNull()
+    // 17:30 (lo que se ofrecía por error): 19:45 → null
+    expect(placeOnGridMerged([it2(60, "A"), it2(75, "A")], G, 1050)).toBeNull()
   })
 
   it("PROPIEDAD CLAVE: con todas las profesionales distintas == placeOnGrid (Fase 1 es el caso sin fusión)", () => {

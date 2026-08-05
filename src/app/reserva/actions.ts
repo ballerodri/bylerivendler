@@ -1983,12 +1983,22 @@ function checkPerm(
   let prevStaff: string | null = null
   let prevEndMin = 0
 
+  // Cierre del día = último slot + el paso de la grilla (espejo EXACTO de
+  // `placeOnGridMerged`). Regla de la usuaria: TODO turno (solo o encadenado)
+  // tiene que TERMINAR dentro del horario, no sólo arrancar.
+  const dayEndMin =
+    gridMin.length > 0
+      ? gridMin[gridMin.length - 1] + gridStepMinFromMinutes(gridMin)
+      : Infinity
+
   for (let p = 0; p < perm.length; p++) {
     const svc = services[perm[p]]
     const dur = svc.duration
 
     if (p === 0) {
       const pos = startSlotMin
+      // Aunque sea un turno solo: si TERMINA pasado el cierre, no se ofrece.
+      if (pos + dur > dayEndMin) return null
       const staff = resolveStaffAt(svc, pos, null)
       if (staff === null) return null
       assignment[svc.id] = staff
@@ -2004,16 +2014,12 @@ function checkPerm(
     // (mismos chequeos reales que la rama puntual). Si pega, arranca en el fin
     // del anterior — aunque sea mitad de hora y cruce la hora en punto.
     // Tope del día (espejo de `placeOnGridMerged`): el pegado tiene que
-    // ARRANCAR dentro de la última hora reservable (último slot + 60); si no,
-    // no se pega (y la rama puntual tampoco va a encontrar slot → no se
-    // ofrece), para que una cadena no se extienda más allá del cierre.
-    const dayEndMin =
-      gridMin.length > 0
-        ? gridMin[gridMin.length - 1] + gridStepMinFromMinutes(gridMin)
-        : Infinity
+    // TERMINAR dentro del horario (`prevEndMin + dur <= dayEndMin`); si no, no
+    // se pega (y la rama puntual tampoco va a encontrar slot que entre → no se
+    // ofrece), para que una cadena no termine pasado el cierre.
     if (
       prevStaff !== null &&
-      prevEndMin < dayEndMin &&
+      prevEndMin + dur <= dayEndMin &&
       (svc.staffId === "auto" || svc.staffId === prevStaff) &&
       (!enforce || canStaffDoService(prevStaff, svc.id, staffMap)) &&
       staffAssignableAt(svc.id, dur, prevEndMin, prevStaff)
@@ -2028,6 +2034,8 @@ function checkPerm(
     // ── SIN pegar: 1er slot de grilla ≥ fin del ítem anterior ──
     const pos = gridMin.find((g) => g >= prevEndMin)
     if (pos === undefined) return null
+    // También sin pegar: si el turno TERMINA pasado el cierre, no se ofrece.
+    if (pos + dur > dayEndMin) return null
     // La profesional de este ítem NO puede ser la del anterior: la regla pura
     // pega a CUALQUIER par consecutivo de la misma profesional, así que si acá
     // se asignara la misma sin pegar, `placeOnGridMerged` (que sólo mira la
@@ -2250,6 +2258,12 @@ export async function fetchSequentialAvailability(
     if (todayBh?.is_open && todayBh.slots.length) {
       const candidates = filterFutureSlots(fromDate, todayBh.slots, now)
       const dayAppts = allAppts.filter((a) => a.starts_at.slice(0, 10) === fromDate)
+      // Cierre del día (mismo criterio que checkPerm / placeOnGridMerged): un
+      // servicio que TERMINA pasado el cierre no se ofrece.
+      const gridMinToday = todayBh.slots.map(hmToMinutes).sort((a, b) => a - b)
+      const closeMinToday = gridMinToday.length
+        ? gridMinToday[gridMinToday.length - 1] + gridStepMinFromMinutes(gridMinToday)
+        : Infinity
 
       for (const svc of services) {
         // Las candidatas de ESTE servicio (regla estricta) y activas, o
@@ -2266,6 +2280,8 @@ export async function fetchSequentialAvailability(
         }
 
         const slots = candidates.filter((slot) => {
+          // Tope del día: el servicio tiene que TERMINAR dentro del horario.
+          if (hmToMinutes(slot) + svc.duration > closeMinToday) return false
           const sStart = slotToUtcMs(fromDate, slot)
           const sEnd = sStart + svc.duration * 60_000
           if (svc.staffId === "auto") {

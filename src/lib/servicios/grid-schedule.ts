@@ -43,11 +43,18 @@ export function placeOnGrid(
   gridSlots: number[],
   startSlot: number
 ): number[] | null {
+  // Cierre del día = último slot + el paso de la grilla (18:30 + 30 = 19:00).
+  // NINGÚN turno puede TERMINAR pasado el cierre.
+  const dayEnd =
+    gridSlots.length > 0
+      ? gridSlots[gridSlots.length - 1] + gridStepMinFromMinutes(gridSlots)
+      : Infinity
   const starts: number[] = []
   let cursor = startSlot
   for (let i = 0; i < durations.length; i++) {
     const start = i === 0 ? startSlot : gridSlots.find((g) => g >= cursor)
     if (start === undefined) return null
+    if (start + durations[i] > dayEnd) return null // termina pasado el cierre
     starts.push(start)
     cursor = start + durations[i]
   }
@@ -81,6 +88,16 @@ export function placeOnGridMerged(
   gridSlots: number[],
   startSlot: number
 ): number[] | null {
+  // Cierre del día = último slot de la grilla + su paso (18:30 + 30 = 19:00).
+  // Regla de la usuaria: TODO turno (solo o encadenado) tiene que TERMINAR
+  // dentro del horario. Antes se chequeaba sólo el ARRANQUE del pegado, así que
+  // un turno largo en el último slot, o el último de una cadena, podía terminar
+  // pasado el cierre (ej. arranca 18:30, dura 75 → 19:45). Ahora se acota el
+  // FIN de cada tramo, uniforme para todos (mismo criterio en el buscador).
+  const dayEnd =
+    gridSlots.length > 0
+      ? gridSlots[gridSlots.length - 1] + gridStepMinFromMinutes(gridSlots)
+      : Infinity
   const starts: number[] = []
   let prevStaff = ""
   let prevEnd = startSlot
@@ -91,22 +108,12 @@ export function placeOnGridMerged(
       start = startSlot
     } else if (staffId === prevStaff) {
       start = prevEnd // misma profesional → pegado, aunque cruce la hora
-      // Tope del día: un pegado tiene que ARRANCAR dentro de la última franja
-      // reservable (último slot de la grilla + el PASO de la grilla — 60 con
-      // grilla de 1 hora, 30 con grilla de media). Sin esto, una cadena de la
-      // misma profesional que arranca al final del día se extendería más allá
-      // del cierre (18:00 → 19:00 → 20:00…), cosa que las Fases 1/2 impedían
-      // de rebote. Un turno SOLO en el último slot sigue OK (no es pegado).
-      const dayEnd =
-        gridSlots.length > 0
-          ? gridSlots[gridSlots.length - 1] + gridStepMinFromMinutes(gridSlots)
-          : Infinity
-      if (start >= dayEnd) return null
     } else {
       const ns = gridSlots.find((g) => g >= prevEnd)
       if (ns === undefined) return null
       start = ns // otra profesional → hora en punto
     }
+    if (start + durationMin > dayEnd) return null // termina pasado el cierre
     starts.push(start)
     prevStaff = staffId
     prevEnd = start + durationMin
