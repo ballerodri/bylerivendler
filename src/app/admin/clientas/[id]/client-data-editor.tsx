@@ -88,7 +88,7 @@ export default function ClientDataEditor({ client }: { client: Client }) {
         </div>
         <div>
           <label className="adm-label">Cumpleaños</label>
-          <input className="adm-input" style={{ width: "100%" }} type="date" value={f.dob} disabled={pending}
+          <input className="adm-input" style={{ width: "100%" }} type="date" lang="es-AR" value={f.dob} disabled={pending}
             onChange={(e) => set("dob", e.target.value)} />
         </div>
       </div>

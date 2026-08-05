@@ -630,6 +630,7 @@ export default function NuevaReservaForm({
                   <input
                     className="adm-select"
                     type="date"
+                    lang="es-AR"
                     value={newClient.dob}
                     onChange={(e) => setNewClient((p) => ({ ...p, dob: e.target.value }))}
                     style={{ fontSize: 13, padding: "8px 12px" }}
@@ -987,6 +988,10 @@ export default function NuevaReservaForm({
                 )}
                 <input
                   type="date"
+                  // El calendario nativo toma el idioma del `lang` del PROPIO
+                  // input (no lo hereda del <html> en Chrome): sin esto sale en
+                  // inglés y en formato MM/DD/AAAA.
+                  lang="es-AR"
                   className="adm-select"
                   value={date}
                   min={todayAR()}
