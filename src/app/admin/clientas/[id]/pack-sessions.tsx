@@ -125,17 +125,27 @@ export default function PackSessions({
               Saltear el mínimo de {purchase.intervalDays} días desde la sesión anterior
             </label>
           )}
-          <PackSessionPicker
-            businessHours={businessHours}
-            durationMin={purchase.durationMin}
-            proHint="auto"
-            // null a propósito: admin, no aplica la regla de staff_services
-            // (igual que `schedulePackSession`, del lado del servidor).
-            serviceId={null}
-            minDate={minDate}
-            onPick={pick}
-            onCancel={() => setPicking(false)}
-          />
+          {/* El picker viene de la reserva pública y usa las clases de
+              `reserva.css` (calendario, slots), cuyos colores/medidas salen de
+              las variables de `.blv`. Sin este wrapper el calendario se ve como
+              texto plano (días y números apilados). Se le apagan las 2 reglas
+              de página de `.blv` (alto de pantalla y fondo propio) para que no
+              deje un bloque beige gigante dentro de la tarjeta. Mismo patrón que
+              Admin → Nueva reserva. La página (`clientas/[id]/page.tsx`) importa
+              `reserva.css`. */}
+          <div className="blv" style={{ minHeight: 0, background: "transparent", maxWidth: 420 }}>
+            <PackSessionPicker
+              businessHours={businessHours}
+              durationMin={purchase.durationMin}
+              proHint="auto"
+              // null a propósito: admin, no aplica la regla de staff_services
+              // (igual que `schedulePackSession`, del lado del servidor).
+              serviceId={null}
+              minDate={minDate}
+              onPick={pick}
+              onCancel={() => setPicking(false)}
+            />
+          </div>
         </div>
       ) : (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>

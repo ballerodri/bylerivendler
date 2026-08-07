@@ -4,6 +4,12 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
 import { fmtPrice } from "../../../reserva/data"
+// El agendador de sesiones de pack (PackSessionPicker) usa las clases del
+// calendario de la reserva pública. Sin esto se ve como texto plano. No pisa
+// nada del admin: reserva.css no tiene selectores globales (sus variables
+// viven bajo `.blv`, el wrapper que pone pack-sessions.tsx). Mismo patrón que
+// Admin → Nueva reserva.
+import "@/app/reserva/reserva.css"
 import PhotosManager from "./photos-manager"
 import ConsentManager from "./consent-manager"
 import ClientDataEditor from "./client-data-editor"
