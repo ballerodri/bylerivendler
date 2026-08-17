@@ -608,6 +608,93 @@
   visibility: hidden;
 }
 
+/* ── Tira de días (reserva online): los próximos días con lugar, deslizables,
+   con los horarios a la vista debajo — sin calendario mensual. ─────────────── */
+.daystrip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  flex: 1;
+  min-width: 0;
+}
+.daystrip::-webkit-scrollbar {
+  display: none;
+}
+.daystrip__chip {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 10px 8px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: all 0.2s;
+  scroll-snap-align: start;
+  cursor: pointer;
+}
+.daystrip__chip:hover {
+  border-color: var(--line-strong);
+  background: rgba(229, 218, 201, 0.3);
+}
+.daystrip__chip--selected,
+.daystrip__chip--selected:hover {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.daystrip__chip--selected .daystrip__dow,
+.daystrip__chip--selected .daystrip__num,
+.daystrip__chip--selected .daystrip__month {
+  color: var(--paper);
+}
+.daystrip__dow {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+.daystrip__num {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.daystrip__month {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold);
+  min-height: 11px;
+  white-space: pre;
+}
+.daystrip__arrow {
+  flex: 0 0 auto;
+  width: 30px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-mute);
+  font-size: 16px;
+  display: none; /* solo desktop: en el teléfono se desliza con el dedo */
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.daystrip__arrow:hover {
+  border-color: var(--line-strong);
+}
+@media (min-width: 900px) {
+  .daystrip__arrow {
+    display: flex;
+  }
+}
+
 .slots {
   margin-top: 20px;
 }

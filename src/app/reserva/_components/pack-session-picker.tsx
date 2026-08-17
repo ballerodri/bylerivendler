@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { fetchDayAvailability } from "../actions"
 import {
   generateAvailability,
@@ -55,6 +55,7 @@ export default function PackSessionPicker({
   onCancel,
   blockedIntervals = [],
   allowPast = false,
+  variant = "calendar",
 }: {
   businessHours: BusinessHour[]
   durationMin: number
@@ -78,6 +79,14 @@ export default function PackSessionPicker({
    * reserva pública nunca debe ofrecer el pasado.
    */
   allowPast?: boolean
+  /**
+   * Cómo se eligen los días:
+   *  - "calendar" (default): el calendario mensual de siempre — lo usa el admin
+   *    (necesita meses viejos con `allowPast`).
+   *  - "strip": una fila deslizable con los próximos días CON LUGAR, el primero
+   *    ya elegido y los horarios a la vista — la reserva online de la web.
+   */
+  variant?: "calendar" | "strip"
 }) {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -87,15 +96,11 @@ export default function PackSessionPicker({
   const [availability] = useState(() =>
     generateAvailability(60, businessHours, allowPast ? 60 : 0)
   )
-  const [viewYear, setViewYear] = useState(today.getFullYear())
-  const [viewMonth, setViewMonth] = useState(today.getMonth())
-  const [selectedDate, setSelectedDate] = useState<string | null>(null)
-  const [slots, setSlots] = useState<string[]>([])
-  const [loading, setLoading] = useState(false)
 
   // El día mínimo permitido (por la regla del intervalo), como "YYYY-MM-DD"
   // en hora de Argentina (fija UTC-3) — no en la zona horaria del navegador.
-  // Si no hay `minDate`, hoy.
+  // Si no hay `minDate`, hoy. (Antes de los estados: la tira lo necesita para
+  // auto-elegir el primer día con lugar.)
   const todayStr = ymd(today)
   const minDayStr = (() => {
     // Registrando algo pasado no hay piso "hoy": el único corte posible es el
@@ -105,6 +110,27 @@ export default function PackSessionPicker({
     const arDayStr = arPartsFromUtc(minDate).dateStr
     return arDayStr > todayStr ? arDayStr : todayStr
   })()
+
+  // Los días CON LUGAR para la tira, en orden: EXACTAMENTE el mismo filtro con
+  // el que el calendario pinta un día como disponible — así las dos vistas
+  // nunca pueden divergir.
+  const stripDays =
+    variant === "strip"
+      ? Object.keys(availability)
+          .sort()
+          .filter((d) => d >= minDayStr && allowedSlotsForDay(d, availability[d] ?? [], minDate, allowPast).length > 0)
+      : []
+
+  const [viewYear, setViewYear] = useState(today.getFullYear())
+  const [viewMonth, setViewMonth] = useState(today.getMonth())
+  // En la tira el primer día con lugar ya viene elegido: los horarios se ven
+  // de entrada, sin "elegí un día para ver horarios".
+  const [selectedDate, setSelectedDate] = useState<string | null>(() =>
+    variant === "strip" ? stripDays[0] ?? null : null
+  )
+  const [slots, setSlots] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const stripRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!selectedDate) { setSlots([]); return }
@@ -143,6 +169,54 @@ export default function PackSessionPicker({
 
   return (
     <div>
+      {variant === "strip" ? (
+        // ── La tira de días: los próximos días con lugar, deslizables ────────
+        <div style={{ display: "flex", alignItems: "stretch", gap: 6 }}>
+          <button
+            type="button"
+            className="daystrip__arrow"
+            aria-label="Días anteriores"
+            onClick={() => stripRef.current?.scrollBy({ left: -240, behavior: "smooth" })}
+          >
+            ‹
+          </button>
+          <div className="daystrip" ref={stripRef}>
+            {stripDays.length === 0 && (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)", padding: "12px 0", margin: 0 }}>
+                No hay días con horarios disponibles por ahora. Escribinos por WhatsApp.
+              </p>
+            )}
+            {stripDays.map((d, i) => {
+              const obj = parseYmd(d)
+              const isSel = selectedDate === d
+              const isToday = d === todayStr
+              // El mes se muestra en el 1er chip y cada vez que cambia el mes;
+              // el resto lleva un espacio para que todos midan igual.
+              const showMonth = i === 0 || obj.getDate() === 1
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  className={`daystrip__chip ${isSel ? "daystrip__chip--selected" : ""}`}
+                  onClick={() => setSelectedDate(d)}
+                >
+                  <span className="daystrip__dow">{isToday ? "Hoy" : DOW_SHORT[(obj.getDay() + 6) % 7]}</span>
+                  <span className="daystrip__num">{obj.getDate()}</span>
+                  <span className="daystrip__month">{showMonth ? MONTH_NAMES[obj.getMonth()].slice(0, 3) : " "}</span>
+                </button>
+              )
+            })}
+          </div>
+          <button
+            type="button"
+            className="daystrip__arrow"
+            aria-label="Más días"
+            onClick={() => stripRef.current?.scrollBy({ left: 240, behavior: "smooth" })}
+          >
+            ›
+          </button>
+        </div>
+      ) : (
       <div className="cal">
         <div className="cal__monthnav">
           <h2 className="cal__monthname">
@@ -203,6 +277,7 @@ export default function PackSessionPicker({
           })}
         </div>
       </div>
+      )}
 
       <div className="slots">
         {!selectedDate || !selectedObj ? (

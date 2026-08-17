@@ -1672,6 +1672,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             minDate={null}
             onPick={(iso) => setState({ ...state, comboSlot: iso })}
             onCancel={onBack}
+            variant="strip"
           />
         )}
       </>
@@ -1842,6 +1843,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             blockedIntervals={blocked}
             onPick={(iso) => setPackSlot(idx, iso)}
             onCancel={backToPackList}
+            variant="strip"
           />
         </>
       )
@@ -1968,6 +1970,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
             serviceId={picking.id}
             minDate={null}
             blockedIntervals={blocked}
+            variant="strip"
             onPick={(iso) => {
               setState({ ...state, serviceSlots: { ...serviceSlots, [picking.id]: iso } })
               setPickingServiceId(null)
