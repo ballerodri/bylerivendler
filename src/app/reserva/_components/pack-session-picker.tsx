@@ -190,9 +190,11 @@ export default function PackSessionPicker({
               const obj = parseYmd(d)
               const isSel = selectedDate === d
               const isToday = d === todayStr
-              // El mes se muestra en el 1er chip y cada vez que cambia el mes;
-              // el resto lleva un espacio para que todos midan igual.
-              const showMonth = i === 0 || obj.getDate() === 1
+              // El mes se muestra en el 1er chip y cada vez que CAMBIA respecto
+              // del chip anterior (comparar con el día 1 fallaba si el 1° del mes
+              // está cerrado o lleno: la tira solo trae días con lugar). El resto
+              // lleva un espacio para que todos midan igual.
+              const showMonth = i === 0 || parseYmd(stripDays[i - 1]).getMonth() !== obj.getMonth()
               return (
                 <button
                   key={d}
@@ -280,7 +282,9 @@ export default function PackSessionPicker({
       )}
 
       <div className="slots">
-        {!selectedDate || !selectedObj ? (
+        {variant === "strip" && stripDays.length === 0 ? null : !selectedDate || !selectedObj ? (
+          // (Con la tira vacía no se muestra: ya avisó "no hay días" arriba —
+          // pedir que "elija un día" de una fila vacía sería contradictorio.)
           <p style={{ fontSize: 12, color: "var(--ink-mute)", textAlign: "center", padding: "24px 0" }}>
             Elegí un día para ver horarios disponibles.
           </p>

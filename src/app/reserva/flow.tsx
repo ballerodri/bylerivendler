@@ -220,14 +220,35 @@ export default function ReservaFlow({
   // (comportamiento normal).
   const stepRef = useRef(step)
   useEffect(() => { stepRef.current = step }, [step])
+  // Traba de retroceso: `history.back()/go()` son ASÍNCRONOS — el popstate (y
+  // el cambio de paso) llegan después. Un segundo toque rápido en "← Atrás"
+  // leería el paso viejo, pasaría la guarda y encolaría OTRO retroceso: dos
+  // pasos de una, y desde el paso 1 se iría de /reserva (el bug original de
+  // nuevo). Se traba hasta que el popstate resuelve.
+  const travelingRef = useRef(false)
   useEffect(() => {
     if (!hydrated) return
-    // Reconstruir el historial hasta el paso actual (tras restaurar de
-    // localStorage puede NO ser el primero): una entrada por paso recorrido.
-    window.history.replaceState({ blvStep: 0 }, "")
-    for (let k = 1; k <= stepRef.current; k++) window.history.pushState({ blvStep: k }, "")
+    // Si la entrada actual YA trae paso (`blvStep`) — recarga a mitad del
+    // asistente, o volver a /reserva desde otra página — se ADOPTA ese paso en
+    // vez de reconstruir: reconstruir de nuevo duplicaría las entradas viejas
+    // que quedaron detrás y "atrás" rebotaría entre pasos en vez de salir.
+    const existing = (window.history.state as { blvStep?: number } | null)?.blvStep
+    if (typeof existing === "number") {
+      const clamped = Math.min(Math.max(0, existing), screenOrder.length - 1)
+      // Adopción deliberada del estado del historial (sistema externo) al
+      // montar: corre una sola vez, no cascadea.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStep(clamped)
+      try { localStorage.setItem(STEP_KEY, String(clamped)) } catch {}
+    } else {
+      // Primera vez en esta entrada: una entrada del historial por paso ya
+      // recorrido (tras restaurar de localStorage puede NO ser el primero).
+      window.history.replaceState({ blvStep: 0 }, "")
+      for (let k = 1; k <= stepRef.current; k++) window.history.pushState({ blvStep: k }, "")
+    }
 
     const onPop = (e: PopStateEvent) => {
+      travelingRef.current = false // la traba se suelta al resolver el viaje
       const s = (e.state as { blvStep?: number } | null)?.blvStep
       if (typeof s !== "number") return // salió del asistente (u otra entrada)
       const clamped = Math.min(Math.max(0, s), screenOrder.length - 1)
@@ -239,6 +260,16 @@ export default function ReservaFlow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated])
 
+  // Retrocede `delta` pasos VIA el historial (popstate hace el setStep). La
+  // traba evita el doble toque; el timeout es la red de seguridad por si un
+  // navegador traga el traversal y el popstate nunca llega (botón muerto si no).
+  const travel = (delta: number) => {
+    if (delta >= 0 || travelingRef.current) return
+    travelingRef.current = true
+    window.setTimeout(() => { travelingRef.current = false }, 700)
+    window.history.go(delta)
+  }
+
   const next = () => {
     const i = Math.min(screenOrder.length - 1, step + 1)
     if (i === step) return
@@ -248,7 +279,7 @@ export default function ReservaFlow({
   // El "← Atrás" de la app usa el MISMO mecanismo que el botón del teléfono
   // (history.back → popstate → retrocede un paso): un solo camino, nunca
   // desincronizados.
-  const back = () => { if (step > 0) window.history.back() }
+  const back = () => { if (step > 0) travel(-1) }
   const close = () => router.push("/")
 
   const screenId = screenOrder[step]
@@ -326,7 +357,7 @@ export default function ReservaFlow({
               current={sidebarCurrent}
               // Saltar hacia atrás via el historial (history.go → popstate):
               // mismo camino que el botón "atrás", el stack nunca se desincroniza.
-              onGo={(i) => { if (i < step) window.history.go(i - step) }}
+              onGo={(i) => { if (i < step) travel(i - step) }}
             />
             <div className="dside__foot">
               <strong>¿Alguna duda?</strong>
