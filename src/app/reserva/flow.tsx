@@ -211,6 +211,25 @@ export default function ReservaFlow({
     if (typeof window !== "undefined") window.scrollTo(0, 0)
   }, [step])
 
+  // ── Blindaje bfcache: no re-mostrar "Confirmar y pagar" tras pagar ─────────
+  // `pay()` limpia el estado persistido y navega a /reserva/exito. Si la
+  // clienta vuelve con "atrás" y el navegador restaura esta página desde el
+  // bfcache (memoria, sin recargar), el estado de React revive con la compra
+  // YA PAGADA en pantalla y el botón de pagar vivo → podría pagar dos veces.
+  // Señal inequívoca: página restaurada (e.persisted) SIN estado persistido
+  // (pay() lo borró — la hidratación normal siempre lo escribe). Se recarga:
+  // el asistente arranca limpio.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted) return
+      try {
+        if (!localStorage.getItem(STORAGE_KEY)) window.location.reload()
+      } catch {}
+    }
+    window.addEventListener("pageshow", onPageShow)
+    return () => window.removeEventListener("pageshow", onPageShow)
+  }, [])
+
   // ── El botón "atrás" del teléfono/navegador retrocede UN PASO ─────────────
   // Los pasos del asistente son estado interno de React: sin esto, el "atrás"
   // del navegador se va de /reserva entera y la clienta pierde el asistente
