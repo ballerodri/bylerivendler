@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   SCREEN_LABEL,
@@ -211,8 +211,44 @@ export default function ReservaFlow({
     if (typeof window !== "undefined") window.scrollTo(0, 0)
   }, [step])
 
-  const next = () => goto(Math.min(screenOrder.length - 1, step + 1))
-  const back = () => goto(Math.max(0, step - 1))
+  // ── El botón "atrás" del teléfono/navegador retrocede UN PASO ─────────────
+  // Los pasos del asistente son estado interno de React: sin esto, el "atrás"
+  // del navegador se va de /reserva entera y la clienta pierde el asistente
+  // ("se me cerró"). Cada paso recorrido se registra en el historial
+  // (`blvStep`); "atrás" dispara `popstate` y volvemos ese paso. En el paso 1
+  // no hay entrada previa del asistente, así que "atrás" sale de la página
+  // (comportamiento normal).
+  const stepRef = useRef(step)
+  useEffect(() => { stepRef.current = step }, [step])
+  useEffect(() => {
+    if (!hydrated) return
+    // Reconstruir el historial hasta el paso actual (tras restaurar de
+    // localStorage puede NO ser el primero): una entrada por paso recorrido.
+    window.history.replaceState({ blvStep: 0 }, "")
+    for (let k = 1; k <= stepRef.current; k++) window.history.pushState({ blvStep: k }, "")
+
+    const onPop = (e: PopStateEvent) => {
+      const s = (e.state as { blvStep?: number } | null)?.blvStep
+      if (typeof s !== "number") return // salió del asistente (u otra entrada)
+      const clamped = Math.min(Math.max(0, s), screenOrder.length - 1)
+      setStep(clamped)
+      try { localStorage.setItem(STEP_KEY, String(clamped)) } catch {}
+    }
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated])
+
+  const next = () => {
+    const i = Math.min(screenOrder.length - 1, step + 1)
+    if (i === step) return
+    goto(i)
+    window.history.pushState({ blvStep: i }, "")
+  }
+  // El "← Atrás" de la app usa el MISMO mecanismo que el botón del teléfono
+  // (history.back → popstate → retrocede un paso): un solo camino, nunca
+  // desincronizados.
+  const back = () => { if (step > 0) window.history.back() }
   const close = () => router.push("/")
 
   const screenId = screenOrder[step]
@@ -288,7 +324,9 @@ export default function ReservaFlow({
             <DesktopSteps
               steps={sidebarSteps}
               current={sidebarCurrent}
-              onGo={(i) => i <= step && goto(i)}
+              // Saltar hacia atrás via el historial (history.go → popstate):
+              // mismo camino que el botón "atrás", el stack nunca se desincroniza.
+              onGo={(i) => { if (i < step) window.history.go(i - step) }}
             />
             <div className="dside__foot">
               <strong>¿Alguna duda?</strong>
