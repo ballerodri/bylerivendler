@@ -1370,6 +1370,47 @@ export async function updateStaffBlockedSlots(
   return { ok: true }
 }
 
+export type StaffDateExceptionInput = {
+  date: string   // "YYYY-MM-DD" (hora argentina)
+  slot: string   // "14:00"
+}
+
+// Reemplaza las excepciones por fecha puntual FUTURAS del profesional (las de
+// hoy en adelante): delete + insert, igual que la disponibilidad semanal. Las
+// fechas pasadas no se tocan ni molestan (nunca se reservan). Sin filas para una
+// (profesional, fecha) = usa su horario semanal normal ese día.
+export async function updateStaffDateExceptions(
+  staffId: string,
+  rows: StaffDateExceptionInput[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  // Sólo hoy en adelante: una excepción pasada no cambia ninguna disponibilidad.
+  const today = arPartsFromUtc(new Date()).dateStr
+  const dateOk = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d)
+  const slotOk = (s: string) => /^\d{2}:\d{2}$/.test(s)
+  const future = rows.filter((r) => dateOk(r.date) && slotOk(r.slot) && r.date >= today)
+
+  const { error: delErr } = await admin
+    .from("staff_date_exceptions")
+    .delete()
+    .eq("staff_id", staffId)
+    .gte("date", today)
+  if (delErr) return { ok: false, error: delErr.message }
+
+  if (future.length > 0) {
+    const { error: insErr } = await admin
+      .from("staff_date_exceptions")
+      .insert(future.map((r) => ({ staff_id: staffId, date: r.date, slot: r.slot })))
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+
+  revalidatePath("/admin/staff")
+  revalidatePath("/admin")
+  return { ok: true }
+}
+
 // ─── Color de calendario ──────────────────────────────────────────────────────
 
 export async function updateStaffCalendarColor(

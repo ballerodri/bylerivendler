@@ -3,6 +3,7 @@ import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
+import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import StaffEditor from "./staff-editor"
 
 export const dynamic = "force-dynamic"
@@ -23,6 +24,11 @@ export type StaffRow = {
 
 export type BlockedSlotRow = {
   day_of_week: number
+  slot: string
+}
+
+export type DateExceptionRow = {
+  date: string   // "YYYY-MM-DD"
   slot: string
 }
 
@@ -62,7 +68,9 @@ export default async function AdminStaffDetailPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }, { data: assignedData }] = await Promise.all([
+  // Excepciones por fecha: sólo de hoy en adelante (las pasadas no afectan nada).
+  const today = arPartsFromUtc(new Date()).dateStr
+  const [{ data: staffMember }, { data: availData }, { data: bhData }, { data: servicesData }, { data: commissionsData }, { data: assignedData }, { data: excData }] = await Promise.all([
     admin
       .from("staff")
       .select("id, full_name, role, email, active, is_professional, calendar_color_id, notify_bookings, dni")
@@ -89,12 +97,19 @@ export default async function AdminStaffDetailPage({
       .from("staff_services")
       .select("service_id")
       .eq("staff_id", id),
+    admin
+      .from("staff_date_exceptions")
+      .select("date, slot")
+      .eq("staff_id", id)
+      .gte("date", today)
+      .order("date"),
   ])
 
   if (!staffMember) notFound()
 
   const blockedSlots = (availData ?? []) as BlockedSlotRow[]
   const businessHours = (bhData ?? []) as BusinessHourRow[]
+  const dateExceptions = (excData ?? []) as DateExceptionRow[]
   // Comisiones sólo de los servicios que esta profesional tiene asignados
   // ("Profesionales habilitadas" en cada servicio).
   const assignedIds = new Set(((assignedData ?? []) as { service_id: string }[]).map((r) => r.service_id))
@@ -119,6 +134,8 @@ export default async function AdminStaffDetailPage({
         staff={staffMember}
         blockedSlots={blockedSlots}
         businessHours={businessHours}
+        dateExceptions={dateExceptions}
+        today={today}
         canEditRole={viewerIsAdmin}
         services={services}
         commissions={commissions}

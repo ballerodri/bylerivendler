@@ -12,6 +12,7 @@ import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
+import { slotHitsBlocked } from "@/lib/servicios/staff-blocks"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { gridStepMin, gridStepMinFromMinutes, DEFAULT_STEP_MIN } from "@/lib/servicios/grid-step"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
@@ -1775,7 +1776,15 @@ export async function fetchDayAvailability(
     .select("staff_id, day_of_week, slot")
   if (proHint !== "auto") availQuery = availQuery.eq("staff_id", proHint)
 
-  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: bhData }] = await Promise.all([
+  // Excepciones por fecha puntual, SÓLO de este día (`dateStr`). Mismo filtro por
+  // profesional que la disponibilidad semanal.
+  let excQuery = supabase
+    .from("staff_date_exceptions")
+    .select("staff_id, date, slot")
+    .eq("date", dateStr)
+  if (proHint !== "auto") excQuery = excQuery.eq("staff_id", proHint)
+
+  const [{ data: apptData }, { data: prosData }, { data: availData }, { data: bhData }, { data: excData }] = await Promise.all([
     apptQuery,
     proHint === "auto" || serviceId
       ? supabase.from("staff").select("id").eq("is_professional", true).eq("active", true)
@@ -1787,6 +1796,7 @@ export async function fetchDayAvailability(
     // un único horario cuando se revalida una reserva). Tabla de 7 filas y va
     // en el mismo `Promise.all`: no agrega ninguna espera.
     supabase.from("business_hours").select("day_of_week, slots"),
+    excQuery,
   ])
 
   // El turno que se está reagendando no puede bloquearse a sí mismo: sus
@@ -1798,7 +1808,8 @@ export async function fetchDayAvailability(
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
   const blockedMap = buildBlockedMap(
     (availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
-    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[]
+    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[],
+    (excData ?? []) as { staff_id: string; date: string; slot: string }[]
   )
   // Sólo hace falta armar las patas por-servicio en el camino público: el
   // admin (sin `serviceId`) sigue leyendo `appointments` tal cual, como siempre.
@@ -1834,7 +1845,7 @@ export async function fetchDayAvailability(
         const candidates = allowedBase.filter(
           (pid) =>
             activePros.includes(pid) &&
-            proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
+            proWorksAtSlot(pid, dayOfWeek, dateStr, slotStart, slotEnd, blockedMap) &&
             !overlappingLegs.some((l) => l.staffId === pid)
         )
         return assignableStaff(candidates, overlappingLegs, staffMap, activePros).length > 0
@@ -1842,7 +1853,7 @@ export async function fetchDayAvailability(
 
       // Count pros actually available at this slot (day + hours)
       const availableAtSlot = activePros.filter(
-        (pid) => proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap)
+        (pid) => proWorksAtSlot(pid, dayOfWeek, dateStr, slotStart, slotEnd, blockedMap)
       )
       if (!availableAtSlot.length) return false
 
@@ -1858,7 +1869,7 @@ export async function fetchDayAvailability(
       }
       return busyIds.size + anonymousBusy < availableAtSlot.length
     } else {
-      if (!proWorksAtSlot(proHint, dayOfWeek, slotStart, slotEnd, blockedMap)) return false
+      if (!proWorksAtSlot(proHint, dayOfWeek, dateStr, slotStart, slotEnd, blockedMap)) return false
       if (serviceId) {
         // Misma correción que arriba: una pata CON SU NOMBRE (no el turno
         // entero) es lo que realmente la ocupa; una pata ANÓNIMA de un
@@ -1885,7 +1896,7 @@ export async function fetchDayAvailability(
         const candidates = allowedStaffFor(serviceId, staffMap).filter(
           (pid) =>
             activePros.includes(pid) &&
-            proWorksAtSlot(pid, dayOfWeek, slotStart, slotEnd, blockedMap) &&
+            proWorksAtSlot(pid, dayOfWeek, dateStr, slotStart, slotEnd, blockedMap) &&
             !overlappingLegs.some((l) => l.staffId === pid)
         )
         // La guarda se hace sobre las candidatas REALES, no sobre el roster:
@@ -1947,6 +1958,7 @@ export async function chooseStaffForSlot(
     { data: availData },
     { data: linkRows, error: linkErr },
     { data: bhData },
+    { data: excData },
   ] =
     await Promise.all([
       supabase
@@ -1965,6 +1977,8 @@ export async function chooseStaffForSlot(
       // `BlockedMap`). Tiene que ser el MISMO criterio que el buscador o esta
       // función podría contradecirlo. Tabla de 7 filas, en paralelo: no espera.
       supabase.from("business_hours").select("day_of_week, slots"),
+      // Excepciones por fecha puntual, SÓLO de este día (mismo criterio que el buscador).
+      supabase.from("staff_date_exceptions").select("staff_id, date, slot").eq("date", dateStr),
     ])
   // Fail-closed: si no podemos leer quién hace el servicio, no inventamos a nadie.
   if (linkErr) return null
@@ -1972,7 +1986,8 @@ export async function chooseStaffForSlot(
   const activePros = (prosData ?? []).map((p: { id: string }) => p.id)
   const blockedMap = buildBlockedMap(
     (availData ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
-    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[]
+    (bhData ?? []) as { day_of_week: number; slots: string[] | null }[],
+    (excData ?? []) as { staff_id: string; date: string; slot: string }[]
   )
   const staffMap: StaffServiceMap = {}
   for (const r of (linkRows ?? []) as { service_id: string; staff_id: string }[]) {
@@ -1987,7 +2002,7 @@ export async function chooseStaffForSlot(
   const candidates = allowedStaffFor(serviceId, staffMap).filter(
     (pid) =>
       activePros.includes(pid) &&
-      proWorksAtSlot(pid, arDow, slotStart, slotEnd, blockedMap) &&
+      proWorksAtSlot(pid, arDow, dateStr, slotStart, slotEnd, blockedMap) &&
       !overlappingLegs.some((l) => l.staffId === pid)
   )
   const assignable = assignableStaff(candidates, overlappingLegs, staffMap, activePros)
@@ -2055,6 +2070,9 @@ type Appt = { starts_at: string; duration_min: number; staff_id: string | null }
 type BlockedMap = {
   blocked: Map<string, Set<string>>
   stepByDow: Map<number, number>
+  // Excepciones por FECHA puntual: `${staffId}|${dateStr}` → casillas bloqueadas
+  // ese día (además del horario semanal). Pesan por encima (sólo quitan).
+  byDate: Map<string, Set<string>>
 }
 
 function hhmmToMin(hhmm: string): number {
@@ -2075,7 +2093,10 @@ function buildBlockedMap(
   rows: { staff_id: string; day_of_week: number; slot: string }[],
   // Obligatorio a propósito: si fuera opcional, un futuro llamador podría
   // olvidarlo y quedarse en 60 sin enterarse.
-  hours: { day_of_week: number; slots: string[] | null }[]
+  hours: { day_of_week: number; slots: string[] | null }[],
+  // Excepciones por fecha puntual (`staff_date_exceptions`). Opcional: los
+  // llamadores viejos que no las pasan siguen igual (map vacío = sin excepciones).
+  exceptionRows: { staff_id: string; date: string; slot: string }[] = []
 ): BlockedMap {
   const blocked = new Map<string, Set<string>>()
   for (const r of rows) {
@@ -2084,9 +2105,16 @@ function buildBlockedMap(
     if (!set) { set = new Set(); blocked.set(k, set) }
     set.add(r.slot)
   }
+  const byDate = new Map<string, Set<string>>()
+  for (const r of exceptionRows) {
+    const k = `${r.staff_id}|${r.date}`
+    let set = byDate.get(k)
+    if (!set) { set = new Set(); byDate.set(k, set) }
+    set.add(r.slot)
+  }
   const stepByDow = new Map<number, number>()
   for (const h of hours) stepByDow.set(h.day_of_week, gridStepMin(h.slots ?? []))
-  return { blocked, stepByDow }
+  return { blocked, stepByDow, byDate }
 }
 
 function utcMsToArTime(ms: number): string {
@@ -2096,27 +2124,30 @@ function utcMsToArTime(ms: number): string {
 }
 
 // Un profesional puede tomar un servicio [slotStart, slotEnd) si NINGUNA hora
-// bloqueada de ese día se superpone con la duración del servicio. Sin filas
-// bloqueadas ese día = disponible en todo.
+// bloqueada de ese día se superpone con la duración del servicio. Bloquea tanto
+// el horario SEMANAL (`staff_blocked_slots`, por día de la semana) como una
+// EXCEPCIÓN de esa fecha puntual (`staff_date_exceptions`): cualquiera de las
+// dos lo saca (unión — la excepción sólo puede quitar disponibilidad, nunca
+// agregarla). Sin filas de ninguna = disponible.
 function proWorksAtSlot(
   staffId: string,
   dayOfWeek: number,
+  dateStr: string,
   slotStartMs: number,
   slotEndMs: number,
   blockedMap: BlockedMap
 ): boolean {
-  const blocked = blockedMap.blocked.get(`${staffId}|${dayOfWeek}`)
-  if (!blocked || blocked.size === 0) return true
+  const weekly = blockedMap.blocked.get(`${staffId}|${dayOfWeek}`)
+  const byDate = blockedMap.byDate.get(`${staffId}|${dateStr}`)
+  if ((!weekly || weekly.size === 0) && (!byDate || byDate.size === 0)) return true
   // Cuánto tapa una casilla tildada = el paso de la grilla de ESTE día (ver
   // `BlockedMap`). Si no se pudo deducir, 60: bloquea de más, nunca de menos.
+  // La excepción de fecha usa el MISMO paso (la fecha cae en este día de semana).
   const stepMin = blockedMap.stepByDow.get(dayOfWeek) ?? DEFAULT_STEP_MIN
   const s0 = hhmmToMin(utcMsToArTime(slotStartMs))
   const s1 = hhmmToMin(utcMsToArTime(slotEndMs))
-  for (const bt of blocked) {
-    const b0 = hhmmToMin(bt)
-    const b1 = b0 + stepMin
-    if (s0 < b1 && s1 > b0) return false // el servicio pisa una hora bloqueada
-  }
+  if (weekly && weekly.size && slotHitsBlocked(s0, s1, [...weekly].map(hhmmToMin), stepMin)) return false
+  if (byDate && byDate.size && slotHitsBlocked(s0, s1, [...byDate].map(hhmmToMin), stepMin)) return false
   return true
 }
 
@@ -2165,7 +2196,7 @@ function checkPerm(
     // siempre es "¿está ENTRE las asignables del conjunto COMPLETO?" (ver
     // `assignableStaff`).
     const withoutNamedOverlap = candidates.filter(
-      (pid) => proWorksAtSlot(pid, dayOfWeek, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
+      (pid) => proWorksAtSlot(pid, dayOfWeek, dateStr, sStart, sEnd, blockedMap) && !overlapsNamed(pid)
     )
     return { sStart, sEnd, overlapsNamed, overlappingLegs, withoutNamedOverlap }
   }
@@ -2178,7 +2209,7 @@ function checkPerm(
   // el pre-chequeo de fusión), igual que hoy.
   const staffAssignableAt = (svcId: string, dur: number, posMin: number, staffId: string): boolean => {
     const w = windowChecks(svcId, dur, posMin)
-    if (!proWorksAtSlot(staffId, dayOfWeek, w.sStart, w.sEnd, blockedMap) || w.overlapsNamed(staffId))
+    if (!proWorksAtSlot(staffId, dayOfWeek, dateStr, w.sStart, w.sEnd, blockedMap) || w.overlapsNamed(staffId))
       return false
     return assignableStaff(w.withoutNamedOverlap, w.overlappingLegs, staffMap, allPros).includes(staffId)
   }
@@ -2363,7 +2394,11 @@ export async function fetchSequentialAvailability(
   // idéntico" del admin: puede ahora rechazar un horario que antes ofrecía
   // mal). Fail-closed: si esta consulta falla, el mapa queda vacío → cuando
   // `enforce`, ningún servicio tiene candidatas → no se ofrece ningún horario.
-  const [bhRes, prosRes, rulesRes, availRes, orderLastRes, staffSvcRes] = await Promise.all([
+  // Cota inferior para las excepciones por fecha: hoy (AR). Una búsqueda de
+  // horarios siempre mira a futuro, así que las excepciones pasadas no importan
+  // — y evita traer filas viejas que se acumulan.
+  const seqToday = arPartsFromUtc(new Date()).dateStr
+  const [bhRes, prosRes, rulesRes, availRes, orderLastRes, staffSvcRes, excRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
     supabase
@@ -2374,6 +2409,7 @@ export async function fetchSequentialAvailability(
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
     supabase.from("services").select("id, order_last").in("id", serviceIds),
     supabase.from("staff_services").select("service_id, staff_id"),
+    supabase.from("staff_date_exceptions").select("staff_id, date, slot").gte("date", seqToday),
   ])
 
   const staffMap: StaffServiceMap = {}
@@ -2401,7 +2437,8 @@ export async function fetchSequentialAvailability(
   // más abajo): de ahí sale cuánto dura una hora bloqueada, sin otra consulta.
   const blockedMap = buildBlockedMap(
     (availRes.data ?? []) as { staff_id: string; day_of_week: number; slot: string }[],
-    (bhRes.data ?? []) as { day_of_week: number; slots: string[] | null }[]
+    (bhRes.data ?? []) as { day_of_week: number; slots: string[] | null }[],
+    (excRes.data ?? []) as { staff_id: string; date: string; slot: string }[]
   )
 
   // Set of "first_id|second_id" — first must go before second
@@ -2528,7 +2565,7 @@ export async function fetchSequentialAvailability(
             // Available if at least one CANDIDATE pro is free AND available today
             return proCandidates.some(
               (pid) =>
-                proWorksAtSlot(pid, todayDow, sStart, sEnd, blockedMap) &&
+                proWorksAtSlot(pid, todayDow, fromDate, sStart, sEnd, blockedMap) &&
                 !dayAppts.some((a) => {
                   if (a.staff_id !== pid) return false
                   const aS = new Date(a.starts_at).getTime()
@@ -2536,7 +2573,7 @@ export async function fetchSequentialAvailability(
                 })
             )
           }
-          if (!proWorksAtSlot(svc.staffId, todayDow, sStart, sEnd, blockedMap)) return false
+          if (!proWorksAtSlot(svc.staffId, todayDow, fromDate, sStart, sEnd, blockedMap)) return false
           return !dayAppts.some((a) => {
             if (a.staff_id !== svc.staffId) return false
             const aS = new Date(a.starts_at).getTime()
