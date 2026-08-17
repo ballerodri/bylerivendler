@@ -82,7 +82,10 @@ export async function venderPrograma(input: {
   }
 
   // 3) La factura: UNA sola, por el total del programa (concepto 2 = servicios).
-  let facturaError: string | undefined
+  //    NO va por un turno portador — se emite acá directa, como venderPack. Las
+  //    sesiones que se agenden después van todas en $0 (ya está facturado).
+  let facturaError: string | undefined  // la factura NO se pudo emitir
+  let linkWarning: string | undefined   // se emitió, pero no se pudo enlazar a la compra
   if (input.facturar) {
     try {
       const { data: client } = await admin
@@ -101,7 +104,10 @@ export async function venderPrograma(input: {
         totalCents: combo.total_price_cents,
         descripcion: combo.name,
       })
-      await admin.from("combo_purchases").update({ invoice_id: factura.id }).eq("id", purchase.id)
+      // Si el enlace falla (ej. la migración de invoice_id no corrió), NO se
+      // traga en silencio: la factura YA se emitió (CAE real), hay que avisar.
+      const { error: invUpdErr } = await admin.from("combo_purchases").update({ invoice_id: factura.id }).eq("id", purchase.id)
+      if (invUpdErr) linkWarning = invUpdErr.message
       await renderAndEmailInvoice(factura.id, client?.email ?? null, client?.first_name ?? "")
     } catch (e) {
       facturaError = e instanceof Error ? e.message : String(e)
@@ -110,7 +116,7 @@ export async function venderPrograma(input: {
 
   revalidatePath(`/admin/clientas/${input.clientId}`)
   // La compra quedó registrada aunque la factura falle; se informa el error.
-  return facturaError
-    ? { ok: false, error: `Programa registrado, pero la factura falló: ${facturaError}` }
-    : { ok: true }
+  if (facturaError) return { ok: false, error: `Programa registrado, pero la factura falló: ${facturaError}` }
+  if (linkWarning) return { ok: false, error: `Programa registrado y facturado, pero no se pudo enlazar la factura a la compra (avisá a soporte): ${linkWarning}` }
+  return { ok: true }
 }

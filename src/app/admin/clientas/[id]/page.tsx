@@ -229,6 +229,9 @@ export default async function AdminClientDetailPage({
     .select("id, name, total_price_cents, combo_services(sessions)")
     .order("name", { ascending: true })
   const sellableProgramas: SellablePrograma[] = ((allCombosData ?? []) as { id: string; name: string; total_price_cents: number; combo_services: { sessions: number | null }[] }[])
+    // Un programa vendible tiene al menos 2 servicios (venderPrograma lo rechaza
+    // si no) — no se ofrecen combos a medio armar.
+    .filter((c) => c.combo_services.length >= 2)
     .map((c) => {
       const totalS = c.combo_services.reduce((a, s) => a + (s.sessions ?? 1), 0)
       return { id: c.id, label: `${c.name} · ${totalS} sesiones · ${fmtPrice(c.total_price_cents / 100)}` }
