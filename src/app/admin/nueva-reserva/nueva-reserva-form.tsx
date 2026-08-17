@@ -9,7 +9,7 @@ import { fmtPrice, slotToUtcMs, type BusinessHour } from "@/app/reserva/data"
 import { minStartForNextSession } from "@/lib/servicios/pack-sessions"
 import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-overlap"
 import { esEmailPlaceholder, emailParaMostrar } from "@/lib/servicios/email-placeholder"
-import type { ServiceOption, PackOption } from "./page"
+import type { ServiceOption, PackOption, ComboOption } from "./page"
 
 const TZ = "America/Argentina/Buenos_Aires"
 const STEPS = ["Cliente", "Qué reserva", "Fecha y hora", "Confirmar"]
@@ -55,10 +55,12 @@ function emailForBooking(c: SelectedClient): string {
 export default function NuevaReservaForm({
   services,
   packs,
+  combos,
   businessHours,
 }: {
   services: ServiceOption[]
   packs: PackOption[]
+  combos: ComboOption[]
   businessHours: BusinessHour[]
 }) {
   const router = useRouter()
@@ -86,6 +88,15 @@ export default function NuevaReservaForm({
   // pasados, y no queremos que se elija uno sin querer en una reserva normal.
   const [yaOcurrio, setYaOcurrio] = useState(false)
   const selectedPack = packs.find((p) => p.id === packId) ?? null
+
+  // Combo: es EXCLUYENTE con el pack y con los tratamientos sueltos (igual que
+  // en la reserva online), y sólo se agenda su 1ª sesión: el resto las agenda
+  // el salón después desde la ficha de la clienta.
+  const [comboId, setComboId] = useState<string | null>(null)
+  const [comboSlot, setComboSlot] = useState<string | null>(null)
+  const [pickingCombo, setPickingCombo] = useState(false)
+  const selectedCombo = combos.find((c) => c.id === comboId) ?? null
+
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [zoneSel, setZoneSel] = useState<Record<string, string[]>>({})
   const toggleZone = (serviceId: string, zoneId: string, single: boolean) =>
@@ -133,6 +144,21 @@ export default function NuevaReservaForm({
     setPackZoneIds([])
     setPackSlots([])
     setSelectedSlot(null)
+    // El combo es excluyente con todo lo demás: elegir un pack lo saca.
+    if (p) { setComboId(null); setComboSlot(null) }
+  }
+
+  // Elegir un combo limpia el pack Y los tratamientos sueltos: el motor rechaza
+  // la mezcla (`createBooking`), así que la pantalla no la deja armar.
+  const chooseCombo = (c: ComboOption | null) => {
+    setComboId(c?.id ?? null)
+    setComboSlot(null)
+    setPickingCombo(false)
+    if (c) {
+      setPackId(null); setPackZoneIds([]); setPackSlots([])
+      setSelectedIds(new Set()); setZoneSel({})
+      setSelectedSlot(null)
+    }
   }
 
   // Cuánto dura una sesión del pack: la suma de las zonas elegidas, o la
@@ -283,12 +309,17 @@ export default function NuevaReservaForm({
   // tratamiento sin ninguna profesional en `staff_services` haría fallar la
   // compra ENTERA al confirmar. Se frena acá, con el motivo a la vista.
   const treatmentsBookableOk = !selectedPack || selectedServices.every((s) => s.bookable)
-  const servicesValid = (hasServices || selectedPack !== null) &&
+  const servicesValid = (hasServices || selectedPack !== null || selectedCombo !== null) &&
     selectedServices.every((s) => s.pricing_mode !== "per_zone" || (zoneSel[s.id]?.length ?? 0) >= 1) &&
-    packZonesOk && treatmentsBookableOk
-  // La 1ª sesión del pack es obligatoria; el horario de los tratamientos, sólo
-  // si hay tratamientos.
-  const slotValid = (!selectedPack || packSlots.length > 0) && (!hasServices || selectedSlot !== null)
+    packZonesOk && treatmentsBookableOk &&
+    // Un combo mal armado (sin 1ª sesión, con un tratamiento oculto o sin
+    // profesional) lo rechazaría `planCombo` al confirmar: se frena acá.
+    (!selectedCombo || selectedCombo.bookable)
+  // La 1ª sesión del pack es obligatoria; la del combo también; el horario de
+  // los tratamientos, sólo si hay tratamientos.
+  const slotValid = (!selectedPack || packSlots.length > 0) &&
+    (!selectedCombo || comboSlot !== null) &&
+    (!hasServices || selectedSlot !== null)
 
   // ── Submit ───────────────────────────────────────────────────────────────────
   const handleSubmit = () => {
@@ -306,6 +337,43 @@ export default function NuevaReservaForm({
       const startsAt = selectedSlot
         ? new Date(slotToUtcMs(selectedSlot.date, selectedSlot.time)).toISOString()
         : null
+
+      // ── Con COMBO: el MISMO motor que la reserva online ────────────────────
+      // `createBooking` en modo admin registra la compra del combo y agenda su
+      // 1ª sesión (la visita completa, con el total). Las demás se agendan
+      // después desde la ficha de la clienta, en $0.
+      if (selectedCombo) {
+        if (!comboSlot) return
+        const result = await createBooking({
+          adminMode: true,
+          savedClientId: client.mode === "existing" ? client.id : undefined,
+          client: {
+            firstName: client.mode === "existing" ? client.first_name : client.firstName,
+            lastName: client.mode === "existing" ? client.last_name : client.lastName,
+            email: emailForBooking(client),
+            phone: client.phone?.trim() || "-",
+            dob: client.mode === "new" ? client.dob || undefined : undefined,
+            isExisting: client.mode === "existing",
+          },
+          comboId: selectedCombo.id,
+          // El combo es excluyente: sin tratamientos sueltos ni pack. El motor
+          // arma sus patas desde el plan congelado, no desde `serviceIds`.
+          serviceIds: [],
+          startsAt: comboSlot,
+          proHint: "auto",
+          // El salón cobra en persona: el turno nace saldado, no señado.
+          payChoice: "full",
+        })
+        if (!result.ok) { setSubmitError(result.error); return }
+        setCreada(true)
+        const cobroErr = await aplicarCobro(result.appointmentIds ?? [result.appointmentId])
+        if (cobroErr) {
+          setSubmitError(`La compra se creó, pero el cobro no: ${cobroErr} Cargalo desde la agenda.`)
+          return
+        }
+        router.push("/admin/turnos")
+        return
+      }
 
       // ── Con pack: el MISMO motor que la reserva online ──────────────────────
       // `createBooking` en modo admin registra la compra del pack y los turnos
@@ -423,13 +491,24 @@ export default function NuevaReservaForm({
   const totalCents = selectedServices.reduce((a, s) => a + effective(s).priceCents, 0)
   // El pack se cobra UNA vez (su precio total), sin importar cuántas sesiones
   // se agenden ahora: las que queden sin agendar ya están pagas.
-  const grandTotalCents = totalCents + (selectedPack?.priceCents ?? 0)
+  // El combo, como el pack, se cobra UNA vez (su precio total) aunque sólo se
+  // agende ahora la 1ª sesión: las demás ya están pagas.
+  const grandTotalCents = totalCents + (selectedPack?.priceCents ?? 0) + (selectedCombo?.priceCents ?? 0)
 
   // ── El itinerario: sesiones del pack + tratamientos, en orden cronológico ────
   // El horario de cada tratamiento sale de `slot.starts` (lo que resolvió el
   // buscador, ya colocado en la grilla), no de encadenarlos por minutos: es lo
   // MISMO que va a escribir el servidor.
   const itinerary: { startMs: number; label: string; durationMin: number; priceCents: number | null }[] = [
+    // El combo agenda UNA visita: su 1ª sesión, con el total del combo.
+    ...(selectedCombo && comboSlot
+      ? [{
+          startMs: new Date(comboSlot).getTime(),
+          label: `1ª sesión de ${selectedCombo.sessions} · ${selectedCombo.name} (${selectedCombo.firstSessionLabel})`,
+          durationMin: selectedCombo.firstSessionDurationMin,
+          priceCents: selectedCombo.priceCents,
+        }]
+      : []),
     ...(selectedPack
       ? packSlots.map((iso, i) => ({
           startMs: new Date(iso).getTime(),
@@ -451,8 +530,13 @@ export default function NuevaReservaForm({
       : []),
   ].sort((a, b) => a.startMs - b.startMs)
 
-  // Cuántas sesiones del pack quedan para agendar después, desde la ficha.
-  const packPendingSessions = selectedPack ? selectedPack.sessions - packSlots.length : 0
+  // Cuántas sesiones quedan para agendar después, desde la ficha: las del pack
+  // sin fecha, o las del combo que no son la 1ª (sólo esa se agenda al vender).
+  const packPendingSessions = selectedPack
+    ? selectedPack.sessions - packSlots.length
+    : selectedCombo
+      ? Math.max(0, selectedCombo.sessions - 1)
+      : 0
 
   // ── Grouped services ─────────────────────────────────────────────────────────
   const byCategory = services.reduce<Record<string, ServiceOption[]>>((acc, s) => {
@@ -648,7 +732,66 @@ export default function NuevaReservaForm({
               ¿Qué reserva?
             </h3>
 
-            {packs.length > 0 && (
+            {combos.length > 0 && (
+              <div style={{ marginBottom: 24 }}>
+                <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                  Combos
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {combos.map((c) => {
+                    const isSel = comboId === c.id
+                    return (
+                      <div key={c.id}>
+                        <label
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12,
+                            cursor: c.bookable ? "pointer" : "not-allowed",
+                            padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                            background: isSel ? "var(--linen)" : "transparent",
+                            border: `1px solid ${isSel ? "var(--gold)" : "var(--line)"}`,
+                            opacity: c.bookable ? 1 : 0.55,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            disabled={!c.bookable}
+                            onChange={(e) => chooseCombo(e.target.checked ? c : null)}
+                            style={{ width: 15, height: 15 }}
+                          />
+                          <span style={{ flex: 1 }}>
+                            <strong>{c.name}</strong>
+                            {!c.active && (
+                              <span style={{ color: "var(--ink-mute)", marginLeft: 8, fontSize: 11 }}>
+                                (no se muestra en la web)
+                              </span>
+                            )}
+                            <span style={{ display: "block", color: "var(--ink-mute)", fontSize: 12, marginTop: 2 }}>
+                              1ª sesión: {c.firstSessionLabel}
+                              {c.firstSessionDurationMin > 0 ? ` · ${c.firstSessionDurationMin} min` : ""}
+                            </span>
+                          </span>
+                          <span style={{ color: "var(--ink-mute)" }}>{c.sessions} sesiones</span>
+                          <span style={{ color: "var(--ink-soft)" }}>{fmtPrice(c.priceCents / 100)}</span>
+                        </label>
+                        {!c.bookable && c.unbookableReason && (
+                          <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "4px 0 0 34px" }}>
+                            {c.unbookableReason}
+                          </p>
+                        )}
+                        {isSel && c.sessions > 1 && (
+                          <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "4px 0 0 34px" }}>
+                            Se agenda la 1ª sesión; las otras {c.sessions - 1} las agendás después desde la ficha de la clienta.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {packs.length > 0 && !selectedCombo && (
               <div style={{ marginBottom: 24 }}>
                 <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
                   Packs
@@ -737,6 +880,15 @@ export default function NuevaReservaForm({
               </div>
             )}
 
+            {/* Con un combo elegido no se ofrecen tratamientos sueltos: el
+                motor rechaza la mezcla (son dos formas de cobrar distintas). */}
+            {selectedCombo ? (
+              <p style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                Un combo se vende solo. Para agregar tratamientos sueltos, destildá el combo
+                (o cargalos después como otro turno).
+              </p>
+            ) : (
+            <>
             <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
               Tratamientos
             </p>
@@ -816,8 +968,13 @@ export default function NuevaReservaForm({
                 </div>
               </div>
             ))}
-            {(selectedIds.size > 0 || selectedPack) && (
+            </>
+            )}
+            {(selectedIds.size > 0 || selectedPack || selectedCombo) && (
               <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 13, color: "var(--ink-mute)" }}>
+                {selectedCombo && (
+                  <div>{selectedCombo.name} · {selectedCombo.sessions} sesiones · {fmtPrice(selectedCombo.priceCents / 100)}</div>
+                )}
                 {selectedPack && (
                   <div>{selectedPack.name} · {selectedPack.sessions} sesiones · {fmtPrice(selectedPack.priceCents / 100)}</div>
                 )}
@@ -840,6 +997,64 @@ export default function NuevaReservaForm({
             <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 20 }}>
               ¿Cuándo?
             </h3>
+
+            {/* ── El combo: sólo la 1ª sesión (la visita completa) ── */}
+            {selectedCombo && (
+              <div style={{ marginBottom: 28 }}>
+                <p style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 10 }}>
+                  {selectedCombo.name}
+                </p>
+                {pickingCombo ? (
+                  <div>
+                    <p style={{ fontSize: 13, marginBottom: 10 }}>
+                      1ª sesión · {selectedCombo.firstSessionLabel}
+                      <span style={{ color: "var(--ink-mute)" }}> · {selectedCombo.firstSessionDurationMin} min</span>
+                    </p>
+                    {/* Mismo wrapper que el pack: el selector viene de la
+                        reserva pública y necesita las variables de `.blv`. */}
+                    <div className="blv" style={{ minHeight: 0, background: "transparent", maxWidth: 420 }}>
+                      <PackSessionPicker
+                        businessHours={businessHours}
+                        // La visita COMPLETA (todos los tratamientos de la
+                        // sesión 1): es lo que va a bloquear en la agenda, y la
+                        // MISMA pregunta que hace `planCombo` al confirmar.
+                        durationMin={selectedCombo.firstSessionDurationMin}
+                        proHint="auto"
+                        // El 1er tratamiento de la sesión: el ancla con la que
+                        // el servidor busca disponibilidad (regla estricta de
+                        // `staff_services`, igual que `planCombo`).
+                        serviceId={selectedCombo.firstServiceId || null}
+                        minDate={null}
+                        onPick={(iso) => { setComboSlot(iso); setPickingCombo(false) }}
+                        onCancel={() => setPickingCombo(false)}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      display: "flex", alignItems: "center", gap: 12,
+                      padding: "10px 12px", borderRadius: 8, fontSize: 13,
+                      border: `1px solid ${comboSlot ? "var(--gold)" : "var(--line)"}`,
+                      background: comboSlot ? "var(--linen)" : "transparent",
+                    }}
+                  >
+                    <span style={{ color: "var(--ink-mute)", width: 80, flexShrink: 0 }}>1ª sesión</span>
+                    <span style={{ flex: 1 }}>
+                      {comboSlot ? fmtMoment(new Date(comboSlot).getTime()) : <span style={{ color: "var(--ink-mute)" }}>Sin agendar</span>}
+                    </span>
+                    <button className="adm-btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => setPickingCombo(true)}>
+                      {comboSlot ? "Cambiar" : "Elegir fecha"}
+                    </button>
+                  </div>
+                )}
+                {selectedCombo.sessions > 1 && !pickingCombo && (
+                  <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
+                    Las otras {selectedCombo.sessions - 1} sesiones se agendan después desde la ficha de la clienta.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* ── Las sesiones del pack, cada una con su fecha ── */}
             {selectedPack && (
@@ -1052,7 +1267,7 @@ export default function NuevaReservaForm({
         {step === 3 && (
           <div>
             <h3 style={{ fontFamily: "var(--serif)", fontWeight: 500, fontSize: 16, marginBottom: 20 }}>
-              {selectedPack ? "Confirmar la compra" : "Confirmar turno"}
+              {selectedPack || selectedCombo ? "Confirmar la compra" : "Confirmar turno"}
             </h3>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
@@ -1060,6 +1275,21 @@ export default function NuevaReservaForm({
                 <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Clienta</span>
                 <span><strong>{clientLabel}</strong></span>
               </div>
+              {selectedCombo && (
+                <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
+                  <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Combo</span>
+                  <span>
+                    {selectedCombo.name}
+                    <span style={{ color: "var(--ink-mute)", marginLeft: 6 }}>
+                      ({selectedCombo.sessions} sesiones · {fmtPrice(selectedCombo.priceCents / 100)})
+                    </span>
+                    <span style={{ display: "block", color: "var(--ink-mute)", marginTop: 2 }}>
+                      1ª sesión: {selectedCombo.firstSessionLabel}
+                      {comboSlot ? ` · ${fmtMoment(new Date(comboSlot).getTime())}` : ""}
+                    </span>
+                  </span>
+                </div>
+              )}
               {selectedPack && (
                 <div style={{ display: "flex", gap: 12, fontSize: 13 }}>
                   <span style={{ width: 100, color: "var(--ink-mute)", flexShrink: 0 }}>Pack</span>
@@ -1131,9 +1361,9 @@ export default function NuevaReservaForm({
 
             {/* Las notas internas sólo viajan por el camino de sólo tratamientos
                 (`createAdminBooking`). El motor compartido no las recibe, así que
-                con un pack en la compra no se ofrece el campo en vez de perderlas
-                en silencio. */}
-            {!selectedPack && (
+                con un pack o un combo en la compra no se ofrece el campo en vez
+                de perderlas en silencio. */}
+            {!selectedPack && !selectedCombo && (
               <div style={{ marginBottom: 24 }}>
                 <label style={{ display: "block", fontSize: 12, color: "var(--ink-mute)", marginBottom: 6 }}>
                   Notas internas (opcional)
@@ -1228,8 +1458,8 @@ export default function NuevaReservaForm({
               style={{ fontSize: 13 }}
             >
               {submitPending
-                ? (selectedPack ? "Creando la compra…" : "Creando turno…")
-                : (selectedPack ? "Confirmar compra" : "Crear turno")}
+                ? (selectedPack || selectedCombo ? "Creando la compra…" : "Creando turno…")
+                : (selectedPack || selectedCombo ? "Confirmar compra" : "Crear turno")}
             </button>
           )}
         </div>

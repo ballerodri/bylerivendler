@@ -2,6 +2,7 @@ import "server-only"
 import { createClient } from "@supabase/supabase-js"
 import { serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
 import type { Category, Combo, ComboProgramService, Professional, Service } from "./data"
+import { sortComboRows, firstSessionIndexes, comboVisitCount } from "@/lib/servicios/combo-plan"
 
 export type CurrentClient = {
   id: string
@@ -253,13 +254,9 @@ export async function fetchCombos(): Promise<Combo[]> {
       // con profesional). Si falta alguno, el combo no se muestra: el precio
       // total presupone TODOS los servicios. Orden: (sesión del plan, orden del
       // día); las filas legacy (session_no null) usan el order_index viejo.
-      const rows = c.combo_services
-        .slice()
-        .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
+      const rows = sortComboRows(c.combo_services)
       if (rows.some((cs) => !cs.service || !cs.service.active || !cs.service.visible_public || !serviceIsBookable(cs.service.id, map)))
         return null
-
-      const isPlan = rows.some((cs) => cs.session_no !== null)
 
       // Precio/duración EFECTIVOS por servicio DISTINTO (agrupando apariciones
       // del plan): para un por-zona, las zonas congeladas al armar el combo;
@@ -310,7 +307,7 @@ export async function fetchCombos(): Promise<Combo[]> {
         if (frozen) return frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
         return cs.service!.duration_min
       }
-      const s1Rows = isPlan ? rows.filter((cs) => cs.session_no === 1) : rows.slice(0, 1)
+      const s1Rows = firstSessionIndexes(rows).map((i) => rows[i])
       if (!s1Rows.length) return null // plan sin sesión 1: mal armado, no se ofrece
       const firstSession = {
         label: s1Rows.map((cs) => cs.service!.name).join(" + "),
@@ -340,9 +337,7 @@ export async function fetchCombos(): Promise<Combo[]> {
         services,
         programServices,
         // Plan: K sesiones (visitas). Legacy: la suma de cantidades (modelo viejo).
-        totalSessions: isPlan
-          ? Math.max(0, ...rows.map((cs) => cs.session_no ?? 0))
-          : programServices.reduce((a, ps) => a + ps.sessions, 0),
+        totalSessions: comboVisitCount(rows),
         firstSession,
       }
     })

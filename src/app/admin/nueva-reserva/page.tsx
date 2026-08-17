@@ -3,6 +3,7 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
 import { fetchBusinessHours } from "@/app/reserva/queries"
 import { serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
+import { sortComboRows, firstSessionIndexes, comboVisitCount } from "@/lib/servicios/combo-plan"
 import NuevaReservaForm from "./nueva-reserva-form"
 // El selector de sesiones del pack es el MISMO componente de la reserva
 // pública: necesita su hoja de estilos, o el calendario se ve como texto
@@ -52,6 +53,25 @@ export type PackOption = {
   bookable: boolean
 }
 
+/** Un combo que el salón puede venderle a la clienta desde el asistente. */
+export type ComboOption = {
+  id: string
+  name: string
+  priceCents: number
+  /** Cuántas sesiones (visitas) tiene: el plan, o la suma de cantidades (legacy). */
+  sessions: number
+  /** Los tratamientos de la 1ª sesión ("Ultra + Vela Slim") y su duración total. */
+  firstSessionLabel: string
+  firstSessionDurationMin: number
+  /** El 1er tratamiento de la sesión 1: ancla de la búsqueda de horarios. */
+  firstServiceId: string
+  /** ¿Se muestra en la web? (el salón puede venderlo igual). */
+  active: boolean
+  /** Sin esto no se puede vender: `planCombo` lo rechaza. Con el motivo a la vista. */
+  bookable: boolean
+  unbookableReason: string | null
+}
+
 export default async function NuevaReservaPage() {
   const ssr = await createSsrClient()
   const { data: { user } } = await ssr.auth.getUser()
@@ -66,7 +86,10 @@ export default async function NuevaReservaPage() {
   // Los packs se traen SIN filtrar por `visible_reserva`: el salón puede
   // venderle a la clienta un pack que no se muestra en la web (`planPack`
   // relaja esa condición en modo admin y exige `active`, igual que acá).
-  const [{ data }, { data: packRows }, { data: linkRows }, businessHours] = await Promise.all([
+  // Los combos se traen SIN filtrar por `active`: el salón puede venderle a la
+  // clienta un combo que todavía no se muestra en la web (`planCombo` relaja esa
+  // condición en modo admin, igual que el pack con `visible_reserva`).
+  const [{ data }, { data: packRows }, { data: comboRows }, { data: linkRows }, businessHours] = await Promise.all([
     admin
       .from("services")
       .select("id, name, duration_min, price_cents, pricing_mode, zone_selection, category:service_categories(name), service_zones(id, name, duration_min, price_cents, active, order_index)")
@@ -76,6 +99,10 @@ export default async function NuevaReservaPage() {
       .from("packs")
       .select("id, name, sessions, interval_days, total_price_cents, zones_count, service:services(id, name, pricing_mode, zone_selection, duration_min, service_zones(id, name, duration_min, price_cents, active, order_index))")
       .eq("active", true)
+      .order("name"),
+    admin
+      .from("combos")
+      .select("id, name, total_price_cents, active, combo_services(order_index, session_no, sessions, zones, service:services(id, name, duration_min, pricing_mode, active, visible_public))")
       .order("name"),
     // Crudo, sin filtrar por profesional activa: es EXACTAMENTE el mapa que lee
     // el servidor (`createBooking`/`planPack`/`fetchDayAvailability`). Un mapa
@@ -148,12 +175,60 @@ export default async function NuevaReservaPage() {
       bookable: serviceIsBookable(p.service!.id, staffMap),
     }))
 
+  // Los combos, con lo que el asistente necesita: cuántas visitas tiene y qué
+  // es la 1ª sesión (la única que se agenda al vender). La derivación sale del
+  // módulo compartido (`combo-plan`), el MISMO que usa `planCombo` al confirmar
+  // — así lo que se ofrece acá y lo que el servidor reserva no pueden diferir.
+  type ComboSvcRow = {
+    order_index: number
+    session_no: number | null
+    sessions: number | null
+    zones: { duration_min: number }[] | null
+    service: { id: string; name: string; duration_min: number; pricing_mode: "fixed" | "per_zone"; active: boolean; visible_public: boolean } | null
+  }
+  const combos: ComboOption[] = ((comboRows ?? []) as unknown as {
+    id: string; name: string; total_price_cents: number; active: boolean; combo_services: ComboSvcRow[]
+  }[])
+    .filter((c) => (c.combo_services?.length ?? 0) >= 2)
+    .map((c): ComboOption => {
+      const rows = sortComboRows(c.combo_services)
+      const s1 = firstSessionIndexes(rows).map((i) => rows[i])
+      // La duración de cada tratamiento: el snapshot de zona congelado, o la del
+      // servicio si es fijo (mismo criterio que `planCombo`).
+      const durOf = (r: ComboSvcRow): number =>
+        r.zones?.length ? r.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0) : (r.service?.duration_min ?? 0)
+
+      // Motivos por los que `planCombo` lo rechazaría al confirmar. Se listan
+      // igual, deshabilitados y con el motivo a la vista (como los packs).
+      let unbookableReason: string | null = null
+      const faltante = rows.find((r) => !r.service || !r.service.active || !r.service.visible_public)
+      const sinZonas = rows.find((r) => r.service?.pricing_mode === "per_zone" && !r.zones?.length)
+      const sinProfe = rows.find((r) => r.service && !serviceIsBookable(r.service.id, staffMap))
+      if (!s1.length) unbookableReason = "Este combo no tiene armada su 1ª sesión: revisalo en Combos."
+      else if (faltante) unbookableReason = `“${faltante.service?.name ?? "Un tratamiento"}” está inactivo u oculto: revisalo en Servicios.`
+      else if (sinZonas) unbookableReason = `“${sinZonas.service?.name}” se cobra por zona y no tiene zonas elegidas en el combo: editalo en Combos.`
+      else if (sinProfe) unbookableReason = `“${sinProfe.service?.name}” no tiene ninguna profesional asignada: asignala en Personal.`
+
+      return {
+        id: c.id,
+        name: c.name,
+        priceCents: c.total_price_cents,
+        sessions: comboVisitCount(rows),
+        firstSessionLabel: s1.map((r) => r.service?.name ?? "?").join(" + "),
+        firstSessionDurationMin: s1.reduce((a, r) => a + durOf(r), 0),
+        firstServiceId: s1[0]?.service?.id ?? "",
+        active: c.active,
+        bookable: !unbookableReason,
+        unbookableReason,
+      }
+    })
+
   return (
     <>
       <p className="adm-eyebrow">Agenda</p>
       <h1 className="adm-h1">Nueva <em>reserva</em></h1>
-      <p className="adm-lede">Creá un turno o vendé un pack en nombre de una clienta.</p>
-      <NuevaReservaForm services={services} packs={packs} businessHours={businessHours} />
+      <p className="adm-lede">Creá un turno o vendé un pack o un combo en nombre de una clienta.</p>
+      <NuevaReservaForm services={services} packs={packs} combos={combos} businessHours={businessHours} />
     </>
   )
 }

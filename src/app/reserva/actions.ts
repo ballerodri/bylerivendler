@@ -13,6 +13,7 @@ import { createCalendarEvent } from "@/lib/google-calendar"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { slotHitsBlocked } from "@/lib/servicios/staff-blocks"
+import { sortComboRows, hasSessionPlan, firstSessionIndexes } from "@/lib/servicios/combo-plan"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { gridStepMin, gridStepMinFromMinutes, DEFAULT_STEP_MIN } from "@/lib/servicios/grid-step"
 import type { PlannedAppointment, PlannedLeg } from "@/lib/servicios/booking-plan"
@@ -424,23 +425,31 @@ async function planPack(
 }
 
 /**
- * Resuelve un PROGRAMA y arma el plan de su compra online: congela TODOS sus
- * servicios (sesiones + snapshot de zona) y planifica el turno PORTADOR de la
- * **1ª sesión** (el primer servicio del programa), que lleva el TOTAL y su seña.
- * El resto de las sesiones NO se agendan acá — se agendan después, en $0, contra
- * la compra. Como un pack, pero multi-servicio. **No escribe nada.**
+ * Resuelve un COMBO y arma el plan de su compra: congela TODOS sus servicios
+ * (plan + snapshot de zona) y planifica el turno PORTADOR de la **1ª sesión**
+ * (la visita completa si hay plan), que lleva el TOTAL y su seña. El resto de
+ * las sesiones NO se agendan acá — se agendan después, en $0, contra la compra.
+ * Como un pack, pero multi-servicio. **No escribe nada.**
+ *
+ * Modo admin: el salón puede vender un combo que NO se muestra en la web
+ * (`active = false`) — igual que `planPack` relaja `visible_reserva`. Todo lo
+ * demás (servicios miembros activos, públicos y con profesional) se exige
+ * siempre: sin eso no hay ni duración ni quién lo haga.
  */
 async function planCombo(
   supabase: ReturnType<typeof adminClient>,
   input: CreateBookingInput,
-  payChoice: PayChoice
+  payChoice: PayChoice,
+  adminMode: boolean = false
 ): Promise<{ ok: true; plan: ComboPlan } | { ok: false; error: string }> {
-  const { data: combo } = await supabase
+  let comboQuery = supabase
     .from("combos")
     .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, session_no, zones, service:services(id, name, pricing_mode, duration_min, price_cents, active, visible_public))")
     .eq("id", input.comboId)
-    .eq("active", true)
-    .maybeSingle()
+  // En el camino público `active` sigue siendo obligatorio: sin `adminMode` la
+  // consulta es exactamente la de siempre.
+  if (!adminMode) comboQuery = comboQuery.eq("active", true)
+  const { data: combo } = await comboQuery.maybeSingle()
   if (!combo) return { ok: false, error: "Ese combo ya no está disponible." }
 
   type CS = {
@@ -453,9 +462,7 @@ async function planCombo(
   }
   // Orden del PLAN: (sesión, orden del día). Filas legacy (session_no null):
   // el order_index viejo. El primer elemento es el ancla de la 1ª sesión.
-  const rows = ((combo.combo_services ?? []) as unknown as CS[])
-    .slice()
-    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
+  const rows = sortComboRows((combo.combo_services ?? []) as unknown as CS[])
   if (rows.length < 2) return { ok: false, error: "Ese combo no está disponible para reservar online." }
 
   // El total presupone TODOS los servicios del programa. Si CUALQUIERA de los
@@ -502,10 +509,8 @@ async function planCombo(
   // (todas sus patas encadenadas — bloquea el tiempo real en la agenda, decisión
   // aprobada); legacy, el 1er tratamiento solo (modelo viejo). El MISMO criterio
   // que `fetchCombos.firstSession`, así el picker y el server no divergen.
-  const isPlanCombo = rows.some((cs) => cs.session_no !== null)
-  const s1Idx = isPlanCombo
-    ? rows.map((cs, i) => (cs.session_no === 1 ? i : -1)).filter((i) => i !== -1)
-    : [0]
+  const isPlanCombo = hasSessionPlan(rows)
+  const s1Idx = firstSessionIndexes(rows)
   if (!s1Idx.length) return { ok: false, error: "Ese combo no está disponible para reservar online." }
   const s1Legs = s1Idx.map((i) => ({
     serviceId: services[i].serviceId,
@@ -1242,12 +1247,12 @@ export async function createBooking(
   // rama "juntos" NO corre para un programa: no se duplica ni se cobra dos veces.
   const hasServices = services.length > 0 && !hasCombo
 
-  // Un programa se VENDE desde la ficha de la clienta (`venderPrograma`, factura
-  // directa). Por `createBooking` sólo entra la compra ONLINE de la clienta; el
-  // salón nunca lo carga por acá (evita el doble modelo: portador vs. factura).
-  if (adminMode && hasCombo)
-    return { ok: false, error: "Los combos se venden desde la ficha de la clienta." }
-  // Un programa es excluyente con pack y con servicios sueltos (la pantalla ya
+  // El salón también vende combos desde "Nueva reserva" (igual que los packs):
+  // `planCombo` recibe `adminMode` y relaja SÓLO la visibilidad online del
+  // combo. El otro camino del admin (ficha → "Vender combo", con factura
+  // directa) sigue existiendo: son dos formas de cobrar lo mismo, exactamente
+  // como pack online vs. `venderPack`.
+  // Un combo es excluyente con pack y con servicios sueltos (la pantalla ya
   // lo garantiza; guarda por si llega un payload armado a mano).
   if (hasCombo && (hasPack || services.length > 0))
     return { ok: false, error: "No se puede combinar un combo con otros servicios en la misma reserva." }
@@ -1275,7 +1280,7 @@ export async function createBooking(
   }
 
   if (hasCombo) {
-    const r = await planCombo(supabase, input, payChoice)
+    const r = await planCombo(supabase, input, payChoice, adminMode)
     if (!r.ok) return { ok: false, error: r.error }
     comboPlan = r.plan
     plan.push(r.plan.appointment)

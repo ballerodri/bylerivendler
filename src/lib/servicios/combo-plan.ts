@@ -5,6 +5,47 @@
 
 export type ComboPlan = string[][]
 
+// ── Leer un combo GUARDADO (filas de combo_services / combo_purchase_services)
+// Estas tres cosas TIENEN que dar igual en el catálogo, en el motor de reserva
+// y en el asistente del admin: si divergen, la pantalla ofrece una cosa y el
+// servidor reserva otra. Por eso viven acá, en un solo lugar con tests.
+
+/** Una fila guardada del combo: su sesión (null = combo del modelo viejo) y su orden. */
+export type ComboRowLike = { session_no: number | null; order_index: number }
+
+/** Orden del plan: (sesión, orden del día). Las filas legacy van al final. */
+export function sortComboRows<T extends ComboRowLike>(rows: T[]): T[] {
+  return rows
+    .slice()
+    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
+}
+
+/** ¿El combo tiene PLAN de sesiones? (alguna fila con `session_no`) */
+export function hasSessionPlan(rows: ComboRowLike[]): boolean {
+  return rows.some((r) => r.session_no !== null)
+}
+
+/**
+ * Los índices (sobre las filas YA ordenadas con `sortComboRows`) que forman la
+ * 1ª sesión: con plan, todas las de `session_no === 1`; sin plan (legacy), la
+ * primera fila sola — el modelo viejo agendaba un tratamiento por vez.
+ */
+export function firstSessionIndexes(sorted: ComboRowLike[]): number[] {
+  if (!sorted.length) return []
+  if (!hasSessionPlan(sorted)) return [0]
+  return sorted.map((r, i) => (r.session_no === 1 ? i : -1)).filter((i) => i !== -1)
+}
+
+/**
+ * Cuántas SESIONES (visitas) tiene el combo: con plan, la cantidad de sesiones
+ * del plan; legacy, la suma de las cantidades por tratamiento (modelo viejo).
+ */
+export function comboVisitCount(rows: (ComboRowLike & { sessions?: number | null })[]): number {
+  if (!rows.length) return 0
+  if (!hasSessionPlan(rows)) return rows.reduce((a, r) => a + (r.sessions ?? 1), 0)
+  return Math.max(0, ...rows.map((r) => r.session_no ?? 0))
+}
+
 /** Veces TOTALES de cada tratamiento en el plan (para el precio individual). */
 export function planServiceCounts(plan: ComboPlan): Record<string, number> {
   const counts: Record<string, number> = {}
