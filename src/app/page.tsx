@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { isStaffUser } from "@/lib/staff"
 import LogoutButton from "@/app/portal/logout-button"
+import { ADDRESS_LINE, ADDRESS_AREA, MAPS_LINK } from "@/lib/location"
 
 export const dynamic = "force-dynamic"
 
@@ -102,9 +103,21 @@ function MarketingView() {
         alt="By Leri Vendler"
         className="h-24 w-auto"
       />
-      <p className="text-[10px] uppercase tracking-[0.22em] text-[#7a6e64]">
-        Estética profesional · Pilar · Bs. As.
-      </p>
+      <div className="flex flex-col items-center gap-1.5">
+        <p className="text-[10px] uppercase tracking-[0.22em] text-[#7a6e64]">
+          Estética profesional · Pilar · Bs. As.
+        </p>
+        {/* La dirección exacta, del módulo compartido (`@/lib/location`), y
+            clickeable: desde el teléfono abre el mapa directo. */}
+        <a
+          href={MAPS_LINK}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[11px] tracking-[0.06em] text-[#7a6e64] underline decoration-[#b68a5f]/40 underline-offset-4 transition hover:text-[#b68a5f]"
+        >
+          {ADDRESS_LINE} · {ADDRESS_AREA}
+        </a>
+      </div>
       <h1
         className="text-5xl leading-tight tracking-tight"
         style={{ fontFamily: "var(--font-serif)" }}
@@ -179,6 +192,16 @@ function LoggedInView({
               .filter(Boolean)
               .join(" · ")}
           </p>
+          {/* Dónde es (del módulo compartido): la clienta que viene al turno lo
+              que necesita de esta tarjeta es la dirección, clickeable al mapa. */}
+          <a
+            href={MAPS_LINK}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-block text-[12px] text-[#7a6e64] underline decoration-[#b68a5f]/40 underline-offset-4 transition hover:text-[#b68a5f]"
+          >
+            {ADDRESS_LINE} · {ADDRESS_AREA}
+          </a>
         </div>
       ) : (
         <p className="text-base text-[#4a423d]">
