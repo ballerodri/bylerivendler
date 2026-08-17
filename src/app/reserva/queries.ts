@@ -1,7 +1,7 @@
 import "server-only"
 import { createClient } from "@supabase/supabase-js"
 import { serviceIsBookable, type StaffServiceMap } from "@/lib/servicios/staff-services"
-import type { Category, Combo, Professional, Service } from "./data"
+import type { Category, Combo, ComboProgramService, Professional, Service } from "./data"
 
 export type CurrentClient = {
   id: string
@@ -215,6 +215,8 @@ type DbComboRow = {
   total_price_cents: number
   combo_services: {
     order_index: number
+    sessions: number | null
+    zones: { name: string; duration_min: number; price_cents: number }[] | null
     service: {
       id: string
       name: string
@@ -224,6 +226,7 @@ type DbComboRow = {
       points_cost: number
       active: boolean
       visible_public: boolean
+      pricing_mode: "fixed" | "per_zone"
     } | null
   }[]
 }
@@ -234,7 +237,7 @@ export async function fetchCombos(): Promise<Combo[]> {
     .from("combos")
     .select(`
       id, name, description, total_price_cents,
-      combo_services(order_index, service:services(id, name, description, duration_min, price_cents, points_cost, active, visible_public))
+      combo_services(order_index, sessions, zones, service:services(id, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode))
     `)
     .eq("active", true)
     .order("name", { ascending: true })
@@ -244,34 +247,71 @@ export async function fetchCombos(): Promise<Combo[]> {
   const map = await fetchStaffServices()
 
   return (data as unknown as DbComboRow[])
-    .filter((c) =>
-      c.combo_services.every((cs) => !cs.service || serviceIsBookable(cs.service.id, map))
-    )
-    .map((c): Combo => {
-      const services = c.combo_services
-        .filter((cs) => cs.service?.active && cs.service?.visible_public)
+    .map((c): Combo | null => {
+      // Sólo los servicios miembros que se pueden reservar (activos, públicos,
+      // con profesional). Si falta alguno, el programa no se muestra: el precio
+      // total presupone TODOS los servicios.
+      const rows = c.combo_services
+        .slice()
         .sort((a, b) => a.order_index - b.order_index)
-        .map((cs): Service => ({
-          id: cs.service!.id,
-          name: cs.service!.name,
-          duration: cs.service!.duration_min,
-          price: Math.round(cs.service!.price_cents / 100),
-          desc: cs.service!.description ?? "",
-          pointsCost: cs.service!.points_cost,
-          pricingMode: "fixed",
-          zoneSelection: "multiple",
-          zones: [],
-        }))
-      const duration = services.reduce((a, s) => a + s.duration, 0)
+      if (rows.some((cs) => !cs.service || !cs.service.active || !cs.service.visible_public || !serviceIsBookable(cs.service.id, map)))
+        return null
+
+      // Precio/duración EFECTIVOS por servicio: para un servicio por zona, las
+      // zonas congeladas al armar el programa (snapshot); para uno fijo, los del
+      // servicio. Un servicio por zona SIN zonas congeladas no se puede reservar
+      // online (no hay duración/precio) → el programa no se ofrece.
+      const programServices: ComboProgramService[] = []
+      let unbookable = false
+      for (const cs of rows) {
+        const svc = cs.service!
+        const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
+        let durationMin: number
+        let priceCents: number
+        if (frozen) {
+          durationMin = frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+          priceCents = frozen.reduce((a, z) => a + (z.price_cents ?? 0), 0)
+        } else if (svc.pricing_mode === "per_zone") {
+          unbookable = true // por zona sin zonas congeladas: no reservable online
+          break
+        } else {
+          durationMin = svc.duration_min
+          priceCents = svc.price_cents
+        }
+        programServices.push({
+          serviceId: svc.id,
+          serviceName: svc.name,
+          sessions: cs.sessions ?? 1,
+          durationMin,
+          priceCents,
+          zones: frozen,
+        })
+      }
+      if (unbookable || programServices.length < 2) return null
+
+      const services = rows.map((cs): Service => ({
+        id: cs.service!.id,
+        name: cs.service!.name,
+        duration: cs.service!.duration_min,
+        price: Math.round(cs.service!.price_cents / 100),
+        desc: cs.service!.description ?? "",
+        pointsCost: cs.service!.points_cost,
+        pricingMode: "fixed",
+        zoneSelection: "multiple",
+        zones: [],
+      }))
       return {
         id: c.id,
         name: c.name,
         description: c.description ?? "",
         price: Math.round(c.total_price_cents / 100),
-        duration,
+        duration: programServices[0].durationMin,
         services,
+        programServices,
+        totalSessions: programServices.reduce((a, ps) => a + ps.sessions, 0),
       }
     })
+    .filter((c): c is Combo => c !== null)
 }
 
 /**

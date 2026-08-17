@@ -17,8 +17,10 @@ type ApptRow = {
   deposit_cents: number
   status: string
   pack_purchase_id: string | null
+  combo_purchase_id: string | null
   client: { first_name: string | null } | null
   pack: { pack_name: string; sessions_total: number } | null
+  combo: { combo_name: string; combo_purchase_services: { sessions: number }[] } | null
   appointment_services: {
     starts_at: string | null
     duration_min: number | null
@@ -47,7 +49,7 @@ export default async function ReservaExitoPage({
   const { data } = await admin
     .from("appointments")
     .select(
-      "id, starts_at, duration_min, total_cents, deposit_cents, status, pack_purchase_id, client:clients(first_name), pack:pack_purchases(pack_name, sessions_total), appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))"
+      "id, starts_at, duration_min, total_cents, deposit_cents, status, pack_purchase_id, combo_purchase_id, client:clients(first_name), pack:pack_purchases(pack_name, sessions_total), combo:combo_purchases(combo_name, combo_purchase_services(sessions)), appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))"
     )
     .in("id", ids)
     .order("starts_at", { ascending: true })
@@ -69,12 +71,21 @@ export default async function ReservaExitoPage({
   const packRemaining = withPack
     ? Math.max(0, (withPack.pack?.sessions_total ?? packScheduled) - packScheduled)
     : 0
+  // Un PROGRAMA (combo): sus sesiones totales = Σ de las sesiones por servicio
+  // congeladas en la compra; agendadas hasta ahora = las de esta compra (online
+  // es sólo la 1ª). El resto lo coordina el salón después.
+  const withCombo = appts.find((a) => a.combo)
+  const comboName = withCombo?.combo?.combo_name ?? null
+  const comboTotal = withCombo?.combo?.combo_purchase_services?.reduce((acc, s) => acc + (s.sessions ?? 0), 0) ?? 0
+  const comboScheduled = appts.filter((a) => a.combo_purchase_id).length
+  const comboRemaining = withCombo ? Math.max(0, comboTotal - comboScheduled) : 0
   const rows = buildItinerary(
     appts.map((a) => ({
       id: a.id,
       startsAt: a.starts_at,
       durationMin: a.duration_min,
       packPurchaseId: a.pack_purchase_id,
+      comboPurchaseId: a.combo_purchase_id,
       legs: a.appointment_services.map((as) => ({
         startsAt: as.starts_at,
         durationMin: as.duration_min,
@@ -82,7 +93,8 @@ export default async function ReservaExitoPage({
         staffName: as.staff?.full_name ?? null,
       })),
     })),
-    packName
+    packName,
+    comboName
   )
   // Agrupadas por día (una compra "separados" puede cruzar días).
   const days: { dateStr: string; rows: typeof rows }[] = []
@@ -217,6 +229,12 @@ export default async function ReservaExitoPage({
             <div style={{ fontSize: 13, color: "var(--muted, #7a6e64)", marginBottom: 10 }}>
               Te quedan <strong>{packRemaining}</strong> sesión(es) del pack por
               agendar. Coordinamos con vos para fijarlas.
+            </div>
+          )}
+          {comboRemaining > 0 && (
+            <div style={{ fontSize: 13, color: "var(--muted, #7a6e64)", marginBottom: 10 }}>
+              Te quedan <strong>{comboRemaining}</strong> sesión(es) del programa
+              por agendar. Coordinamos con vos para fijarlas.
             </div>
           )}
           <div

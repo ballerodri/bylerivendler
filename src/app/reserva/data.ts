@@ -169,13 +169,31 @@ export type ClientForm = {
   consent: boolean
 }
 
+// Un servicio dentro de un programa (combo multi-sesión), con su cantidad de
+// sesiones y su precio/duración EFECTIVOS (para un servicio por zona: las zonas
+// congeladas al armar el programa; para uno fijo: los del servicio). Es la
+// fuente de verdad para el ahorro del catálogo y para agendar la 1ª sesión.
+export type ComboProgramService = {
+  serviceId: string
+  serviceName: string
+  sessions: number
+  durationMin: number   // efectiva (Σ zonas congeladas, o duración del servicio)
+  priceCents: number    // efectiva (Σ zonas congeladas, o precio del servicio) — para el ahorro
+  zones: ZoneSnapshotLite[] | null   // snapshot congelado (per_zone), null si es fijo
+}
+
+// Igual que `ZoneSnapshot` de `@/lib/servicios/zones` y `appointment_services.zones`.
+export type ZoneSnapshotLite = { name: string; duration_min: number; price_cents: number }
+
 export type Combo = {
   id: string
   name: string
   description: string
   price: number        // total_price_cents / 100
-  duration: number     // suma de duraciones de servicios
-  services: Service[]  // en order_index
+  duration: number     // duración de la 1ª sesión del programa (min)
+  services: Service[]  // en order_index (para mostrar nombres)
+  programServices: ComboProgramService[]  // sesiones + precio/zonas congelados por servicio
+  totalSessions: number  // Σ sesiones de todos los servicios
 }
 
 export type ReservaPack = {
@@ -215,6 +233,9 @@ export type BookingState = {
   // Fechas elegidas de las sesiones del pack (ISO UTC, en orden). La [0] es la
   // 1ª sesión (obligatoria); puede haber menos que sessions (el resto se agenda después).
   packSlots?: string[]
+  // La 1ª sesión de un PROGRAMA (combo) elegida (ISO UTC). Las demás sesiones
+  // las agenda el salón después. Sólo aplica con `combo` elegido.
+  comboSlot?: string
   // La profesional elegida para el pack ("auto" o un staffId). Es SUYA: no se
   // deriva de `state.pro` (que es el proHint global de los servicios sueltos).
   packPro?: string

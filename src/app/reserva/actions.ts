@@ -74,8 +74,8 @@ const BookingInput = z.object({
     marketingConsent: z.boolean().optional(),
     isExisting: z.boolean(),
   }),
-}).refine((v) => v.serviceIds.length > 0 || !!v.packId, {
-  message: "Elegí al menos un servicio o un pack.",
+}).refine((v) => v.serviceIds.length > 0 || !!v.packId || !!v.comboId, {
+  message: "Elegí al menos un servicio, un pack o un programa.",
 }).refine((v) => v.adminMode === true || (v.client.dob ?? "").length > 0, {
   // La fecha de nacimiento es opcional SÓLO para el asistente del admin. La
   // reserva pública la sigue exigiendo igual que siempre: sin este refine,
@@ -121,7 +121,7 @@ function adminClient() {
  */
 async function rollbackAll(
   supabase: ReturnType<typeof adminClient>,
-  created: { appointmentIds: string[]; packPurchaseId: string | null },
+  created: { appointmentIds: string[]; packPurchaseId: string | null; comboPurchaseId?: string | null },
   clientId: string,
   pointsToRefund: number,
   fallbackError: string
@@ -166,6 +166,24 @@ async function rollbackAll(
     }
   }
 
+  if (created.comboPurchaseId) {
+    // `appointments.combo_purchase_id` es ON DELETE SET NULL: borrar la compra
+    // del programa siempre "funciona" (por eso los turnos se borran y chequean
+    // arriba, antes). Un programa NUNCA se canjea con puntos, así que acá no hay
+    // reembolso en juego; se corta igual si no se pudo deshacer.
+    const { error: comboDelErr } = await supabase
+      .from("combo_purchases")
+      .delete()
+      .eq("id", created.comboPurchaseId)
+    if (comboDelErr) {
+      return {
+        ok: false,
+        error:
+          "Hubo un problema al crear tu reserva y no pudimos deshacerla por completo. Por favor comunicate con el salón para confirmar el estado de tu programa antes de volver a intentar.",
+      }
+    }
+  }
+
   if (pointsToRefund > 0) {
     const { data: c, error: readErr } = await supabase
       .from("clients")
@@ -188,6 +206,18 @@ async function rollbackAll(
   }
 
   return { ok: false, error: fallbackError }
+}
+
+/**
+ * El plan de la compra de un PROGRAMA (combo multi-sesión) online: la compra
+ * (con TODOS sus servicios congelados) y el turno PORTADOR de la 1ª sesión.
+ * `createBooking`, con este plan, crea `combo_purchases` + `combo_purchase_services`
+ * + el portador. El resto de las sesiones se agendan después (Fase 3, en $0).
+ */
+type ComboPlan = {
+  combo: { id: string; name: string; totalPriceCents: number }
+  services: { serviceId: string; serviceName: string; sessions: number; zones: ZoneSnapshot[] | null; orderIndex: number }[]
+  appointment: PlannedAppointment
 }
 
 /** El plan de turnos de un pack: lo que habría que crear, todavía sin crear nada. */
@@ -384,6 +414,138 @@ async function planPack(
       serviceName: svc.name,
       slotDates,
       appointments,
+    },
+  }
+}
+
+/**
+ * Resuelve un PROGRAMA y arma el plan de su compra online: congela TODOS sus
+ * servicios (sesiones + snapshot de zona) y planifica el turno PORTADOR de la
+ * **1ª sesión** (el primer servicio del programa), que lleva el TOTAL y su seña.
+ * El resto de las sesiones NO se agendan acá — se agendan después, en $0, contra
+ * la compra. Como un pack, pero multi-servicio. **No escribe nada.**
+ */
+async function planCombo(
+  supabase: ReturnType<typeof adminClient>,
+  input: CreateBookingInput,
+  payChoice: PayChoice
+): Promise<{ ok: true; plan: ComboPlan } | { ok: false; error: string }> {
+  const { data: combo } = await supabase
+    .from("combos")
+    .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, zones, service:services(id, name, pricing_mode, duration_min, price_cents))")
+    .eq("id", input.comboId)
+    .eq("active", true)
+    .maybeSingle()
+  if (!combo) return { ok: false, error: "Ese programa ya no está disponible." }
+
+  type CS = {
+    order_index: number
+    service_id: string
+    sessions: number | null
+    zones: ZoneSnapshot[] | null
+    service: { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
+  }
+  const rows = ((combo.combo_services ?? []) as unknown as CS[]).slice().sort((a, b) => a.order_index - b.order_index)
+  if (rows.length < 2) return { ok: false, error: "Ese programa no está disponible para reservar online." }
+
+  // Congelar TODOS los servicios del programa (sesiones + zonas). Un servicio por
+  // zona SIN zonas congeladas no se puede reservar (sin duración/precio). El
+  // total presupone todos los servicios, así que si falta uno, no se ofrece.
+  const services: ComboPlan["services"] = []
+  let firstDuration = 0
+  for (let i = 0; i < rows.length; i++) {
+    const cs = rows[i]
+    const svc = cs.service
+    if (!svc) return { ok: false, error: "El programa tiene un servicio que ya no existe. Escribinos y lo coordinamos." }
+    const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
+    let durationMin: number
+    if (frozen) durationMin = frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+    else if (svc.pricing_mode === "per_zone")
+      return { ok: false, error: "Ese programa no se puede reservar online. Escribinos y lo coordinamos." }
+    else durationMin = svc.duration_min
+    if (i === 0) firstDuration = durationMin
+    services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index })
+  }
+
+  // La 1ª sesión (portador) = el primer servicio del programa.
+  const first = { serviceId: services[0].serviceId, serviceName: services[0].serviceName, zones: services[0].zones }
+  if (firstDuration <= 0) return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del programa." }
+
+  // Quién hace el 1er servicio (`staff_services`), fail-closed igual que el pack.
+  const { data: linkRows, error: linkErr } = await supabase
+    .from("staff_services")
+    .select("staff_id")
+    .eq("service_id", first.serviceId)
+  if (linkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+  const staffMap: StaffServiceMap = { [first.serviceId]: (linkRows ?? []).map((r) => r.staff_id as string) }
+  if (!serviceIsBookable(first.serviceId, staffMap))
+    return { ok: false, error: `"${first.serviceName}" no está disponible para reservar online por ahora.` }
+
+  // Fecha de la 1ª sesión (input.startsAt): futura, en la grilla, con disponibilidad real.
+  const startDate = new Date(input.startsAt)
+  if (isNaN(startDate.getTime())) return { ok: false, error: "La fecha de la 1ª sesión es inválida." }
+  if (!input.adminMode && startDate.getTime() <= Date.now())
+    return { ok: false, error: "La 1ª sesión tiene que ser en una fecha futura." }
+
+  const askedStaff = input.proHint && input.proHint !== "auto" ? input.proHint : null
+  if (askedStaff && !canStaffDoService(askedStaff, first.serviceId, staffMap))
+    return { ok: false, error: `Esa profesional no realiza "${first.serviceName}". Elegí el horario de nuevo.` }
+
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startDate)
+  const { data: bh } = await supabase
+    .from("business_hours")
+    .select("is_open, slots")
+    .eq("day_of_week", dayOfWeek)
+    .maybeSingle()
+  const slots = (bh?.slots ?? []) as string[]
+  if (!bh?.is_open || !slots.includes(timeStr))
+    return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
+  const free = await fetchDayAvailability(dateStr, firstDuration, askedStaff ?? "auto", [timeStr], { serviceId: first.serviceId })
+  if (!free.includes(timeStr)) return { ok: false, error: "Ese horario se ocupó. Elegí otro." }
+
+  // Resolver la profesional de la 1ª sesión.
+  let sessionStaff = askedStaff
+  if (!sessionStaff) {
+    const chosen = await chooseStaffForSlot(supabase, { dateStr, timeStr, durationMin: firstDuration, serviceId: first.serviceId, preferredStaffId: null })
+    if (!chosen) return { ok: false, error: "Ese horario se ocupó. Elegí otro." }
+    sessionStaff = chosen
+  }
+
+  // La plata: el portador lleva el TOTAL del programa; la seña, según payChoice.
+  // Las sesiones 2..N nacen en $0 (se agendan después). IDÉNTICO a un pack.
+  const totalCents = combo.total_price_cents
+  const depositCents = amountDueNow(totalCents, payChoice)
+
+  const appointment: PlannedAppointment = {
+    label: `1ª sesión de ${combo.name}`,
+    startsAtMs: startDate.getTime(),
+    durationMin: firstDuration,
+    staffId: sessionStaff,
+    totalCents,
+    depositCents,
+    depositPaid: false,
+    notesInternal: `Programa: ${combo.name} (1ª sesión — ${first.serviceName})`,
+    isPackSession: false,
+    isComboSession: true,
+    legs: [
+      {
+        serviceId: first.serviceId,
+        name: first.serviceName,
+        durationMin: firstDuration,
+        priceCents: totalCents, // el portador lleva el total (como la sesión 1 del pack)
+        zones: first.zones,
+        staffId: sessionStaff,
+        startsAtMs: startDate.getTime(),
+      },
+    ],
+  }
+
+  return {
+    ok: true,
+    plan: {
+      combo: { id: combo.id, name: combo.name, totalPriceCents: totalCents },
+      services,
+      appointment,
     },
   }
 }
@@ -907,18 +1069,12 @@ export async function createBooking(
   }
 
   const totalDuration = services.reduce((a, s) => a + computed[s.id].durationMin, 0)
-  let totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
+  const totalCents = services.reduce((a, s) => a + computed[s.id].priceCents, 0)
 
-  // Si es un combo, reemplazamos el precio por el del combo
-  if (input.comboId) {
-    const { data: combo } = await supabase
-      .from("combos")
-      .select("total_price_cents, active")
-      .eq("id", input.comboId)
-      .eq("active", true)
-      .maybeSingle()
-    if (combo) totalCents = combo.total_price_cents
-  }
+  // Un PROGRAMA (combo) ya NO se reserva como "servicios juntos": tiene su propio
+  // camino (`planCombo`), que crea la compra + el turno portador de la 1ª sesión
+  // con el total. El viejo override de precio "combo = una visita juntos" se
+  // eliminó junto con ese modelo (ver Fase 2b del rediseño de programas).
 
   // Lo que se le pide pagar AHORA: la seña (30%) o el total, según eligió.
   // (`depositCents` en sí lo recalcula `planLooseServices` para el plan; acá
@@ -1016,19 +1172,36 @@ export async function createBooking(
     .maybeSingle()
 
   const hasPack = !!input.packId
-  const hasServices = services.length > 0
+  const hasCombo = !!input.comboId
+  // Un PROGRAMA se reserva por su propio camino (`planCombo`). Ignora `serviceIds`
+  // (la fuente de verdad de sus servicios es `combo_services`, snapshot en la
+  // compra), así que aunque una pestaña vieja mande los serviceIds del combo, la
+  // rama "juntos" NO corre para un programa: no se duplica ni se cobra dos veces.
+  const hasServices = services.length > 0 && !hasCombo
 
-  // ── Canje con puntos: NO se puede canjear un pack ────────────────────────
+  // Un programa se VENDE desde la ficha de la clienta (`venderPrograma`, factura
+  // directa). Por `createBooking` sólo entra la compra ONLINE de la clienta; el
+  // salón nunca lo carga por acá (evita el doble modelo: portador vs. factura).
+  if (adminMode && hasCombo)
+    return { ok: false, error: "Los programas se venden desde la ficha de la clienta." }
+  // Un programa es excluyente con pack y con servicios sueltos (la pantalla ya
+  // lo garantiza; guarda por si llega un payload armado a mano).
+  if (hasCombo && (hasPack || services.length > 0))
+    return { ok: false, error: "No se puede combinar un programa con otros servicios en la misma reserva." }
+
+  // ── Canje con puntos: NO se puede canjear un pack NI un programa ──────────
   // Hoy esto es inalcanzable (la pantalla no ofrece canje con un pack elegido)
   // PERO la rama del pack retornaba ANTES del bloque de canje: si llegaran las
   // dos cosas, el pack se creaba SIN descontar los puntos. Al fusionar los
-  // caminos ese agujero pasa a ser alcanzable. Se cierra acá.
-  if (hasPack && redeem)
-    return { ok: false, error: "Los packs no se pueden canjear con puntos." }
+  // caminos ese agujero pasa a ser alcanzable. Se cierra acá. Un programa,
+  // igual que un pack, no suma ni canjea puntos (D3 del diseño).
+  if ((hasPack || hasCombo) && redeem)
+    return { ok: false, error: "Los packs y programas no se pueden canjear con puntos." }
 
   // ── FASE B: planificar y validar TODO, sin escribir nada ──────────────────
   const plan: PlannedAppointment[] = []
   let packPlan: PackPlan | null = null
+  let comboPlan: ComboPlan | null = null
   let looseMode: "separados" | "juntos" | null = null
 
   if (hasPack) {
@@ -1036,6 +1209,13 @@ export async function createBooking(
     if (!r.ok) return { ok: false, error: r.error }
     packPlan = r.plan
     plan.push(...r.plan.appointments)
+  }
+
+  if (hasCombo) {
+    const r = await planCombo(supabase, input, payChoice)
+    if (!r.ok) return { ok: false, error: r.error }
+    comboPlan = r.plan
+    plan.push(r.plan.appointment)
   }
 
   if (hasServices) {
@@ -1070,7 +1250,7 @@ export async function createBooking(
   // descontaron. El descuento va abajo.
 
   // ── FASE C: escribir. Desde acá, TODO error tiene que pasar por rollbackAll ─
-  const created = { appointmentIds: [] as string[], packPurchaseId: null as string | null }
+  const created = { appointmentIds: [] as string[], packPurchaseId: null as string | null, comboPurchaseId: null as string | null }
   const refund = redeem ? totalPointsCost : 0
 
   // 1) Descontar los puntos (sólo servicios: el pack ya se rechazó arriba).
@@ -1122,6 +1302,37 @@ export async function createBooking(
     created.packPurchaseId = purchase.id
   }
 
+  // 2.5) La compra del PROGRAMA + sus servicios congelados (sesiones + zonas). El
+  //     turno portador (1ª sesión) se vincula abajo con `combo_purchase_id`; el
+  //     resto de las sesiones se agendan después contra esta compra, en $0.
+  if (comboPlan) {
+    const { data: purchase, error: purErr } = await supabase
+      .from("combo_purchases")
+      .insert({
+        client_id: clientId,
+        combo_id: comboPlan.combo.id,
+        combo_name: comboPlan.combo.name,
+        total_price_cents: comboPlan.combo.totalPriceCents,
+      })
+      .select("id")
+      .single()
+    if (purErr || !purchase)
+      return await rollbackAll(supabase, created, clientId, refund, `No pudimos registrar el programa: ${purErr?.message}`)
+    created.comboPurchaseId = purchase.id
+    const { error: cpsErr } = await supabase.from("combo_purchase_services").insert(
+      comboPlan.services.map((s) => ({
+        combo_purchase_id: purchase.id,
+        service_id: s.serviceId,
+        service_name: s.serviceName,
+        sessions: s.sessions,
+        zones: s.zones,
+        order_index: s.orderIndex,
+      }))
+    )
+    if (cpsErr)
+      return await rollbackAll(supabase, created, clientId, refund, `Servicios del programa: ${cpsErr.message}`)
+  }
+
   // 3) Los turnos, en orden cronológico (así `appointmentIds[0]` es el primero
   //    de verdad y la clienta aterriza en la confirmación correcta).
   const ordered = [...plan].sort((a, b) => a.startsAtMs - b.startsAtMs)
@@ -1158,6 +1369,7 @@ export async function createBooking(
         // cargó el salón no puede figurar como reserva online.
         source: adminMode ? "admin" : "web",
         pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
+        combo_purchase_id: p.isComboSession ? created.comboPurchaseId : null,
         notes_internal: p.notesInternal,
         booking_group_id: bookingGroupId,
       })
@@ -1206,7 +1418,24 @@ export async function createBooking(
   // acá sólo se elige cuál, no se inventa una fórmula nueva.
   let dueNowCents = 0
 
-  if (hasPack && !hasServices) {
+  if (hasCombo) {
+    // Programa solo → UN turno portador (la 1ª sesión, con el total). La seña la
+    // lleva entero ese turno (las 2..N se agendan después en $0), así que la suma
+    // ES esa seña. Un evento de Calendar para esa 1ª sesión.
+    dueNowCents = sumDeposits(plan)
+
+    await createCalendarEventsForAppointments(
+      supabase,
+      `${input.client.firstName.trim()} ${input.client.lastName.trim()}`,
+      ordered.map((p, i) => ({
+        appointmentId: created.appointmentIds[i],
+        staffId: p.staffId,
+        label: p.label,
+        startsAtMs: p.startsAtMs,
+        durationMin: p.durationMin,
+      }))
+    )
+  } else if (hasPack && !hasServices) {
     // Pack solo → Calendar (una sesión por evento — antes esta rama nunca los
     // creaba; ahora se comporta igual que un pack comprado mezclado con
     // servicios). La seña es la del plan del pack: la lleva entera la sesión 1

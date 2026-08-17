@@ -30,6 +30,7 @@ import { arPartsFromUtc, minStartForNextSession } from "@/lib/servicios/pack-ses
 import { sequentialStartTimes } from "@/lib/servicios/visit-timeline"
 import { placeOnGridMerged, hmToMinutes, minutesToHm } from "@/lib/servicios/grid-schedule"
 import { amountDueNow, type PayChoice } from "@/lib/servicios/payments"
+import { comboIndividualCents } from "@/lib/servicios/combo-pricing"
 import { totalDueNowSeparate, validateSeparateSlots, type SlotItem } from "@/lib/servicios/multi-booking"
 import { allowedStaffFor, type StaffServiceMap } from "@/lib/servicios/staff-services"
 
@@ -208,6 +209,7 @@ export function Screen1Services({
     resolvedStarts: undefined,
     selectedDate: undefined,
     selectedTime: null,
+    comboSlot: undefined,
   } as const
 
   const switchTab = (tab: string) => {
@@ -226,8 +228,10 @@ export function Screen1Services({
       setState({ ...state, combo: null, services: [], ...clearedPack, ...clearedServices })
     } else {
       // Elegir un combo limpia el pack Y los servicios sueltos (excluyente
-      // con ambos)
-      setState({ ...state, combo: c, services: c.services, pack: null, ...clearedPack, ...clearedServices })
+      // con ambos). `services: []` a propósito: un programa NO se reserva como
+      // servicios sueltos "juntos" — tiene su propio camino (agenda la 1ª sesión
+      // como un pack). Sus servicios/sesiones viven en `c.programServices`.
+      setState({ ...state, combo: c, services: [], pack: null, ...clearedPack, ...clearedServices })
     }
   }
 
@@ -360,7 +364,7 @@ export function Screen1Services({
           className={`cattab ${activeCat === COMBOS_TAB ? "is-active" : ""}`}
           onClick={() => switchTab(COMBOS_TAB)}
         >
-          Combos
+          Programas
         </button>
       )}
       {hasPacks && (
@@ -389,7 +393,7 @@ export function Screen1Services({
     <div className="svc-group">
       <div className="svc-group__head">
         <h2 className="svc-group__title">
-          Combos <em>— precio especial</em>
+          Programas <em>— precio especial</em>
         </h2>
         <span className="svc-group__count">
           {String(combos.length).padStart(2, "0")}
@@ -397,7 +401,11 @@ export function Screen1Services({
       </div>
       {combos.map((c) => {
         const isSel = selectedCombo?.id === c.id
-        const fullPrice = c.services.reduce((a, s) => a + s.price, 0)
+        // Precio individual REAL: precio de cada servicio × sus sesiones (para
+        // por-zona, el de las zonas congeladas). Así el ahorro deja de verse mal.
+        const fullPrice = Math.round(
+          comboIndividualCents(c.programServices.map((ps) => ({ priceCents: ps.priceCents, sessions: ps.sessions }))) / 100
+        )
         return (
           <button
             key={c.id}
@@ -408,11 +416,10 @@ export function Screen1Services({
               <div style={{ paddingRight: 28, flex: 1 }}>
                 <h3 className="svc__name">{c.name}</h3>
                 <div className="svc__meta">
-                  <Icon.Clock />
-                  <span>{fmtDuration(c.duration)}</span>
+                  <span>{c.totalSessions} sesiones</span>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--ink-mute)", marginTop: 4 }}>
-                  {c.services.map((s) => s.name).join(" + ")}
+                  {c.programServices.map((ps) => `${ps.serviceName} ×${ps.sessions}`).join(" + ")}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -1625,6 +1632,82 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
     )
   }
 
+  // ── Programa (combo): agendar SÓLO la 1ª sesión, como un pack ─────────────
+  // El programa es multi-sesión (como un pack, pero con varios servicios). Acá
+  // se agenda la 1ª sesión (el primer servicio del programa); las demás las
+  // coordina el salón después, una por una (Fase 3). Nada de "juntos".
+  const selectedCombo = state.combo ?? null
+  if (selectedCombo) {
+    const firstSvc = selectedCombo.programServices[0]
+    const restSessions = Math.max(0, selectedCombo.totalSessions - 1)
+
+    const ComboBody = () => (
+      <>
+        <h1 className="headline">Tu <em>primera sesión</em></h1>
+        <p className="lede">
+          Empezás con <strong>{firstSvc?.serviceName}</strong>.
+          {restSessions > 0 && ` Las ${restSessions} sesiones restantes del programa las coordinamos con vos después.`}
+        </p>
+        {state.comboSlot ? (
+          <div
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              gap: 12, padding: "10px 12px", border: "1px solid var(--line)",
+              borderRadius: 10, margin: "16px 0",
+            }}
+          >
+            <span style={{ fontSize: 13 }}>
+              <strong>1ª sesión</strong> · {fmtSlotAR(state.comboSlot)}
+            </span>
+            <button className="btn" onClick={() => setState({ ...state, comboSlot: undefined })}>
+              Cambiar
+            </button>
+          </div>
+        ) : (
+          <PackSessionPicker
+            businessHours={businessHours}
+            durationMin={firstSvc?.durationMin ?? 0}
+            proHint="auto"
+            serviceId={firstSvc?.serviceId ?? null}
+            minDate={null}
+            onPick={(iso) => setState({ ...state, comboSlot: iso })}
+            onCancel={onBack}
+          />
+        )}
+      </>
+    )
+
+    const ComboFooterCTA = () => (
+      <div className="footer">
+        <div className="footer__row">
+          <button className="btn--back" onClick={onBack}>← Atrás</button>
+          <button className="btn btn--primary" disabled={!state.comboSlot} onClick={onNext}>
+            {!state.comboSlot ? "Elegí la fecha de la primera sesión" : "Continuar"}
+            <span className="btn__arrow"><Icon.Arrow /></span>
+          </button>
+        </div>
+      </div>
+    )
+
+    if (variant === "desktop") {
+      return (
+        <div className="dmain">
+          <div className="dmain__inner">{ComboBody()}</div>
+          {ComboFooterCTA()}
+        </div>
+      )
+    }
+
+    return (
+      <div className="screen">
+        <TopBar onBack={onBack} onClose={onClose} />
+        <Progress step={stepNumber} total={totalSteps} />
+        <div className="screen__body">{ComboBody()}</div>
+        {ComboFooterCTA()}
+      </div>
+    )
+  }
+
   // ── Pack + servicios sueltos: una sola sección "Tus turnos" ───────────────
   if (mixed && pickingIdx === null && pickingServiceId === null) {
     const MixedBody = () => (
@@ -2594,7 +2677,9 @@ export function Screen5Confirm({
         : separados
           ? !services.every((s) => state.serviceSlots?.[s.id])
           : (!state.selectedDate || !state.selectedTime)
-    const missingDate = missingPackDate || missingServicesDate
+    // Un programa agenda SÓLO su 1ª sesión (`comboSlot`); sin ella, falta la fecha.
+    const missingComboDate = combo ? !state.comboSlot : false
+    const missingDate = missingPackDate || missingServicesDate || missingComboDate
     if (!state.form || missingDate) {
       setError("Faltan datos del turno. Volvé a los pasos anteriores.")
       return
@@ -2660,11 +2745,13 @@ export function Screen5Confirm({
           })[0]
         : null
     const startsAt =
-      services.length === 0
-        ? new Date(packSlotsPicked[0])
-        : separados
-          ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
-          : combineDateTime(state.selectedDate!, juntosFirstHm ?? state.selectedTime!)
+      combo
+        ? new Date(state.comboSlot!) // programa: la 1ª sesión (las demás se agendan después)
+        : services.length === 0
+          ? new Date(packSlotsPicked[0])
+          : separados
+            ? new Date(Math.min(...services.map((s) => new Date(state.serviceSlots![s.id]).getTime())))
+            : combineDateTime(state.selectedDate!, juntosFirstHm ?? state.selectedTime!)
     if (Number.isNaN(startsAt.getTime())) {
       // Estado corrupto/persistido viejo: sin esto, `.toISOString()` más
       // abajo tira un RangeError después de `setPaying(true)` y el botón
@@ -2771,6 +2858,15 @@ export function Screen5Confirm({
                 <span style={priceCell}>{fmtPrice(packTotal)}</span>
               </div>
             )}
+            {combo && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+                <span>
+                  {combo.name} · {combo.totalSessions} sesiones
+                  <small>{combo.programServices.map((ps) => `${ps.serviceName} ×${ps.sessions}`).join(", ")}</small>
+                </span>
+                <span style={priceCell}>{fmtPrice(combo.price)}</span>
+              </div>
+            )}
             {services.map((s, i) => (
               <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: i < services.length - 1 ? 6 : 0 }}>
                 <span>{s.name}</span>
@@ -2833,6 +2929,19 @@ export function Screen5Confirm({
               </div>
             ) : (
               <>
+                {combo && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div>
+                      <strong>1ª sesión — {combo.programServices[0]?.serviceName}</strong>
+                      <small>{state.comboSlot ? fmtSlotAR(state.comboSlot) : "—"}</small>
+                    </div>
+                    {combo.totalSessions > 1 && (
+                      <small>
+                        {`Las ${combo.totalSessions - 1} sesiones restantes del programa las coordinamos con vos después.`}
+                      </small>
+                    )}
+                  </div>
+                )}
                 {pack && (
                   <div style={{ marginBottom: services.length > 0 ? 12 : 0, display: "flex", flexDirection: "column", gap: 8 }}>
                     {packSlotsForDisplay.map((iso, i) => {

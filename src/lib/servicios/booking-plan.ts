@@ -35,6 +35,8 @@ export type PlannedAppointment = {
   depositPaid: boolean
   notesInternal: string | null
   isPackSession: boolean
+  /** La 1ª sesión (portador) de un PROGRAMA: lleva el total, se vincula a la compra. */
+  isComboSession?: boolean
   legs: PlannedLeg[]
 }
 

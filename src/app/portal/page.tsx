@@ -32,6 +32,8 @@ type AppointmentRow = {
   booking_group_id: string | null
   pack_purchase_id: string | null
   pack: { pack_name: string } | null
+  combo_purchase_id: string | null
+  combo: { combo_name: string } | null
   appointment_services: ApptService[]
 }
 
@@ -63,8 +65,9 @@ export default async function PortalPage() {
       admin
         .from("appointments")
         .select(`
-          id, starts_at, status, duration_min, total_cents, booking_group_id, pack_purchase_id,
+          id, starts_at, status, duration_min, total_cents, booking_group_id, pack_purchase_id, combo_purchase_id,
           pack:pack_purchases(pack_name),
+          combo:combo_purchases(combo_name),
           appointment_services(starts_at, duration_min, service:services(name), staff:staff(full_name))
         `)
         .eq("client_id", client.id)
@@ -205,6 +208,12 @@ export default async function PortalPage() {
                 const packName = first.booking_group_id
                   ? group.find((a) => a.pack)?.pack?.pack_name ?? null
                   : null
+                // Igual que el pack: el nombre del programa sólo cuando el grupo
+                // ES una compra (con grupo). Una sesión suelta agendada después
+                // no sabe su número → usa el nombre del servicio.
+                const comboName = first.booking_group_id
+                  ? group.find((a) => a.combo)?.combo?.combo_name ?? null
+                  : null
                 const rows = buildItinerary(
                   group.map((a) => ({
                     id: a.id,
@@ -214,6 +223,7 @@ export default async function PortalPage() {
                     // agendada después no sabe su número real): se anula el
                     // packPurchaseId y la fila usa el nombre del servicio.
                     packPurchaseId: first.booking_group_id ? a.pack_purchase_id : null,
+                    comboPurchaseId: first.booking_group_id ? a.combo_purchase_id : null,
                     legs: (a.appointment_services ?? []).map((s) => ({
                       startsAt: s.starts_at,
                       durationMin: s.duration_min,
@@ -221,7 +231,8 @@ export default async function PortalPage() {
                       staffName: s.staff?.full_name ?? null,
                     })),
                   })),
-                  packName
+                  packName,
+                  comboName
                 )
                 // Para marcar en el itinerario las filas de un turno cancelado
                 // (la tarjeta es de la compra entera; sin esto no se sabría

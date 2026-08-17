@@ -61,6 +61,37 @@ describe("buildItinerary — el itinerario unificado de la compra", () => {
     expect(rows[0].label).toBe("Sesión 1 · Pack")
   })
 
+  it("una sesión de PROGRAMA se etiqueta con el nombre del programa (numerada por fecha)", () => {
+    const s1: PurchaseAppt = {
+      id: "combo-1",
+      startsAt: AR("13:00"),
+      durationMin: 40,
+      packPurchaseId: null,
+      comboPurchaseId: "cp-1",
+      legs: [leg(AR("13:00"), 40, "Ultracavitación", "Leri Vendler")],
+    }
+    const s2: PurchaseAppt = { ...s1, id: "combo-2", startsAt: "2026-07-24T13:00:00.000Z" }
+    const rows = buildItinerary([s2, s1], null, "Programa Reductor")
+    expect(rows[0].label).toBe("Sesión 1 · Programa Reductor")
+    expect(rows[1].label).toBe("Sesión 2 · Programa Reductor")
+    // La duración y la profesional salen de la pata, como el pack.
+    expect(rows[0].durationMin).toBe(40)
+    expect(rows[0].staffName).toBe("Leri Vendler")
+  })
+
+  it("sin nombre de programa usa 'Programa' (no rompe)", () => {
+    const s1: PurchaseAppt = {
+      id: "combo-x",
+      startsAt: AR("13:00"),
+      durationMin: 40,
+      packPurchaseId: null,
+      comboPurchaseId: "cp-x",
+      legs: [leg(AR("13:00"), 40, "Vela Slim", null)],
+    }
+    const rows = buildItinerary([s1], null)
+    expect(rows[0].label).toBe("Sesión 1 · Programa")
+  })
+
   it("turno de un solo servicio → una fila con la hora del turno", () => {
     const single: PurchaseAppt = {
       id: "a1",

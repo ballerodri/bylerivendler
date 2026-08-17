@@ -36,6 +36,7 @@ type GroupApptRow = {
   status: string
   duration_min: number | null
   pack_purchase_id: string | null
+  combo_purchase_id: string | null
   client_id: string
   appointment_services: {
     starts_at: string | null
@@ -76,7 +77,7 @@ export async function sendGroupConfirmationEmail(
   const { data } = await admin
     .from("appointments")
     .select(
-      `id, starts_at, status, duration_min, pack_purchase_id, client_id,
+      `id, starts_at, status, duration_min, pack_purchase_id, combo_purchase_id, client_id,
        appointment_services(starts_at, duration_min, service:services(name), staff:staff(id, full_name, email, active))`
     )
     .eq("booking_group_id", bookingGroupId)
@@ -148,6 +149,25 @@ export async function sendGroupConfirmationEmail(
       packRemaining = Math.max(0, (pack?.sessions_total ?? sessions) - sessions)
     }
 
+    // 5.b) Datos del PROGRAMA (combo), si la compra incluía uno: el nombre para
+    //     etiquetar la sesión y cuántas quedan por agendar (Σ sesiones por
+    //     servicio congeladas − las ya agendadas de esta compra).
+    const comboId = appts.find((a) => a.combo_purchase_id)?.combo_purchase_id ?? null
+    let comboName = ""
+    let comboRemaining = 0
+    if (comboId) {
+      const { data: comboRow } = await admin
+        .from("combo_purchases")
+        .select("combo_name, combo_purchase_services(sessions)")
+        .eq("id", comboId)
+        .single()
+      const combo = comboRow as { combo_name: string; combo_purchase_services: { sessions: number }[] } | null
+      const comboTotal = combo?.combo_purchase_services?.reduce((acc, s) => acc + (s.sessions ?? 0), 0) ?? 0
+      const scheduled = appts.filter((a) => a.combo_purchase_id === comboId).length
+      comboName = combo?.combo_name ?? "Programa"
+      comboRemaining = Math.max(0, comboTotal - scheduled)
+    }
+
     // 6) El mail muestra SOLO los turnos vivos: uno cancelado/no_show no
     //    viaja. Si no quedó ninguno vivo no hay nada que mandar; soltamos el
     //    reclamo por si más adelante reactivan y re-confirman alguno.
@@ -170,6 +190,7 @@ export async function sendGroupConfirmationEmail(
         startsAt: a.starts_at,
         durationMin: a.duration_min,
         packPurchaseId: a.pack_purchase_id,
+        comboPurchaseId: a.combo_purchase_id,
         legs: (a.appointment_services ?? []).map((l) => ({
           startsAt: l.starts_at,
           durationMin: l.duration_min,
@@ -177,7 +198,8 @@ export async function sendGroupConfirmationEmail(
           staffName: l.staff?.full_name ?? null,
         })),
       })),
-      packName || null
+      packName || null,
+      comboName || null
     )
 
     // Con UN solo turno vivo en total, chip de Google Calendar (con varios no:
@@ -220,6 +242,11 @@ export async function sendGroupConfirmationEmail(
         ? `<p style="font-size:13px;color:#7a6e64;margin:12px 0 0;">Te quedan <strong>${packRemaining}</strong> sesión(es) del pack por agendar. Coordinamos con vos para fijarlas.</p>`
         : ""
 
+    const comboNote =
+      comboRemaining > 0
+        ? `<p style="font-size:13px;color:#7a6e64;margin:12px 0 0;">Te quedan <strong>${comboRemaining}</strong> sesión(es) del programa por agendar. Coordinamos con vos para fijarlas.</p>`
+        : ""
+
     const firstName = (client?.first_name ?? "").trim()
     const subject =
       live.length === 1
@@ -238,6 +265,7 @@ export async function sendGroupConfirmationEmail(
       ${turnoBlocks}
       ${live.length === 1 ? chipHtml : ""}
       ${packNote}
+      ${comboNote}
       <div style="height:16px;"></div>
 
       <p style="font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a6e64;margin:0 0 4px;">Dónde</p>

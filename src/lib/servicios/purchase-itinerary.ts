@@ -24,6 +24,8 @@ export type PurchaseAppt = {
   startsAt: string
   durationMin: number | null
   packPurchaseId: string | null
+  /** Si el turno es una sesión de un PROGRAMA (combo multi-sesión). */
+  comboPurchaseId?: string | null
   legs: PurchaseLeg[]
 }
 
@@ -54,7 +56,8 @@ export type ItineraryRow = {
  */
 export function buildItinerary(
   appts: PurchaseAppt[],
-  packName: string | null
+  packName: string | null,
+  comboName?: string | null
 ): ItineraryRow[] {
   const sorted = [...appts].sort(
     (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()
@@ -65,6 +68,14 @@ export function buildItinerary(
   sorted
     .filter((a) => a.packPurchaseId)
     .forEach((a, i) => sessionNumber.set(a.id, i + 1))
+
+  // Igual para las sesiones de un PROGRAMA (combo): numeradas por fecha. Cada
+  // sesión es un servicio del programa; se etiquetan con el nombre del programa
+  // (como una sesión de pack), no una división pack/tratamientos.
+  const comboSessionNumber = new Map<string, number>()
+  sorted
+    .filter((a) => a.comboPurchaseId)
+    .forEach((a, i) => comboSessionNumber.set(a.id, i + 1))
 
   const rows: ItineraryRow[] = []
   for (const a of sorted) {
@@ -81,6 +92,14 @@ export function buildItinerary(
     if (sn) {
       rows.push(
         row(a.id, apptMs, `Sesión ${sn} · ${packName ?? "Pack"}`, legs[0]?.durationMin ?? a.durationMin, legs[0]?.staffName ?? null)
+      )
+      continue
+    }
+
+    const cn = comboSessionNumber.get(a.id)
+    if (cn) {
+      rows.push(
+        row(a.id, apptMs, `Sesión ${cn} · ${comboName ?? "Programa"}`, legs[0]?.durationMin ?? a.durationMin, legs[0]?.staffName ?? null)
       )
       continue
     }
