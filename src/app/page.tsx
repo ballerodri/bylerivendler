@@ -104,8 +104,10 @@ function MarketingView() {
         className="h-24 w-auto"
       />
       <div className="flex flex-col items-center gap-1.5">
+        {/* Sin "· Pilar · Bs. As.": la línea de abajo ya trae la dirección
+            completa (localidad incluida) y repetirlo quedaba redundante. */}
         <p className="text-[10px] uppercase tracking-[0.22em] text-[#7a6e64]">
-          Estética profesional · Pilar · Bs. As.
+          Estética profesional
         </p>
         {/* La dirección exacta, del módulo compartido (`@/lib/location`), y
             clickeable: desde el teléfono abre el mapa directo. */}
