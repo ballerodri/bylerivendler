@@ -213,7 +213,8 @@ export default async function AdminClientDetailPage({
     ? await admin.from("services").select("id, duration_min, pricing_mode").in("id", programServiceIds)
     : { data: [] as { id: string; duration_min: number; pricing_mode: string }[] }
   const progSvcById = new Map(((progSvcData ?? []) as { id: string; duration_min: number; pricing_mode: string }[]).map((s) => [s.id, s]))
-  function programSvcDuration(cps: { service_id: string; zones: { duration_min: number }[] | null }): number {
+  function programSvcDuration(cps: { service_id: string | null; zones: { duration_min: number }[] | null }): number {
+    if (!cps.service_id) return 0 // servicio borrado (service_id null) → no agendable
     if (cps.zones && cps.zones.length) return cps.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
     const svc = progSvcById.get(cps.service_id)
     if (svc?.pricing_mode === "per_zone") return 0 // por-zona sin zonas → no agendable desde acá

@@ -2326,6 +2326,10 @@ export async function scheduleProgramaSession(
   await requireStaff()
   const admin = adminClient()
 
+  // Un servicio borrado del sistema deja `combo_purchase_services.service_id` en
+  // null (ON DELETE SET NULL): no se puede agendar sin servicio.
+  if (!serviceId) return { ok: false, error: "Ese servicio ya no existe en el sistema. Agendalo como un turno común." }
+
   const { data: purchase } = await admin
     .from("combo_purchases")
     .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, zones)")

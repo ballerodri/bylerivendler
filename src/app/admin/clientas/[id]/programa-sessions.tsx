@@ -40,10 +40,10 @@ export default function ProgramaSessions({
 
   return (
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
-      {services.map((s) => {
+      {services.map((s, i) => {
         const done = s.sessionsRemaining <= 0
         return (
-          <div key={s.serviceId} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div key={s.serviceId ?? `svc-${i}`} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={{ fontSize: 13, color: "var(--ink-soft)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span>
                 {s.serviceName}: agendadas {s.sessionsUsed}/{s.sessionsTotal}
@@ -58,7 +58,7 @@ export default function ProgramaSessions({
             </div>
             {!done && s.durationMin <= 0 && (
               <span style={{ fontSize: 11, color: "#8c463c" }}>
-                No se puede agendar desde acá (servicio por zona sin zonas cargadas en el programa). Agendalo como un turno común.
+                No se puede agendar desde acá (servicio por zona sin zonas, o el servicio ya no existe). Agendalo como un turno común.
               </span>
             )}
             {pickingService === s.serviceId && (
