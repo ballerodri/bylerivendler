@@ -7,6 +7,7 @@ import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { emitirFactura } from "@/lib/arca/invoice-service"
 import { renderAndEmailInvoice } from "@/lib/arca/emit-email"
 import { docTipoParaDocumento, normalizarDoc } from "@/lib/arca/padron-parse"
+import { sortComboRows } from "@/lib/servicios/combo-plan"
 
 function adminClient() {
   return createAdminClient(
@@ -48,9 +49,7 @@ export async function venderPrograma(input: {
 
   type ComboSvc = { order_index: number; service_id: string; sessions: number | null; session_no: number | null; zones: unknown; service: { name: string } | null }
   // Orden del PLAN: (sesión, orden del día); filas legacy por su order_index.
-  const svcs = ((combo.combo_services ?? []) as unknown as ComboSvc[])
-    .slice()
-    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
+  const svcs = sortComboRows((combo.combo_services ?? []) as unknown as ComboSvc[])
   if (svcs.length < 2) return { ok: false, error: "El combo tiene que tener al menos 2 servicios." }
 
   // 1) La compra.

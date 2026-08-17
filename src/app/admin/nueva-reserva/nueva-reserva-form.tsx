@@ -290,11 +290,14 @@ export default function NuevaReservaForm({
   }
 
   // ── Navigation ───────────────────────────────────────────────────────────────
+  // Al cambiar de paso se cierran los calendarios abiertos (el del pack y el del
+  // combo): si no, volver al paso de fecha lo reabría en vez de mostrar el resumen.
   const goNext = () => {
     if (step === 1) { setPickingIdx(null); loadSlots(date) }
+    setPickingCombo(false)
     setStep((s) => s + 1)
   }
-  const goBack = () => { setPickingIdx(null); setStep((s) => s - 1) }
+  const goBack = () => { setPickingIdx(null); setPickingCombo(false); setStep((s) => s - 1) }
 
   // ── Validation ───────────────────────────────────────────────────────────────
   const clientValid = selectedClient !== null ||
@@ -1434,7 +1437,7 @@ export default function NuevaReservaForm({
               disabled={
                 (step === 0 && !clientValid) ||
                 (step === 1 && !servicesValid) ||
-                (step === 2 && (!slotValid || pickingIdx !== null))
+                (step === 2 && (!slotValid || pickingIdx !== null || pickingCombo))
               }
               style={{ fontSize: 13 }}
             >

@@ -18,6 +18,7 @@ import SellPrograma, { type SellablePrograma } from "./sell-programa"
 import ProgramaSessions from "./programa-sessions"
 import ComboPlanSessions from "./combo-plan-sessions"
 import { programSessionStates, programAllScheduled } from "@/lib/servicios/combo-sessions"
+import { comboVisitCount } from "@/lib/servicios/combo-plan"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
 import PackSessions, { type PackPurchaseView } from "./pack-sessions"
@@ -258,11 +259,9 @@ export default async function AdminClientDetailPage({
     // si no) — no se ofrecen combos a medio armar.
     .filter((c) => c.combo_services.length >= 2)
     .map((c) => {
-      // Plan: K sesiones (visitas). Legacy: la suma de cantidades.
-      const isPlan = c.combo_services.some((s) => s.session_no !== null)
-      const totalS = isPlan
-        ? Math.max(0, ...c.combo_services.map((s) => s.session_no ?? 0))
-        : c.combo_services.reduce((a, s) => a + (s.sessions ?? 1), 0)
+      // Plan: K sesiones (visitas). Legacy: la suma de cantidades. La cuenta
+      // sale del módulo compartido (la misma del catálogo y el asistente).
+      const totalS = comboVisitCount(c.combo_services.map((s) => ({ ...s, order_index: 0 })))
       return { id: c.id, label: `${c.name} · ${totalS} sesiones · ${fmtPrice(c.total_price_cents / 100)}` }
     })
 

@@ -208,6 +208,11 @@ export default async function NuevaReservaPage() {
       else if (faltante) unbookableReason = `“${faltante.service?.name ?? "Un tratamiento"}” está inactivo u oculto: revisalo en Servicios.`
       else if (sinZonas) unbookableReason = `“${sinZonas.service?.name}” se cobra por zona y no tiene zonas elegidas en el combo: editalo en Combos.`
       else if (sinProfe) unbookableReason = `“${sinProfe.service?.name}” no tiene ninguna profesional asignada: asignala en Personal.`
+      // Última guarda de `planCombo`: sin duración no hay nada que agendar (un
+      // dato viejo o editado a mano). Sin esto la tarjeta se ofrecía y recién
+      // fallaba al confirmar, con la clienta y la fecha ya elegidas.
+      else if (s1.some((r) => durOf(r) <= 0) || s1.reduce((a, r) => a + durOf(r), 0) <= 0)
+        unbookableReason = "No pudimos calcular la duración de la 1ª sesión de este combo: revisalo en Combos."
 
       return {
         id: c.id,
