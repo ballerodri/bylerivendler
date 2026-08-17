@@ -233,7 +233,7 @@ export default async function ReservaExitoPage({
           )}
           {comboRemaining > 0 && (
             <div style={{ fontSize: 13, color: "var(--muted, #7a6e64)", marginBottom: 10 }}>
-              Te quedan <strong>{comboRemaining}</strong> sesión(es) del programa
+              Te quedan <strong>{comboRemaining}</strong> sesión(es) del combo
               por agendar. Coordinamos con vos para fijarlas.
             </div>
           )}

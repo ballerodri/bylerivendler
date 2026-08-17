@@ -377,10 +377,10 @@ export default async function AdminClientDetailPage({
         </div>
       </div>
 
-      <h2 className="adm-section-title">Programas</h2>
+      <h2 className="adm-section-title">Combos</h2>
       <div className="adm-card" style={{ padding: 16 }}>
         {comboPurchases.length === 0 ? (
-          <div className="adm-empty" style={{ padding: 16 }}>Sin programas comprados.</div>
+          <div className="adm-empty" style={{ padding: 16 }}>Sin combos comprados.</div>
         ) : (
           comboPurchases.map((p) => {
             const states = programSessionStates(

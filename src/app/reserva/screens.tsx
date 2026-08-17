@@ -364,7 +364,7 @@ export function Screen1Services({
           className={`cattab ${activeCat === COMBOS_TAB ? "is-active" : ""}`}
           onClick={() => switchTab(COMBOS_TAB)}
         >
-          Programas
+          Combos
         </button>
       )}
       {hasPacks && (
@@ -393,7 +393,7 @@ export function Screen1Services({
     <div className="svc-group">
       <div className="svc-group__head">
         <h2 className="svc-group__title">
-          Programas <em>— precio especial</em>
+          Combos <em>— precio especial</em>
         </h2>
         <span className="svc-group__count">
           {String(combos.length).padStart(2, "0")}
@@ -1646,7 +1646,7 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         <h1 className="headline">Tu <em>primera sesión</em></h1>
         <p className="lede">
           Empezás con <strong>{firstSvc?.serviceName}</strong>.
-          {restSessions > 0 && ` Las ${restSessions} sesiones restantes del programa las coordinamos con vos después.`}
+          {restSessions > 0 && ` Las ${restSessions} sesiones restantes del combo las coordinamos con vos después.`}
         </p>
         {state.comboSlot ? (
           <div
@@ -2937,7 +2937,7 @@ export function Screen5Confirm({
                     </div>
                     {combo.totalSessions > 1 && (
                       <small>
-                        {`Las ${combo.totalSessions - 1} sesiones restantes del programa las coordinamos con vos después.`}
+                        {`Las ${combo.totalSessions - 1} sesiones restantes del combo las coordinamos con vos después.`}
                       </small>
                     )}
                   </div>

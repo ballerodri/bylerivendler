@@ -99,7 +99,7 @@ export function buildItinerary(
     const cn = comboSessionNumber.get(a.id)
     if (cn) {
       rows.push(
-        row(a.id, apptMs, `Sesión ${cn} · ${comboName ?? "Programa"}`, legs[0]?.durationMin ?? a.durationMin, legs[0]?.staffName ?? null)
+        row(a.id, apptMs, `Sesión ${cn} · ${comboName ?? "Combo"}`, legs[0]?.durationMin ?? a.durationMin, legs[0]?.staffName ?? null)
       )
       continue
     }

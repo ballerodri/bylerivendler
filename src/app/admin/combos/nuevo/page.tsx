@@ -27,9 +27,9 @@ export default async function NuevoComboPage() {
 
   return (
     <>
-      <p className="adm-eyebrow">Programas</p>
-      <h1 className="adm-h1">Nuevo <em>programa</em></h1>
-      <p className="adm-lede">Elegí los tratamientos, cuántas sesiones de cada uno y el precio del programa.</p>
+      <p className="adm-eyebrow">Combos</p>
+      <h1 className="adm-h1">Nuevo <em>combo</em></h1>
+      <p className="adm-lede">Elegí los tratamientos, cuántas sesiones de cada uno y el precio del combo.</p>
       <ComboForm services={services} />
     </>
   )

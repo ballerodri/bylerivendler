@@ -164,7 +164,7 @@ export async function sendGroupConfirmationEmail(
       const combo = comboRow as { combo_name: string; combo_purchase_services: { sessions: number }[] } | null
       const comboTotal = combo?.combo_purchase_services?.reduce((acc, s) => acc + (s.sessions ?? 0), 0) ?? 0
       const scheduled = appts.filter((a) => a.combo_purchase_id === comboId).length
-      comboName = combo?.combo_name ?? "Programa"
+      comboName = combo?.combo_name ?? "Combo"
       comboRemaining = Math.max(0, comboTotal - scheduled)
     }
 
@@ -244,7 +244,7 @@ export async function sendGroupConfirmationEmail(
 
     const comboNote =
       comboRemaining > 0
-        ? `<p style="font-size:13px;color:#7a6e64;margin:12px 0 0;">Te quedan <strong>${comboRemaining}</strong> sesión(es) del programa por agendar. Coordinamos con vos para fijarlas.</p>`
+        ? `<p style="font-size:13px;color:#7a6e64;margin:12px 0 0;">Te quedan <strong>${comboRemaining}</strong> sesión(es) del combo por agendar. Coordinamos con vos para fijarlas.</p>`
         : ""
 
     const firstName = (client?.first_name ?? "").trim()

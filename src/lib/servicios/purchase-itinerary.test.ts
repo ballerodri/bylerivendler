@@ -79,7 +79,7 @@ describe("buildItinerary — el itinerario unificado de la compra", () => {
     expect(rows[0].staffName).toBe("Leri Vendler")
   })
 
-  it("sin nombre de programa usa 'Programa' (no rompe)", () => {
+  it("sin nombre de combo usa 'Combo' (no rompe)", () => {
     const s1: PurchaseAppt = {
       id: "combo-x",
       startsAt: AR("13:00"),
@@ -89,7 +89,7 @@ describe("buildItinerary — el itinerario unificado de la compra", () => {
       legs: [leg(AR("13:00"), 40, "Vela Slim", null)],
     }
     const rows = buildItinerary([s1], null)
-    expect(rows[0].label).toBe("Sesión 1 · Programa")
+    expect(rows[0].label).toBe("Sesión 1 · Combo")
   })
 
   it("turno de un solo servicio → una fila con la hora del turno", () => {

@@ -20,7 +20,7 @@ export type ServiceOption = {
   zones: ComboZone[]
 }
 
-// Un servicio del programa, tal como lo edita la usuaria: su cantidad de
+// Un servicio del combo, tal como lo edita la usuaria: su cantidad de
 // sesiones y (si es por-zona) las zonas elegidas.
 type Picked = { serviceId: string; sessions: number; zoneIds: string[] }
 
@@ -121,7 +121,7 @@ export default function ComboForm({ services, initial }: Props) {
   const handleSubmit = () => {
     if (!name.trim()) { setError("El nombre es obligatorio."); return }
     if (picked.length < 2) { setError("Elegí al menos 2 servicios."); return }
-    if (totalPriceCents <= 0) { setError("Ingresá el precio del programa."); return }
+    if (totalPriceCents <= 0) { setError("Ingresá el precio del combo."); return }
     for (const p of picked) {
       const s = svcById.get(p.serviceId)
       if (!s) continue
@@ -173,7 +173,7 @@ export default function ComboForm({ services, initial }: Props) {
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       {/* Name & description & price */}
       <div className="adm-card" style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
-        <h2 className="adm-section-title" style={{ marginBottom: 0 }}>Datos del programa</h2>
+        <h2 className="adm-section-title" style={{ marginBottom: 0 }}>Datos del combo</h2>
         <div>
           <label className="adm-label">Nombre *</label>
           <input className="adm-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Programa Reductor Pretemporada" />
@@ -183,7 +183,7 @@ export default function ComboForm({ services, initial }: Props) {
           <input className="adm-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Breve descripción para la clienta" />
         </div>
         <div>
-          <label className="adm-label">Precio del programa *</label>
+          <label className="adm-label">Precio del combo *</label>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
               <span style={{ position: "absolute", left: 12, fontFamily: "var(--serif)", fontSize: 16, color: "var(--ink-soft)" }}>$</span>
@@ -212,7 +212,7 @@ export default function ComboForm({ services, initial }: Props) {
       <div className="adm-card" style={{ padding: 24 }}>
         <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Tratamientos incluidos *</h2>
         <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>
-          Tildá cada tratamiento y poné cuántas sesiones incluye el programa. En los que se cobran por zona, elegí la(s) zona(s).
+          Tildá cada tratamiento y poné cuántas sesiones incluye el combo. En los que se cobran por zona, elegí la(s) zona(s).
         </p>
         {Object.entries(byCategory).map(([cat, svcs]) => (
           <div key={cat} style={{ marginBottom: 20 }}>
@@ -274,7 +274,7 @@ export default function ComboForm({ services, initial }: Props) {
       {picked.length > 1 && (
         <div className="adm-card" style={{ padding: 24 }}>
           <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Orden</h2>
-          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>El orden en que se listan los tratamientos del programa.</p>
+          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>El orden en que se listan los tratamientos del combo.</p>
           {picked.map((p, i) => {
             const s = svcById.get(p.serviceId)
             if (!s) return null
@@ -296,7 +296,7 @@ export default function ComboForm({ services, initial }: Props) {
 
       <div style={{ display: "flex", gap: 12 }}>
         <button onClick={handleSubmit} disabled={pending} className="adm-btn" style={{ fontSize: 14, padding: "10px 24px", background: "var(--ink)", color: "#fff", borderColor: "var(--ink)" }}>
-          {pending ? "Guardando…" : initial ? "Guardar cambios" : "Crear programa"}
+          {pending ? "Guardando…" : initial ? "Guardar cambios" : "Crear combo"}
         </button>
         <button onClick={() => router.push("/admin/combos")} disabled={pending} className="adm-btn" style={{ fontSize: 14, padding: "10px 24px" }}>
           Cancelar

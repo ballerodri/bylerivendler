@@ -2376,11 +2376,11 @@ export async function scheduleProgramaSession(
     .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, zones)")
     .eq("id", comboPurchaseId)
     .maybeSingle()
-  if (!purchase) return { ok: false, error: "No encontramos ese programa." }
+  if (!purchase) return { ok: false, error: "No encontramos ese combo." }
   type CPS = { service_id: string; service_name: string; sessions: number; zones: ZoneSnapshot[] | null }
   const cps = (purchase.combo_purchase_services ?? []) as unknown as CPS[]
   const target = cps.find((s) => s.service_id === serviceId)
-  if (!target) return { ok: false, error: "Ese servicio no es parte del programa." }
+  if (!target) return { ok: false, error: "Ese servicio no es parte del combo." }
 
   const startsAt = new Date(startsAtIso)
   if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
@@ -2393,12 +2393,12 @@ export async function scheduleProgramaSession(
   } else {
     const { data: svc } = await admin.from("services").select("duration_min, pricing_mode").eq("id", serviceId).maybeSingle()
     if (svc?.pricing_mode === "per_zone")
-      return { ok: false, error: `"${target.service_name}" es por zona y no tiene zonas cargadas en el programa: agendalo como un turno común.` }
+      return { ok: false, error: `"${target.service_name}" es por zona y no tiene zonas cargadas en el combo: agendalo como un turno común.` }
     durationMin = (svc?.duration_min as number | null) ?? 0
   }
   if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
 
-  // Sesiones ya agendadas de este programa (con su servicio), para el tope por
+  // Sesiones ya agendadas de este combo (con su servicio), para el tope por
   // servicio y para no pisar otra sesión del mismo programa.
   const { data: existing } = await admin
     .from("appointments")
@@ -2409,7 +2409,7 @@ export async function scheduleProgramaSession(
 
   const usedForService = aliveAll.filter((a) => a.appointment_services?.some((l) => l.service_id === serviceId)).length
   if (usedForService >= target.sessions)
-    return { ok: false, error: `Ya agendaste las ${target.sessions} sesión(es) de "${target.service_name}" de este programa.` }
+    return { ok: false, error: `Ya agendaste las ${target.sessions} sesión(es) de "${target.service_name}" de este combo.` }
 
   const newStartMs = startsAt.getTime()
   const newEndMs = newStartMs + durationMin * 60_000
@@ -2419,7 +2419,7 @@ export async function scheduleProgramaSession(
   })
   if (conflict) {
     const when = new Date(conflict.starts_at).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
-    return { ok: false, error: `Ese horario se superpone con otra sesión de este programa (${when}hs). Elegí otro horario.` }
+    return { ok: false, error: `Ese horario se superpone con otra sesión de este combo (${when}hs). Elegí otro horario.` }
   }
 
   // Horario del negocio + disponibilidad real (mismo criterio que los packs).
@@ -2452,7 +2452,7 @@ export async function scheduleProgramaSession(
       status: "pending",
       source: "admin",
       combo_purchase_id: comboPurchaseId,
-      notes_internal: `Programa ${purchase.combo_name}: ${target.service_name}`,
+      notes_internal: `Combo ${purchase.combo_name}: ${target.service_name}`,
     })
     .select("id")
     .single()

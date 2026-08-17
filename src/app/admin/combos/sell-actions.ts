@@ -44,13 +44,13 @@ export async function venderPrograma(input: {
     .select("id, name, total_price_cents, combo_services(order_index, service_id, sessions, zones, service:services(name))")
     .eq("id", input.comboId)
     .maybeSingle()
-  if (!combo) return { ok: false, error: "Programa no encontrado." }
+  if (!combo) return { ok: false, error: "Combo no encontrado." }
 
   type ComboSvc = { order_index: number; service_id: string; sessions: number | null; zones: unknown; service: { name: string } | null }
   const svcs = ((combo.combo_services ?? []) as unknown as ComboSvc[])
     .slice()
     .sort((a, b) => a.order_index - b.order_index)
-  if (svcs.length < 2) return { ok: false, error: "El programa tiene que tener al menos 2 servicios." }
+  if (svcs.length < 2) return { ok: false, error: "El combo tiene que tener al menos 2 servicios." }
 
   // 1) La compra.
   const { data: purchase, error: purErr } = await admin
@@ -116,7 +116,7 @@ export async function venderPrograma(input: {
 
   revalidatePath(`/admin/clientas/${input.clientId}`)
   // La compra quedó registrada aunque la factura falle; se informa el error.
-  if (facturaError) return { ok: false, error: `Programa registrado, pero la factura falló: ${facturaError}` }
-  if (linkWarning) return { ok: false, error: `Programa registrado y facturado, pero no se pudo enlazar la factura a la compra (avisá a soporte): ${linkWarning}` }
+  if (facturaError) return { ok: false, error: `Combo registrado, pero la factura falló: ${facturaError}` }
+  if (linkWarning) return { ok: false, error: `Combo registrado y facturado, pero no se pudo enlazar la factura a la compra (avisá a soporte): ${linkWarning}` }
   return { ok: true }
 }

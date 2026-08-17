@@ -83,7 +83,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                   Horarios
                 </Link>
                 <Link href="/admin/combos" className="adm-nav__item">
-                  Programas
+                  Combos
                 </Link>
                 <Link href="/admin/packs" className="adm-nav__item">
                   Packs

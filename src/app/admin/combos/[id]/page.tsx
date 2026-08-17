@@ -56,8 +56,8 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
 
   return (
     <>
-      <p className="adm-eyebrow">Programas</p>
-      <h1 className="adm-h1">Editar <em>programa</em></h1>
+      <p className="adm-eyebrow">Combos</p>
+      <h1 className="adm-h1">Editar <em>combo</em></h1>
       <ComboForm
         services={services}
         initial={{

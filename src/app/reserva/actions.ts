@@ -76,7 +76,7 @@ const BookingInput = z.object({
     isExisting: z.boolean(),
   }),
 }).refine((v) => v.serviceIds.length > 0 || !!v.packId || !!v.comboId, {
-  message: "Elegí al menos un servicio, un pack o un programa.",
+  message: "Elegí al menos un servicio, un pack o un combo.",
 }).refine((v) => v.adminMode === true || (v.client.dob ?? "").length > 0, {
   // La fecha de nacimiento es opcional SÓLO para el asistente del admin. La
   // reserva pública la sigue exigiendo igual que siempre: sin este refine,
@@ -180,7 +180,7 @@ async function rollbackAll(
       return {
         ok: false,
         error:
-          "Hubo un problema al crear tu reserva y no pudimos deshacerla por completo. Por favor comunicate con el salón para confirmar el estado de tu programa antes de volver a intentar.",
+          "Hubo un problema al crear tu reserva y no pudimos deshacerla por completo. Por favor comunicate con el salón para confirmar el estado de tu combo antes de volver a intentar.",
       }
     }
   }
@@ -437,7 +437,7 @@ async function planCombo(
     .eq("id", input.comboId)
     .eq("active", true)
     .maybeSingle()
-  if (!combo) return { ok: false, error: "Ese programa ya no está disponible." }
+  if (!combo) return { ok: false, error: "Ese combo ya no está disponible." }
 
   type CS = {
     order_index: number
@@ -447,7 +447,7 @@ async function planCombo(
     service: { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number; active: boolean; visible_public: boolean } | null
   }
   const rows = ((combo.combo_services ?? []) as unknown as CS[]).slice().sort((a, b) => a.order_index - b.order_index)
-  if (rows.length < 2) return { ok: false, error: "Ese programa no está disponible para reservar online." }
+  if (rows.length < 2) return { ok: false, error: "Ese combo no está disponible para reservar online." }
 
   // El total presupone TODOS los servicios del programa. Si CUALQUIERA de los
   // miembros dejó de estar disponible (inactivo, oculto, o sin profesional que
@@ -466,7 +466,7 @@ async function planCombo(
   for (const cs of rows) {
     const svc = cs.service
     if (!svc || !svc.active || !svc.visible_public || !serviceIsBookable(svc.id, memberStaffMap))
-      return { ok: false, error: "Ese programa no está disponible para reservar online por ahora. Escribinos y lo coordinamos." }
+      return { ok: false, error: "Ese combo no está disponible para reservar online por ahora. Escribinos y lo coordinamos." }
   }
 
   // Congelar TODOS los servicios del programa (sesiones + zonas). Un servicio por
@@ -477,12 +477,12 @@ async function planCombo(
   for (let i = 0; i < rows.length; i++) {
     const cs = rows[i]
     const svc = cs.service
-    if (!svc) return { ok: false, error: "El programa tiene un servicio que ya no existe. Escribinos y lo coordinamos." }
+    if (!svc) return { ok: false, error: "El combo tiene un servicio que ya no existe. Escribinos y lo coordinamos." }
     const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
     let durationMin: number
     if (frozen) durationMin = frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
     else if (svc.pricing_mode === "per_zone")
-      return { ok: false, error: "Ese programa no se puede reservar online. Escribinos y lo coordinamos." }
+      return { ok: false, error: "Ese combo no se puede reservar online. Escribinos y lo coordinamos." }
     else durationMin = svc.duration_min
     if (i === 0) firstDuration = durationMin
     services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index })
@@ -491,7 +491,7 @@ async function planCombo(
   // La 1ª sesión (portador) = el primer servicio del programa. Su bookability ya
   // quedó validada arriba (todos los miembros); `memberStaffMap` ya tiene sus links.
   const first = { serviceId: services[0].serviceId, serviceName: services[0].serviceName, zones: services[0].zones }
-  if (firstDuration <= 0) return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del programa." }
+  if (firstDuration <= 0) return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del combo." }
 
   // Fecha de la 1ª sesión (input.startsAt): futura, en la grilla, con disponibilidad real.
   const startDate = new Date(input.startsAt)
@@ -536,7 +536,7 @@ async function planCombo(
     totalCents,
     depositCents,
     depositPaid: false,
-    notesInternal: `Programa: ${combo.name} (1ª sesión — ${first.serviceName})`,
+    notesInternal: `Combo: ${combo.name} (1ª sesión — ${first.serviceName})`,
     isPackSession: false,
     isComboSession: true,
     legs: [
@@ -1195,11 +1195,11 @@ export async function createBooking(
   // directa). Por `createBooking` sólo entra la compra ONLINE de la clienta; el
   // salón nunca lo carga por acá (evita el doble modelo: portador vs. factura).
   if (adminMode && hasCombo)
-    return { ok: false, error: "Los programas se venden desde la ficha de la clienta." }
+    return { ok: false, error: "Los combos se venden desde la ficha de la clienta." }
   // Un programa es excluyente con pack y con servicios sueltos (la pantalla ya
   // lo garantiza; guarda por si llega un payload armado a mano).
   if (hasCombo && (hasPack || services.length > 0))
-    return { ok: false, error: "No se puede combinar un programa con otros servicios en la misma reserva." }
+    return { ok: false, error: "No se puede combinar un combo con otros servicios en la misma reserva." }
 
   // ── Canje con puntos: NO se puede canjear un pack NI un programa ──────────
   // Hoy esto es inalcanzable (la pantalla no ofrece canje con un pack elegido)
@@ -1208,7 +1208,7 @@ export async function createBooking(
   // caminos ese agujero pasa a ser alcanzable. Se cierra acá. Un programa,
   // igual que un pack, no suma ni canjea puntos (D3 del diseño).
   if ((hasPack || hasCombo) && redeem)
-    return { ok: false, error: "Los packs y programas no se pueden canjear con puntos." }
+    return { ok: false, error: "Los packs y combos no se pueden canjear con puntos." }
 
   // ── FASE B: planificar y validar TODO, sin escribir nada ──────────────────
   const plan: PlannedAppointment[] = []
@@ -1329,7 +1329,7 @@ export async function createBooking(
       .select("id")
       .single()
     if (purErr || !purchase)
-      return await rollbackAll(supabase, created, clientId, refund, `No pudimos registrar el programa: ${purErr?.message}`)
+      return await rollbackAll(supabase, created, clientId, refund, `No pudimos registrar el combo: ${purErr?.message}`)
     created.comboPurchaseId = purchase.id
     const { error: cpsErr } = await supabase.from("combo_purchase_services").insert(
       comboPlan.services.map((s) => ({
@@ -1342,7 +1342,7 @@ export async function createBooking(
       }))
     )
     if (cpsErr)
-      return await rollbackAll(supabase, created, clientId, refund, `Servicios del programa: ${cpsErr.message}`)
+      return await rollbackAll(supabase, created, clientId, refund, `Servicios del combo: ${cpsErr.message}`)
   }
 
   // 3) Los turnos, en orden cronológico (así `appointmentIds[0]` es el primero

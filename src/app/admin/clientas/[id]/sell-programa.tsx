@@ -15,11 +15,11 @@ export default function SellPrograma({ clientId, programas }: { clientId: string
   const [error, setError] = useState<string | null>(null)
 
   if (programas.length === 0) {
-    return <p style={{ fontSize: 12, color: "var(--ink-mute)" }}>No hay programas cargados para vender. Creá uno en Programas.</p>
+    return <p style={{ fontSize: 12, color: "var(--ink-mute)" }}>No hay combos cargados para vender. Creá uno en Combos.</p>
   }
 
   if (!open) {
-    return <button className="adm-btn" onClick={() => setOpen(true)}>+ Vender programa</button>
+    return <button className="adm-btn" onClick={() => setOpen(true)}>+ Vender combo</button>
   }
 
   return (
@@ -29,7 +29,7 @@ export default function SellPrograma({ clientId, programas }: { clientId: string
       </select>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
         <input type="checkbox" checked={facturar} onChange={(e) => setFacturar(e.target.checked)} />
-        Facturar ahora (emite Factura C por el total del programa y la envía por email)
+        Facturar ahora (emite Factura C por el total del combo y la envía por email)
       </label>
       {error && <p style={{ fontSize: 13, color: "#8c463c" }}>{error}</p>}
       <div style={{ display: "flex", gap: 8 }}>

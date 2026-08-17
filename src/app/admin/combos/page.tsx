@@ -49,19 +49,19 @@ export default async function AdminCombosPage() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
         <p className="adm-eyebrow" style={{ marginBottom: 0 }}>Catálogo</p>
         <Link href="/admin/combos/nuevo" className="adm-btn" style={{ fontSize: 12 }}>
-          + Nuevo programa
+          + Nuevo combo
         </Link>
       </div>
       <h1 className="adm-h1">
-        Progra<em>mas</em>
+        Com<em>bos</em>
       </h1>
       <p className="adm-lede">
-        Programas de varias sesiones de varios tratamientos, a un precio especial. Solo los programas activos aparecen en la reserva online.
+        Combos de varias sesiones de varios tratamientos, a un precio especial. Solo los combos activos aparecen en la reserva online.
       </p>
 
       <div className="adm-card">
         {combos.length === 0 ? (
-          <div className="adm-empty">No hay programas cargados todavía.</div>
+          <div className="adm-empty">No hay combos cargados todavía.</div>
         ) : (
           combos.map((c) => {
             const items = [...c.combo_services].sort((a, b) => a.order_index - b.order_index)
