@@ -15,6 +15,7 @@ import ConsentManager from "./consent-manager"
 import ClientDataEditor from "./client-data-editor"
 import SellPack, { type SellablePack } from "./sell-pack"
 import SellPrograma, { type SellablePrograma } from "./sell-programa"
+import ProgramaSessions from "./programa-sessions"
 import { programSessionStates, programAllScheduled } from "@/lib/servicios/combo-sessions"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
@@ -196,14 +197,28 @@ export default async function AdminClientDetailPage({
   // ── Programas (combos multi-sesión) comprados por esta clienta ──
   type ComboPurchaseRow = {
     id: string; combo_name: string; total_price_cents: number; created_at: string
-    combo_purchase_services: { service_id: string; service_name: string; sessions: number; order_index: number }[]
+    combo_purchase_services: { service_id: string; service_name: string; sessions: number; order_index: number; zones: { duration_min: number }[] | null }[]
   }
   const { data: comboPurchasesData } = await admin
     .from("combo_purchases")
-    .select("id, combo_name, total_price_cents, created_at, combo_purchase_services(service_id, service_name, sessions, order_index)")
+    .select("id, combo_name, total_price_cents, created_at, combo_purchase_services(service_id, service_name, sessions, order_index, zones)")
     .eq("client_id", id)
     .order("created_at", { ascending: false })
   const comboPurchases = (comboPurchasesData ?? []) as unknown as ComboPurchaseRow[]
+
+  // Duración/pricing de los servicios de los programas (para el agendador: la
+  // duración sale del snapshot de zonas congelado, o del servicio si es fijo).
+  const programServiceIds = Array.from(new Set(comboPurchases.flatMap((p) => p.combo_purchase_services.map((s) => s.service_id))))
+  const { data: progSvcData } = programServiceIds.length
+    ? await admin.from("services").select("id, duration_min, pricing_mode").in("id", programServiceIds)
+    : { data: [] as { id: string; duration_min: number; pricing_mode: string }[] }
+  const progSvcById = new Map(((progSvcData ?? []) as { id: string; duration_min: number; pricing_mode: string }[]).map((s) => [s.id, s]))
+  function programSvcDuration(cps: { service_id: string; zones: { duration_min: number }[] | null }): number {
+    if (cps.zones && cps.zones.length) return cps.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+    const svc = progSvcById.get(cps.service_id)
+    if (svc?.pricing_mode === "per_zone") return 0 // por-zona sin zonas → no agendable desde acá
+    return svc?.duration_min ?? 0
+  }
 
   // Sesiones VIVAS (no canceladas/no_show) ya agendadas, por (compra, servicio).
   const comboPurchaseIds = comboPurchases.map((p) => p.id)
@@ -383,16 +398,23 @@ export default async function AdminClientDetailPage({
                     <span className={`adm-pill ${allDone ? "adm-pill--inactive" : "adm-pill--active"}`}>{allDone ? "Completo" : "Activo"}</span>
                   </div>
                 </div>
-                <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
-                  {states.map((s) => (
-                    <div key={s.serviceId} style={{ fontSize: 13, color: "var(--ink-soft)" }}>
-                      {s.serviceName}: agendadas {s.sessionsUsed}/{s.sessionsTotal}
-                      {s.sessionsRemaining > 0 && (
-                        <span style={{ color: "var(--ink-mute)" }}> · quedan {s.sessionsRemaining} por agendar</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <ProgramaSessions
+                  comboPurchaseId={p.id}
+                  businessHours={businessHours}
+                  services={[...p.combo_purchase_services]
+                    .sort((a, b) => a.order_index - b.order_index)
+                    .map((cps) => {
+                      const st = states.find((x) => x.serviceId === cps.service_id)!
+                      return {
+                        serviceId: cps.service_id,
+                        serviceName: cps.service_name,
+                        sessionsTotal: st.sessionsTotal,
+                        sessionsUsed: st.sessionsUsed,
+                        sessionsRemaining: st.sessionsRemaining,
+                        durationMin: programSvcDuration(cps),
+                      }
+                    })}
+                />
               </div>
             )
           })

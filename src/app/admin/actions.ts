@@ -2309,6 +2309,129 @@ export async function schedulePackSession(
   return { ok: true }
 }
 
+// ─── Sesiones de un PROGRAMA (combo multi-sesión) ─────────────────────────────
+
+/**
+ * Agenda UNA sesión de UN servicio de un programa ya vendido. El turno va en $0
+ * (el programa ya está pagado — la Factura C se emitió al vender). A diferencia
+ * de los packs, la duración/zona salen del snapshot CONGELADO en la compra
+ * (`combo_purchase_services.zones`), así que no hay que adivinarla. Cada sesión
+ * es UN turno de UN servicio (una pata). Sin intervalo mínimo (decisión v1).
+ */
+export async function scheduleProgramaSession(
+  comboPurchaseId: string,
+  serviceId: string,
+  startsAtIso: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const { data: purchase } = await admin
+    .from("combo_purchases")
+    .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, zones)")
+    .eq("id", comboPurchaseId)
+    .maybeSingle()
+  if (!purchase) return { ok: false, error: "No encontramos ese programa." }
+  type CPS = { service_id: string; service_name: string; sessions: number; zones: ZoneSnapshot[] | null }
+  const cps = (purchase.combo_purchase_services ?? []) as unknown as CPS[]
+  const target = cps.find((s) => s.service_id === serviceId)
+  if (!target) return { ok: false, error: "Ese servicio no es parte del programa." }
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "Fecha inválida." }
+  if (startsAt.getTime() <= Date.now()) return { ok: false, error: "La sesión tiene que ser en una fecha futura." }
+
+  // Duración: del snapshot de zonas congelado (por-zona) o del servicio (fijo).
+  let durationMin: number
+  if (target.zones && target.zones.length) {
+    durationMin = target.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+  } else {
+    const { data: svc } = await admin.from("services").select("duration_min, pricing_mode").eq("id", serviceId).maybeSingle()
+    if (svc?.pricing_mode === "per_zone")
+      return { ok: false, error: `"${target.service_name}" es por zona y no tiene zonas cargadas en el programa: agendalo como un turno común.` }
+    durationMin = (svc?.duration_min as number | null) ?? 0
+  }
+  if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
+
+  // Sesiones ya agendadas de este programa (con su servicio), para el tope por
+  // servicio y para no pisar otra sesión del mismo programa.
+  const { data: existing } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, appointment_services(service_id)")
+    .eq("combo_purchase_id", comboPurchaseId)
+  type ExRow = { id: string; starts_at: string; duration_min: number; status: string; appointment_services: { service_id: string }[] }
+  const aliveAll = ((existing ?? []) as unknown as ExRow[]).filter((a) => isAliveStatus(a.status))
+
+  const usedForService = aliveAll.filter((a) => a.appointment_services?.some((l) => l.service_id === serviceId)).length
+  if (usedForService >= target.sessions)
+    return { ok: false, error: `Ya agendaste las ${target.sessions} sesión(es) de "${target.service_name}" de este programa.` }
+
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + durationMin * 60_000
+  const conflict = aliveAll.find((a) => {
+    const s = new Date(a.starts_at).getTime()
+    return newStartMs < s + a.duration_min * 60_000 && newEndMs > s
+  })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+    return { ok: false, error: `Ese horario se superpone con otra sesión de este programa (${when}hs). Elegí otro horario.` }
+  }
+
+  // Horario del negocio + disponibilidad real (mismo criterio que los packs).
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startsAt)
+  const { data: bh } = await admin.from("business_hours").select("is_open, slots").eq("day_of_week", dayOfWeek).maybeSingle()
+  if (!bh?.is_open || !bh.slots.includes(timeStr))
+    return { ok: false, error: "Ese horario está fuera del horario de atención." }
+  const free = await fetchDayAvailability(dateStr, durationMin, "auto", [timeStr])
+  if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
+
+  const chosenStaffId = await chooseStaffForSlot(admin, { dateStr, timeStr, durationMin, serviceId })
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+  const endsAt = new Date(startsAt.getTime() + durationMin * 60_000)
+
+  // SIEMPRE $0: el programa ya está pagado (Factura C al vender). Si esta sesión
+  // llevara el precio, completarla ofrecería "Facturar" y saldría una 2ª factura.
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: purchase.client_id,
+      staff_id: chosenStaffId,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      duration_min: durationMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      combo_purchase_id: comboPurchaseId,
+      notes_internal: `Programa ${purchase.combo_name}: ${target.service_name}`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos crear la sesión: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert({
+    appointment_id: appt.id,
+    service_id: serviceId,
+    duration_min: durationMin,
+    price_cents: 0,
+    zones: target.zones ?? null,
+    staff_id: chosenStaffId,
+    starts_at: startsAt.toISOString(),
+  })
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
+  }
+
+  revalidatePath(`/admin/clientas/${purchase.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
 /**
  * Registra una sesión de pack QUE YA SE HIZO (fecha pasada).
  *
