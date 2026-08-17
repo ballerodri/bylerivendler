@@ -432,7 +432,7 @@ async function planCombo(
 ): Promise<{ ok: true; plan: ComboPlan } | { ok: false; error: string }> {
   const { data: combo } = await supabase
     .from("combos")
-    .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, zones, service:services(id, name, pricing_mode, duration_min, price_cents))")
+    .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, zones, service:services(id, name, pricing_mode, duration_min, price_cents, active, visible_public))")
     .eq("id", input.comboId)
     .eq("active", true)
     .maybeSingle()
@@ -443,10 +443,30 @@ async function planCombo(
     service_id: string
     sessions: number | null
     zones: ZoneSnapshot[] | null
-    service: { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number } | null
+    service: { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number; active: boolean; visible_public: boolean } | null
   }
   const rows = ((combo.combo_services ?? []) as unknown as CS[]).slice().sort((a, b) => a.order_index - b.order_index)
   if (rows.length < 2) return { ok: false, error: "Ese programa no está disponible para reservar online." }
+
+  // El total presupone TODOS los servicios del programa. Si CUALQUIERA de los
+  // miembros dejó de estar disponible (inactivo, oculto, o sin profesional que
+  // lo haga), el programa no se puede reservar — MISMA regla que el catálogo
+  // (`fetchCombos`), para que un programa oculto del catálogo no se pueda forzar
+  // desde una pestaña vieja. Se chequea acá, ANTES de congelar/planificar nada.
+  const { data: memberLinks, error: memberLinkErr } = await supabase
+    .from("staff_services")
+    .select("service_id, staff_id")
+    .in("service_id", rows.map((cs) => cs.service_id))
+  if (memberLinkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
+  const memberStaffMap: StaffServiceMap = {}
+  for (const r of (memberLinks ?? []) as { service_id: string; staff_id: string }[]) {
+    ;(memberStaffMap[r.service_id] ??= []).push(r.staff_id)
+  }
+  for (const cs of rows) {
+    const svc = cs.service
+    if (!svc || !svc.active || !svc.visible_public || !serviceIsBookable(svc.id, memberStaffMap))
+      return { ok: false, error: "Ese programa no está disponible para reservar online por ahora. Escribinos y lo coordinamos." }
+  }
 
   // Congelar TODOS los servicios del programa (sesiones + zonas). Un servicio por
   // zona SIN zonas congeladas no se puede reservar (sin duración/precio). El
@@ -467,19 +487,10 @@ async function planCombo(
     services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index })
   }
 
-  // La 1ª sesión (portador) = el primer servicio del programa.
+  // La 1ª sesión (portador) = el primer servicio del programa. Su bookability ya
+  // quedó validada arriba (todos los miembros); `memberStaffMap` ya tiene sus links.
   const first = { serviceId: services[0].serviceId, serviceName: services[0].serviceName, zones: services[0].zones }
   if (firstDuration <= 0) return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del programa." }
-
-  // Quién hace el 1er servicio (`staff_services`), fail-closed igual que el pack.
-  const { data: linkRows, error: linkErr } = await supabase
-    .from("staff_services")
-    .select("staff_id")
-    .eq("service_id", first.serviceId)
-  if (linkErr) return { ok: false, error: "No pudimos verificar la disponibilidad. Probá de nuevo." }
-  const staffMap: StaffServiceMap = { [first.serviceId]: (linkRows ?? []).map((r) => r.staff_id as string) }
-  if (!serviceIsBookable(first.serviceId, staffMap))
-    return { ok: false, error: `"${first.serviceName}" no está disponible para reservar online por ahora.` }
 
   // Fecha de la 1ª sesión (input.startsAt): futura, en la grilla, con disponibilidad real.
   const startDate = new Date(input.startsAt)
@@ -488,7 +499,7 @@ async function planCombo(
     return { ok: false, error: "La 1ª sesión tiene que ser en una fecha futura." }
 
   const askedStaff = input.proHint && input.proHint !== "auto" ? input.proHint : null
-  if (askedStaff && !canStaffDoService(askedStaff, first.serviceId, staffMap))
+  if (askedStaff && !canStaffDoService(askedStaff, first.serviceId, memberStaffMap))
     return { ok: false, error: `Esa profesional no realiza "${first.serviceName}". Elegí el horario de nuevo.` }
 
   const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startDate)

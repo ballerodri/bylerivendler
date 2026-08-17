@@ -57,7 +57,10 @@ const VERSION_KEY = "blv_flow_version"
 // v5: pack y servicios sueltos dejan de ser excluyentes (se pueden comprar
 // juntos, con una sola seña); un estado viejo a medias podía quedar en una
 // combinación que la pantalla nueva ya no espera.
-const FLOW_VERSION = 5
+// v6: el combo pasa a ser PROGRAMA multi-sesión — el `Combo` persistido cambió
+// de forma (nuevos `programServices`/`totalSessions`). Un combo guardado con la
+// forma vieja no los tiene y rompería el paso de fecha; se descarta.
+const FLOW_VERSION = 6
 
 function useVariant(): "mobile" | "desktop" {
   const [variant, setVariant] = useState<"mobile" | "desktop">("mobile")
