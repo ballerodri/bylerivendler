@@ -14,6 +14,8 @@ import PhotosManager from "./photos-manager"
 import ConsentManager from "./consent-manager"
 import ClientDataEditor from "./client-data-editor"
 import SellPack, { type SellablePack } from "./sell-pack"
+import SellPrograma, { type SellablePrograma } from "./sell-programa"
+import { programSessionStates, programAllScheduled } from "@/lib/servicios/combo-sessions"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
 import PackSessions, { type PackPurchaseView } from "./pack-sessions"
@@ -191,6 +193,47 @@ export default async function AdminClientDetailPage({
   const sellablePacks: SellablePack[] = ((activePacksData ?? []) as { id: string; name: string; sessions: number; total_price_cents: number }[])
     .map((p) => ({ id: p.id, label: `${p.name} · ${p.sessions} sesiones · ${fmtPrice(p.total_price_cents / 100)}` }))
 
+  // ── Programas (combos multi-sesión) comprados por esta clienta ──
+  type ComboPurchaseRow = {
+    id: string; combo_name: string; total_price_cents: number; created_at: string
+    combo_purchase_services: { service_id: string; service_name: string; sessions: number; order_index: number }[]
+  }
+  const { data: comboPurchasesData } = await admin
+    .from("combo_purchases")
+    .select("id, combo_name, total_price_cents, created_at, combo_purchase_services(service_id, service_name, sessions, order_index)")
+    .eq("client_id", id)
+    .order("created_at", { ascending: false })
+  const comboPurchases = (comboPurchasesData ?? []) as unknown as ComboPurchaseRow[]
+
+  // Sesiones VIVAS (no canceladas/no_show) ya agendadas, por (compra, servicio).
+  const comboPurchaseIds = comboPurchases.map((p) => p.id)
+  const { data: comboApptsData } = comboPurchaseIds.length
+    ? await admin.from("appointments")
+        .select("combo_purchase_id, status, appointment_services(service_id)")
+        .in("combo_purchase_id", comboPurchaseIds)
+    : { data: [] as unknown[] }
+  const usedByPurchaseService = new Map<string, Record<string, number>>()
+  for (const a of (comboApptsData ?? []) as { combo_purchase_id: string; status: string; appointment_services: { service_id: string }[] }[]) {
+    if (a.status === "cancelled" || a.status === "no_show") continue
+    const svcId = a.appointment_services?.[0]?.service_id
+    if (!svcId) continue
+    const rec = usedByPurchaseService.get(a.combo_purchase_id) ?? {}
+    rec[svcId] = (rec[svcId] ?? 0) + 1
+    usedByPurchaseService.set(a.combo_purchase_id, rec)
+  }
+
+  // Programas para vender (TODOS: se pueden vender aunque su reserva online no
+  // esté encendida todavía).
+  const { data: allCombosData } = await admin
+    .from("combos")
+    .select("id, name, total_price_cents, combo_services(sessions)")
+    .order("name", { ascending: true })
+  const sellableProgramas: SellablePrograma[] = ((allCombosData ?? []) as { id: string; name: string; total_price_cents: number; combo_services: { sessions: number | null }[] }[])
+    .map((c) => {
+      const totalS = c.combo_services.reduce((a, s) => a + (s.sessions ?? 1), 0)
+      return { id: c.id, label: `${c.name} · ${totalS} sesiones · ${fmtPrice(c.total_price_cents / 100)}` }
+    })
+
   // Misma tabla y mismo bucket privado para las fotos antes/después y para las
   // hojas del consentimiento en papel (type='consent'); se separan más abajo
   // para que cada cosa viva en SU sección.
@@ -312,6 +355,47 @@ export default async function AdminClientDetailPage({
         )}
         <div style={{ marginTop: 12 }}>
           <SellPack clientId={client.id} packs={sellablePacks} />
+        </div>
+      </div>
+
+      <h2 className="adm-section-title">Programas</h2>
+      <div className="adm-card" style={{ padding: 16 }}>
+        {comboPurchases.length === 0 ? (
+          <div className="adm-empty" style={{ padding: 16 }}>Sin programas comprados.</div>
+        ) : (
+          comboPurchases.map((p) => {
+            const states = programSessionStates(
+              [...p.combo_purchase_services]
+                .sort((a, b) => a.order_index - b.order_index)
+                .map((s) => ({ serviceId: s.service_id, serviceName: s.service_name, sessionsTotal: s.sessions })),
+              usedByPurchaseService.get(p.id) ?? {}
+            )
+            const allDone = programAllScheduled(states)
+            return (
+              <div key={p.id} style={{ borderBottom: "1px solid var(--line)", padding: "12px 0" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <div className="adm-name">{p.combo_name}</div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontFamily: "var(--serif)", fontWeight: 500 }}>{fmtPrice(p.total_price_cents / 100)}</span>
+                    <span className={`adm-pill ${allDone ? "adm-pill--inactive" : "adm-pill--active"}`}>{allDone ? "Completo" : "Activo"}</span>
+                  </div>
+                </div>
+                <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {states.map((s) => (
+                    <div key={s.serviceId} style={{ fontSize: 13, color: "var(--ink-soft)" }}>
+                      {s.serviceName}: agendadas {s.sessionsUsed}/{s.sessionsTotal}
+                      {s.sessionsRemaining > 0 && (
+                        <span style={{ color: "var(--ink-mute)" }}> · quedan {s.sessionsRemaining} por agendar</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })
+        )}
+        <div style={{ marginTop: 12 }}>
+          <SellPrograma clientId={client.id} programas={sellableProgramas} />
         </div>
       </div>
 
