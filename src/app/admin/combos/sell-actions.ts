@@ -41,15 +41,16 @@ export async function venderPrograma(input: {
 
   const { data: combo } = await admin
     .from("combos")
-    .select("id, name, total_price_cents, combo_services(order_index, service_id, sessions, zones, service:services(name))")
+    .select("id, name, total_price_cents, combo_services(order_index, service_id, sessions, session_no, zones, service:services(name))")
     .eq("id", input.comboId)
     .maybeSingle()
   if (!combo) return { ok: false, error: "Combo no encontrado." }
 
-  type ComboSvc = { order_index: number; service_id: string; sessions: number | null; zones: unknown; service: { name: string } | null }
+  type ComboSvc = { order_index: number; service_id: string; sessions: number | null; session_no: number | null; zones: unknown; service: { name: string } | null }
+  // Orden del PLAN: (sesión, orden del día); filas legacy por su order_index.
   const svcs = ((combo.combo_services ?? []) as unknown as ComboSvc[])
     .slice()
-    .sort((a, b) => a.order_index - b.order_index)
+    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
   if (svcs.length < 2) return { ok: false, error: "El combo tiene que tener al menos 2 servicios." }
 
   // 1) La compra.
@@ -74,6 +75,7 @@ export async function venderPrograma(input: {
       sessions: cs.sessions ?? 1,
       zones: cs.zones ?? null,
       order_index: cs.order_index,
+      session_no: cs.session_no, // el plan congelado (null en combos legacy)
     }))
   )
   if (svcErr) {

@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation"
 import { createCombo, updateCombo, type ComboInput } from "../actions"
 import { fmtPrice } from "../../reserva/data"
 import { computeZonePricing } from "@/lib/servicios/zones"
-import { comboIndividualCents, comboSavingsCents, comboTotalSessions } from "@/lib/servicios/combo-pricing"
+import { comboIndividualCents, comboSavingsCents } from "@/lib/servicios/combo-pricing"
+import { planServiceCounts, planDistinctServices, validateComboPlan, type ComboPlan } from "@/lib/servicios/combo-plan"
 
 export type ComboZone = { id: string; name: string; durationMin: number; priceCents: number | null }
 
@@ -20,9 +21,8 @@ export type ServiceOption = {
   zones: ComboZone[]
 }
 
-// Un servicio del combo, tal como lo edita la usuaria: su cantidad de
-// sesiones y (si es por-zona) las zonas elegidas.
-type Picked = { serviceId: string; sessions: number; zoneIds: string[] }
+// Un tratamiento que PARTICIPA del combo (con sus zonas elegidas, una vez).
+type PickedSvc = { serviceId: string; zoneIds: string[] }
 
 type Props = {
   services: ServiceOption[]
@@ -31,9 +31,11 @@ type Props = {
     name: string
     description: string
     totalPriceCents: number
-    // El snapshot guardado NO trae ids de zona (guarda nombre/precio); se
-    // re-mapea a ids por nombre contra las zonas actuales del servicio.
-    services: { serviceId: string; sessions: number; zonesSnapshot: { name: string }[] | null }[]
+    // Las filas guardadas del combo. Con `sessionNo` (modelo nuevo) se
+    // reconstruye el plan; todo null = combo del modelo viejo → los
+    // tratamientos y zonas se prefillean, y el plan arranca vacío para que
+    // la usuaria lo arme (guardar EXIGE el plan).
+    rows: { serviceId: string; sessionNo: number | null; zonesSnapshot: { name: string }[] | null }[]
   }
 }
 
@@ -59,36 +61,55 @@ export default function ComboForm({ services, initial }: Props) {
   )
 
   const svcById = new Map(services.map((s) => [s.id, s]))
+  const legacyInitial = !!initial && initial.rows.length > 0 && initial.rows.every((r) => r.sessionNo === null)
 
-  // Prefill: re-mapear el snapshot guardado (por nombre) a ids de zona actuales.
-  const [picked, setPicked] = useState<Picked[]>(() =>
-    (initial?.services ?? [])
-      .filter((it) => svcById.has(it.serviceId))
-      .map((it) => {
-        const svc = svcById.get(it.serviceId)!
-        const zoneIds = (it.zonesSnapshot ?? [])
-          .map((snap) => svc.zones.find((z) => z.name === snap.name)?.id)
-          .filter((id): id is string => !!id)
-        return { serviceId: it.serviceId, sessions: it.sessions || 1, zoneIds }
-      })
-  )
+  // Prefill de los tratamientos participantes (con el snapshot de zona
+  // re-mapeado a ids por nombre contra las zonas actuales del servicio).
+  const [pickedSvcs, setPickedSvcs] = useState<PickedSvc[]>(() => {
+    const seen = new Set<string>()
+    const out: PickedSvc[] = []
+    for (const r of initial?.rows ?? []) {
+      if (seen.has(r.serviceId) || !svcById.has(r.serviceId)) continue
+      seen.add(r.serviceId)
+      const svc = svcById.get(r.serviceId)!
+      const zoneIds = (r.zonesSnapshot ?? [])
+        .map((snap) => svc.zones.find((z) => z.name === snap.name)?.id)
+        .filter((id): id is string => !!id)
+      out.push({ serviceId: r.serviceId, zoneIds })
+    }
+    return out
+  })
 
-  const isPicked = (id: string) => picked.some((p) => p.serviceId === id)
+  // Prefill del PLAN (modelo nuevo): agrupar por session_no en orden. Un combo
+  // del modelo viejo arranca con el plan vacío (se arma acá y se guarda).
+  const [plan, setPlan] = useState<ComboPlan>(() => {
+    const rows = (initial?.rows ?? []).filter((r) => r.sessionNo !== null && svcById.has(r.serviceId))
+    if (!rows.length) return []
+    const bysession = new Map<number, string[]>()
+    for (const r of rows) {
+      const list = bysession.get(r.sessionNo!) ?? []
+      list.push(r.serviceId) // las filas ya vienen ordenadas por order_index
+      bysession.set(r.sessionNo!, list)
+    }
+    return [...bysession.entries()].sort((a, b) => a[0] - b[0]).map(([, list]) => list)
+  })
+
+  const isPicked = (id: string) => pickedSvcs.some((p) => p.serviceId === id)
+  const pickedFor = (id: string) => pickedSvcs.find((p) => p.serviceId === id)
 
   const toggleService = (id: string) => {
     setError(null)
-    setPicked((prev) =>
-      prev.some((p) => p.serviceId === id)
-        ? prev.filter((p) => p.serviceId !== id)
-        : [...prev, { serviceId: id, sessions: 1, zoneIds: [] }]
-    )
+    if (isPicked(id)) {
+      setPickedSvcs((prev) => prev.filter((p) => p.serviceId !== id))
+      // Si sale del combo, sale también de TODAS las sesiones del plan.
+      setPlan((prev) => prev.map((session) => session.filter((sid) => sid !== id)))
+    } else {
+      setPickedSvcs((prev) => [...prev, { serviceId: id, zoneIds: [] }])
+    }
   }
 
-  const setSessions = (id: string, n: number) =>
-    setPicked((prev) => prev.map((p) => (p.serviceId === id ? { ...p, sessions: n } : p)))
-
   const toggleZone = (id: string, zoneId: string, single: boolean) =>
-    setPicked((prev) =>
+    setPickedSvcs((prev) =>
       prev.map((p) => {
         if (p.serviceId !== id) return p
         if (single) return { ...p, zoneIds: [zoneId] }
@@ -99,52 +120,68 @@ export default function ComboForm({ services, initial }: Props) {
       })
     )
 
-  const move = (idx: number, dir: -1 | 1) => {
-    const j = idx + dir
-    if (j < 0 || j >= picked.length) return
-    setPicked((prev) => {
-      const next = [...prev]
-      ;[next[idx], next[j]] = [next[j], next[idx]]
-      return next
-    })
-  }
+  // ── El plan ────────────────────────────────────────────────────────────────
+  const addSession = () => { setError(null); setPlan((prev) => [...prev, []]) }
+  const removeSession = (s: number) => setPlan((prev) => prev.filter((_, i) => i !== s))
+  const duplicateSession = (s: number) => setPlan((prev) => [...prev.slice(0, s + 1), [...prev[s]], ...prev.slice(s + 1)])
+  const addToSession = (s: number, serviceId: string) =>
+    setPlan((prev) => prev.map((session, i) => (i === s ? [...session, serviceId] : session)))
+  const removeFromSession = (s: number, idx: number) =>
+    setPlan((prev) => prev.map((session, i) => (i === s ? session.filter((_, j) => j !== idx) : session)))
+  const moveInSession = (s: number, idx: number, dir: -1 | 1) =>
+    setPlan((prev) =>
+      prev.map((session, i) => {
+        if (i !== s) return session
+        const j = idx + dir
+        if (j < 0 || j >= session.length) return session
+        const next = [...session]
+        ;[next[idx], next[j]] = [next[j], next[idx]]
+        return next
+      })
+    )
 
+  // ── Derivados (precio individual / ahorro / detalle) ──────────────────────
   const totalPriceCents = Math.round((parseFloat(priceInput) || 0) * 100)
-  const lines = picked.map((p) => {
-    const s = svcById.get(p.serviceId)
-    return { priceCents: s ? lineUnitCents(s, p.zoneIds) : 0, sessions: p.sessions }
+  const counts = planServiceCounts(plan)
+  const lines = Object.entries(counts).map(([id, veces]) => {
+    const s = svcById.get(id)
+    const p = pickedFor(id)
+    return { priceCents: s ? lineUnitCents(s, p?.zoneIds ?? []) : 0, sessions: veces }
   })
   const fullPriceCents = comboIndividualCents(lines)
   const saving = comboSavingsCents(fullPriceCents, totalPriceCents)
-  const totalSessions = comboTotalSessions(lines)
+
+  const detalle = planDistinctServices(plan)
+    .map((id) => {
+      const s = svcById.get(id)
+      if (!s) return null
+      const p = pickedFor(id)
+      const zonas = s.pricing_mode === "per_zone" && p?.zoneIds.length
+        ? ` (${s.zones.filter((z) => p.zoneIds.includes(z.id)).map((z) => z.name).join(", ")})`
+        : ""
+      return `${s.name}${zonas} ×${counts[id]}`
+    })
+    .filter(Boolean)
+    .join(", ")
 
   const handleSubmit = () => {
-    if (!name.trim()) { setError("El nombre es obligatorio."); return }
-    if (picked.length < 2) { setError("Elegí al menos 2 servicios."); return }
-    if (totalPriceCents <= 0) { setError("Ingresá el precio del combo."); return }
-    for (const p of picked) {
-      const s = svcById.get(p.serviceId)
-      if (!s) continue
-      if (!Number.isInteger(p.sessions) || p.sessions < 1) {
-        setError("Las sesiones de cada servicio tienen que ser 1 o más."); return
-      }
-      if (s.pricing_mode === "per_zone" && p.zoneIds.length < 1) {
-        setError(`Elegí la(s) zona(s) de "${s.name}".`); return
-      }
+    // Misma validación que el servidor (módulo puro compartido) + zonas.
+    const planErr = validateComboPlan({ name, totalPriceCents, sessions: plan })
+    if (planErr) { setError(planErr); return }
+    for (const id of planDistinctServices(plan)) {
+      const s = svcById.get(id)
+      if (s?.pricing_mode === "per_zone" && !(pickedFor(id)?.zoneIds.length))
+        { setError(`Elegí la(s) zona(s) de "${s.name}".`); return }
     }
 
     setError(null)
     startTransition(async () => {
-      const input: ComboInput = {
-        name,
-        description,
-        totalPriceCents,
-        services: picked.map((p) => ({
-          serviceId: p.serviceId,
-          sessions: p.sessions,
-          zoneIds: svcById.get(p.serviceId)?.pricing_mode === "per_zone" ? p.zoneIds : undefined,
-        })),
+      const zonesByService: Record<string, string[]> = {}
+      for (const id of planDistinctServices(plan)) {
+        if (svcById.get(id)?.pricing_mode === "per_zone")
+          zonesByService[id] = pickedFor(id)?.zoneIds ?? []
       }
+      const input: ComboInput = { name, description, totalPriceCents, sessions: plan, zonesByService }
       const r = initial ? await updateCombo(initial.id, input) : await createCombo(input)
       if (r.ok) router.push("/admin/combos")
       else setError(r.error ?? "Error al guardar.")
@@ -156,18 +193,6 @@ export default function ComboForm({ services, initial }: Props) {
     ;(acc[s.category] ??= []).push(s)
     return acc
   }, {})
-
-  const detalle = picked
-    .map((p) => {
-      const s = svcById.get(p.serviceId)
-      if (!s) return null
-      const zonas = s.pricing_mode === "per_zone" && p.zoneIds.length
-        ? ` (${s.zones.filter((z) => p.zoneIds.includes(z.id)).map((z) => z.name).join(", ")})`
-        : ""
-      return `${s.name}${zonas} ×${p.sessions}`
-    })
-    .filter(Boolean)
-    .join(", ")
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -201,24 +226,24 @@ export default function ComboForm({ services, initial }: Props) {
           </div>
           {fullPriceCents > 0 && (
             <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 6 }}>
-              Precio individual ({totalSessions} sesion{totalSessions === 1 ? "" : "es"} en total): {fmtPrice(fullPriceCents / 100)}
+              Precio individual ({plan.length} sesion{plan.length === 1 ? "" : "es"}): {fmtPrice(fullPriceCents / 100)}
               {detalle && <><br />{detalle}</>}
             </p>
           )}
         </div>
       </div>
 
-      {/* Service selection with sessions + zones */}
+      {/* Tratamientos que participan (+ zonas, una vez por tratamiento) */}
       <div className="adm-card" style={{ padding: 24 }}>
-        <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Tratamientos incluidos *</h2>
+        <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Tratamientos del combo *</h2>
         <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>
-          Tildá cada tratamiento y poné cuántas sesiones incluye el combo. En los que se cobran por zona, elegí la(s) zona(s).
+          Tildá los tratamientos que forman parte del combo. En los que se cobran por zona, elegí la(s) zona(s) — valen para todas sus sesiones. Después armá el plan de sesiones abajo.
         </p>
         {Object.entries(byCategory).map(([cat, svcs]) => (
           <div key={cat} style={{ marginBottom: 20 }}>
             <p style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-mute)", marginBottom: 8 }}>{cat}</p>
             {svcs.map((s) => {
-              const p = picked.find((x) => x.serviceId === s.id)
+              const p = pickedFor(s.id)
               return (
                 <div key={s.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
@@ -229,16 +254,8 @@ export default function ComboForm({ services, initial }: Props) {
                         {s.pricing_mode === "per_zone" ? "por zona" : `${s.duration_min} min · ${fmtPrice(s.price_cents / 100)}`}
                       </span>
                     </div>
-                    {p && (
-                      <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink-soft)" }}
-                        onClick={(e) => e.preventDefault()}>
-                        sesiones
-                        <input
-                          type="number" min="1" value={p.sessions}
-                          onChange={(e) => setSessions(s.id, Math.max(1, Math.floor(Number(e.target.value) || 1)))}
-                          style={{ width: 64 }} className="adm-input"
-                        />
-                      </span>
+                    {p && counts[s.id] > 0 && (
+                      <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>×{counts[s.id]} en el plan</span>
                     )}
                   </label>
                   {p && s.pricing_mode === "per_zone" && (
@@ -270,27 +287,67 @@ export default function ComboForm({ services, initial }: Props) {
         ))}
       </div>
 
-      {/* Order */}
-      {picked.length > 1 && (
-        <div className="adm-card" style={{ padding: 24 }}>
-          <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Orden</h2>
-          <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>El orden en que se listan los tratamientos del combo.</p>
-          {picked.map((p, i) => {
-            const s = svcById.get(p.serviceId)
-            if (!s) return null
-            return (
-              <div key={p.serviceId} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
-                <span style={{ fontFamily: "var(--serif)", fontSize: 18, color: "var(--gold)", minWidth: 24, textAlign: "center" }}>{i + 1}</span>
-                <span style={{ flex: 1, fontSize: 14 }}>{s.name} <span style={{ color: "var(--ink-mute)", fontSize: 12 }}>×{p.sessions}</span></span>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button onClick={() => move(i, -1)} disabled={i === 0} className="adm-btn" style={{ fontSize: 11, padding: "2px 8px", opacity: i === 0 ? 0.3 : 1 }}>↑</button>
-                  <button onClick={() => move(i, 1)} disabled={i === picked.length - 1} className="adm-btn" style={{ fontSize: 11, padding: "2px 8px", opacity: i === picked.length - 1 ? 0.3 : 1 }}>↓</button>
-                </div>
+      {/* EL PLAN DE SESIONES */}
+      <div className="adm-card" style={{ padding: 24 }}>
+        <h2 className="adm-section-title" style={{ marginBottom: 4 }}>Plan de sesiones *</h2>
+        <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>
+          Armá cada sesión (visita) con sus tratamientos en el orden en que se hacen ese día.
+          {legacyInitial && plan.length === 0 && (
+            <><br /><strong style={{ color: "#8c463c" }}>Este combo es del modelo anterior: armá su plan de sesiones para poder guardar.</strong></>
+          )}
+        </p>
+
+        {plan.map((session, s) => {
+          const addable = pickedSvcs.filter((p) => !session.includes(p.serviceId))
+          return (
+            <div key={s} style={{ border: "1px solid var(--line-strong)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "var(--serif)", fontSize: 16 }}>Sesión {s + 1}</span>
+                <span style={{ flex: 1 }} />
+                <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => duplicateSession(s)}>Duplicar</button>
+                <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => removeSession(s)}>Quitar sesión</button>
               </div>
-            )
-          })}
-        </div>
-      )}
+              {session.length === 0 && (
+                <p style={{ fontSize: 12, color: "var(--ink-mute)", margin: "4px 0 8px" }}>Sin tratamientos todavía — agregá al menos uno.</p>
+              )}
+              {session.map((id, idx) => {
+                const svc = svcById.get(id)
+                return (
+                  <div key={`${id}-${idx}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                    <span style={{ fontFamily: "var(--serif)", fontSize: 15, color: "var(--gold)", minWidth: 20, textAlign: "center" }}>{idx + 1}</span>
+                    <span style={{ flex: 1, fontSize: 13 }}>{svc?.name ?? "(servicio borrado)"}</span>
+                    <button onClick={() => moveInSession(s, idx, -1)} disabled={idx === 0} className="adm-btn" style={{ fontSize: 11, padding: "2px 8px", opacity: idx === 0 ? 0.3 : 1 }}>↑</button>
+                    <button onClick={() => moveInSession(s, idx, 1)} disabled={idx === session.length - 1} className="adm-btn" style={{ fontSize: 11, padding: "2px 8px", opacity: idx === session.length - 1 ? 0.3 : 1 }}>↓</button>
+                    <button onClick={() => removeFromSession(s, idx)} className="adm-btn" style={{ fontSize: 11, padding: "2px 8px" }}>✕</button>
+                  </div>
+                )
+              })}
+              {addable.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <select
+                    className="adm-input"
+                    style={{ fontSize: 12, width: "auto", paddingRight: 28 }}
+                    value=""
+                    onChange={(e) => { if (e.target.value) addToSession(s, e.target.value) }}
+                  >
+                    <option value="">+ Agregar tratamiento…</option>
+                    {addable.map((p) => (
+                      <option key={p.serviceId} value={p.serviceId}>{svcById.get(p.serviceId)?.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {addable.length === 0 && pickedSvcs.length === 0 && (
+                <p style={{ fontSize: 12, color: "var(--ink-mute)" }}>Tildá tratamientos arriba para poder agregarlos.</p>
+              )}
+            </div>
+          )
+        })}
+
+        <button className="adm-btn" onClick={addSession} style={{ fontSize: 13, padding: "6px 16px" }}>
+          + Agregar sesión
+        </button>
+      </div>
 
       {error && <p style={{ fontSize: 13, color: "#8c463c" }}>{error}</p>}
 

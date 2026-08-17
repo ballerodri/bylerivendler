@@ -12,7 +12,7 @@ type DbCombo = {
   name: string
   description: string | null
   total_price_cents: number
-  combo_services: { order_index: number; service_id: string; sessions: number | null; zones: { name: string }[] | null }[]
+  combo_services: { order_index: number; service_id: string; sessions: number | null; session_no: number | null; zones: { name: string }[] | null }[]
 }
 
 export default async function EditComboPage({ params }: { params: Promise<{ id: string }> }) {
@@ -30,7 +30,7 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
 
   const { data: comboData } = await admin
     .from("combos")
-    .select("id, name, description, total_price_cents, combo_services(order_index, service_id, sessions, zones)")
+    .select("id, name, description, total_price_cents, combo_services(order_index, service_id, sessions, session_no, zones)")
     .eq("id", id)
     .maybeSingle()
 
@@ -48,9 +48,11 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
     ? svcQuery.or(`active.eq.true,id.in.(${memberIds.join(",")})`)
     : svcQuery.eq("active", true)
   const { data: servicesData } = await svcQuery.order("name", { ascending: true })
-  const initialServices = [...combo.combo_services]
-    .sort((a, b) => a.order_index - b.order_index)
-    .map((cs) => ({ serviceId: cs.service_id, sessions: cs.sessions ?? 1, zonesSnapshot: cs.zones ?? null }))
+  // En orden de plan (sesión, y orden dentro de la sesión); las filas legacy
+  // (session_no null) quedan al final ordenadas por su order_index viejo.
+  const initialRows = [...combo.combo_services]
+    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
+    .map((cs) => ({ serviceId: cs.service_id, sessionNo: cs.session_no, zonesSnapshot: cs.zones ?? null }))
 
   const services = ((servicesData ?? []) as unknown as DbService[]).map(mapDbServiceToOption)
 
@@ -65,7 +67,7 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
           name: combo.name,
           description: combo.description ?? "",
           totalPriceCents: combo.total_price_cents,
-          services: initialServices,
+          rows: initialRows,
         }}
       />
     </>

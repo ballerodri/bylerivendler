@@ -10,7 +10,7 @@ import { parseDob } from "@/lib/servicios/dob"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
-import { validateComboInput, type ComboServiceInput } from "@/lib/servicios/combo-validate"
+import { validateComboPlan, planDistinctServices } from "@/lib/servicios/combo-plan"
 import { fmtPrice } from "@/app/reserva/data"
 import { notifyNewBooking } from "@/lib/email/notify-booking"
 import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
@@ -2008,27 +2008,31 @@ export type ComboInput = {
   name: string
   description?: string
   totalPriceCents: number
-  // En orden; cada servicio con su cantidad de sesiones y (si es por-zona) las
-  // zonas elegidas al armar el programa.
-  services: ComboServiceInput[]
+  // El PLAN DE SESIONES: `sessions[s][i]` = el serviceId en la posición `i`
+  // (orden del día) de la sesión `s+1`. El mismo servicio puede ir en varias
+  // sesiones.
+  sessions: string[][]
+  // Zonas elegidas por servicio POR-ZONA (una vez por servicio; el snapshot se
+  // repite en cada aparición del plan).
+  zonesByService?: Record<string, string[]>
 }
 
 /**
- * Arma las filas de `combo_services` desde el input, resolviendo el snapshot de
- * zona de los servicios por-zona (mismo criterio que `createAdminBooking`).
- * Para un servicio de precio fijo, `zones` queda null. Devuelve las filas o un
- * mensaje de error (servicio inexistente, zona no elegida, etc.).
+ * Arma las filas de `combo_services` desde el PLAN: una fila por APARICIÓN
+ * (tratamiento × sesión), con `session_no` (1..K) y `order_index` = orden
+ * DENTRO de la sesión. Resuelve el snapshot de zona una vez por servicio
+ * por-zona y lo repite en cada aparición. Devuelve las filas o un error.
  */
 async function buildComboServiceRows(
   admin: ReturnType<typeof adminClient>,
   comboId: string,
   input: ComboInput
 ): Promise<{ rows: Record<string, unknown>[] } | { error: string }> {
-  const serviceIds = input.services.map((s) => s.serviceId)
+  const distinctIds = planDistinctServices(input.sessions)
   const { data: svcRows, error: svcErr } = await admin
     .from("services")
     .select("id, pricing_mode, zone_selection, price_cents")
-    .in("id", serviceIds)
+    .in("id", distinctIds)
   if (svcErr) return { error: svcErr.message }
   const svcById = new Map(
     ((svcRows ?? []) as { id: string; pricing_mode: string; zone_selection: string | null; price_cents: number }[]).map((s) => [s.id, s])
@@ -2051,33 +2055,44 @@ async function buildComboServiceRows(
     }
   }
 
-  const rows: Record<string, unknown>[] = []
-  for (let i = 0; i < input.services.length; i++) {
-    const item = input.services[i]
-    const svc = svcById.get(item.serviceId)
+  // El snapshot de zona se resuelve UNA vez por servicio y se repite por aparición.
+  const snapshotByService = new Map<string, ZoneSnapshot[] | null>()
+  for (const id of distinctIds) {
+    const svc = svcById.get(id)
     if (!svc) return { error: "Uno de los servicios ya no existe." }
-    let zonesSnapshot: ZoneSnapshot[] | null = null
     if (svc.pricing_mode === "per_zone") {
-      const selected = resolveSelectedZones(item.zoneIds ?? [], zonesByService[item.serviceId] ?? [])
+      const selected = resolveSelectedZones(input.zonesByService?.[id] ?? [], zonesByService[id] ?? [])
       if (!selected) return { error: "Elegí la(s) zona(s) de cada servicio por zona." }
       if (svc.zone_selection === "single" && selected.length !== 1)
         return { error: "Un servicio por zona de selección única admite una sola zona." }
-      zonesSnapshot = computeZonePricing(selected, svc.price_cents).zones
+      snapshotByService.set(id, computeZonePricing(selected, svc.price_cents).zones)
+    } else {
+      snapshotByService.set(id, null)
     }
-    rows.push({
-      combo_id: comboId,
-      service_id: item.serviceId,
-      sessions: item.sessions,
-      zones: zonesSnapshot,
-      order_index: i,
-    })
+  }
+
+  const rows: Record<string, unknown>[] = []
+  for (let s = 0; s < input.sessions.length; s++) {
+    for (let i = 0; i < input.sessions[s].length; i++) {
+      const serviceId = input.sessions[s][i]
+      rows.push({
+        combo_id: comboId,
+        service_id: serviceId,
+        // Modelo nuevo: la "cantidad" de un tratamiento se deriva contando sus
+        // apariciones; cada fila vale 1.
+        sessions: 1,
+        zones: snapshotByService.get(serviceId),
+        session_no: s + 1,
+        order_index: i,
+      })
+    }
   }
   return { rows }
 }
 
 export async function createCombo(input: ComboInput): Promise<{ ok: boolean; error?: string; id?: string }> {
   await requireAdmin_action()
-  const err = validateComboInput(input)
+  const err = validateComboPlan(input)
   if (err) return { ok: false, error: err }
   const admin = adminClient()
 
@@ -2105,7 +2120,7 @@ export async function createCombo(input: ComboInput): Promise<{ ok: boolean; err
 
 export async function updateCombo(id: string, input: ComboInput): Promise<{ ok: boolean; error?: string }> {
   await requireAdmin_action()
-  const err = validateComboInput(input)
+  const err = validateComboPlan(input)
   if (err) return { ok: false, error: err }
   const admin = adminClient()
 
@@ -2118,15 +2133,17 @@ export async function updateCombo(id: string, input: ComboInput): Promise<{ ok: 
   const built = await buildComboServiceRows(admin, id, input)
   if ("error" in built) return { ok: false, error: built.error }
 
-  // Upsert PRIMERO (si falla, los servicios viejos quedan intactos → nunca queda
-  // el combo sin servicios), y sólo DESPUÉS se borran los que se quitaron.
-  const { error: upErr } = await admin
+  // Insertar las filas NUEVAS primero (sin el unique viejo pueden convivir con
+  // las viejas; si falla, el plan anterior queda intacto → nunca queda el combo
+  // sin servicios), y sólo DESPUÉS borrar las filas que no son las nuevas.
+  const { data: inserted, error: insErr } = await admin
     .from("combo_services")
-    .upsert(built.rows, { onConflict: "combo_id,service_id" })
-  if (upErr) return { ok: false, error: upErr.message }
-  const keepIds = input.services.map((s) => s.serviceId)
+    .insert(built.rows)
+    .select("id")
+  if (insErr || !inserted) return { ok: false, error: insErr?.message ?? "No se pudo guardar el plan." }
+  const newIds = inserted.map((r: { id: string }) => r.id)
   const { error: delErr } = await admin
-    .from("combo_services").delete().eq("combo_id", id).not("service_id", "in", `(${keepIds.join(",")})`)
+    .from("combo_services").delete().eq("combo_id", id).not("id", "in", `(${newIds.join(",")})`)
   if (delErr) return { ok: false, error: delErr.message }
 
   revalidatePath("/admin/combos")

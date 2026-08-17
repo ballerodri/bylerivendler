@@ -216,6 +216,7 @@ type DbComboRow = {
   combo_services: {
     order_index: number
     sessions: number | null
+    session_no: number | null
     zones: { name: string; duration_min: number; price_cents: number }[] | null
     service: {
       id: string
@@ -237,7 +238,7 @@ export async function fetchCombos(): Promise<Combo[]> {
     .from("combos")
     .select(`
       id, name, description, total_price_cents,
-      combo_services(order_index, sessions, zones, service:services(id, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode))
+      combo_services(order_index, sessions, session_no, zones, service:services(id, name, description, duration_min, price_cents, points_cost, active, visible_public, pricing_mode))
     `)
     .eq("active", true)
     .order("name", { ascending: true })
@@ -249,22 +250,29 @@ export async function fetchCombos(): Promise<Combo[]> {
   return (data as unknown as DbComboRow[])
     .map((c): Combo | null => {
       // Sólo los servicios miembros que se pueden reservar (activos, públicos,
-      // con profesional). Si falta alguno, el programa no se muestra: el precio
-      // total presupone TODOS los servicios.
+      // con profesional). Si falta alguno, el combo no se muestra: el precio
+      // total presupone TODOS los servicios. Orden: (sesión del plan, orden del
+      // día); las filas legacy (session_no null) usan el order_index viejo.
       const rows = c.combo_services
         .slice()
-        .sort((a, b) => a.order_index - b.order_index)
+        .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
       if (rows.some((cs) => !cs.service || !cs.service.active || !cs.service.visible_public || !serviceIsBookable(cs.service.id, map)))
         return null
 
-      // Precio/duración EFECTIVOS por servicio: para un servicio por zona, las
-      // zonas congeladas al armar el programa (snapshot); para uno fijo, los del
-      // servicio. Un servicio por zona SIN zonas congeladas no se puede reservar
-      // online (no hay duración/precio) → el programa no se ofrece.
-      const programServices: ComboProgramService[] = []
+      const isPlan = rows.some((cs) => cs.session_no !== null)
+
+      // Precio/duración EFECTIVOS por servicio DISTINTO (agrupando apariciones
+      // del plan): para un por-zona, las zonas congeladas al armar el combo;
+      // para uno fijo, los del servicio. Las "veces" de cada tratamiento salen
+      // de sumar sus apariciones (plan) o su cantidad (legacy). Un por-zona SIN
+      // zonas congeladas no se puede reservar online → el combo no se ofrece.
+      const byService = new Map<string, ComboProgramService>()
       let unbookable = false
       for (const cs of rows) {
         const svc = cs.service!
+        const veces = cs.sessions ?? 1
+        const existing = byService.get(svc.id)
+        if (existing) { existing.sessions += veces; continue }
         const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
         let durationMin: number
         let priceCents: number
@@ -278,28 +286,32 @@ export async function fetchCombos(): Promise<Combo[]> {
           durationMin = svc.duration_min
           priceCents = svc.price_cents
         }
-        programServices.push({
+        byService.set(svc.id, {
           serviceId: svc.id,
           serviceName: svc.name,
-          sessions: cs.sessions ?? 1,
+          sessions: veces,
           durationMin,
           priceCents,
           zones: frozen,
         })
       }
+      const programServices = [...byService.values()]
       if (unbookable || programServices.length < 2) return null
 
-      const services = rows.map((cs): Service => ({
-        id: cs.service!.id,
-        name: cs.service!.name,
-        duration: cs.service!.duration_min,
-        price: Math.round(cs.service!.price_cents / 100),
-        desc: cs.service!.description ?? "",
-        pointsCost: cs.service!.points_cost,
-        pricingMode: "fixed",
-        zoneSelection: "multiple",
-        zones: [],
-      }))
+      const services = programServices.map((ps): Service => {
+        const svc = rows.find((cs) => cs.service!.id === ps.serviceId)!.service!
+        return {
+          id: svc.id,
+          name: svc.name,
+          duration: svc.duration_min,
+          price: Math.round(svc.price_cents / 100),
+          desc: svc.description ?? "",
+          pointsCost: svc.points_cost,
+          pricingMode: "fixed",
+          zoneSelection: "multiple",
+          zones: [],
+        }
+      })
       return {
         id: c.id,
         name: c.name,
@@ -308,7 +320,10 @@ export async function fetchCombos(): Promise<Combo[]> {
         duration: programServices[0].durationMin,
         services,
         programServices,
-        totalSessions: programServices.reduce((a, ps) => a + ps.sessions, 0),
+        // Plan: K sesiones (visitas). Legacy: la suma de cantidades (modelo viejo).
+        totalSessions: isPlan
+          ? Math.max(0, ...rows.map((cs) => cs.session_no ?? 0))
+          : programServices.reduce((a, ps) => a + ps.sessions, 0),
       }
     })
     .filter((c): c is Combo => c !== null)

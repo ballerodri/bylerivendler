@@ -217,7 +217,7 @@ async function rollbackAll(
  */
 type ComboPlan = {
   combo: { id: string; name: string; totalPriceCents: number }
-  services: { serviceId: string; serviceName: string; sessions: number; zones: ZoneSnapshot[] | null; orderIndex: number }[]
+  services: { serviceId: string; serviceName: string; sessions: number; zones: ZoneSnapshot[] | null; orderIndex: number; sessionNo: number | null }[]
   appointment: PlannedAppointment
 }
 
@@ -433,7 +433,7 @@ async function planCombo(
 ): Promise<{ ok: true; plan: ComboPlan } | { ok: false; error: string }> {
   const { data: combo } = await supabase
     .from("combos")
-    .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, zones, service:services(id, name, pricing_mode, duration_min, price_cents, active, visible_public))")
+    .select("id, name, total_price_cents, active, combo_services(order_index, service_id, sessions, session_no, zones, service:services(id, name, pricing_mode, duration_min, price_cents, active, visible_public))")
     .eq("id", input.comboId)
     .eq("active", true)
     .maybeSingle()
@@ -443,10 +443,15 @@ async function planCombo(
     order_index: number
     service_id: string
     sessions: number | null
+    session_no: number | null
     zones: ZoneSnapshot[] | null
     service: { id: string; name: string; pricing_mode: "fixed" | "per_zone"; duration_min: number; price_cents: number; active: boolean; visible_public: boolean } | null
   }
-  const rows = ((combo.combo_services ?? []) as unknown as CS[]).slice().sort((a, b) => a.order_index - b.order_index)
+  // Orden del PLAN: (sesión, orden del día). Filas legacy (session_no null):
+  // el order_index viejo. El primer elemento es el ancla de la 1ª sesión.
+  const rows = ((combo.combo_services ?? []) as unknown as CS[])
+    .slice()
+    .sort((a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index)
   if (rows.length < 2) return { ok: false, error: "Ese combo no está disponible para reservar online." }
 
   // El total presupone TODOS los servicios del programa. Si CUALQUIERA de los
@@ -485,7 +490,7 @@ async function planCombo(
       return { ok: false, error: "Ese combo no se puede reservar online. Escribinos y lo coordinamos." }
     else durationMin = svc.duration_min
     if (i === 0) firstDuration = durationMin
-    services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index })
+    services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index, sessionNo: cs.session_no })
   }
 
   // La 1ª sesión (portador) = el primer servicio del programa. Su bookability ya
@@ -1339,6 +1344,7 @@ export async function createBooking(
         sessions: s.sessions,
         zones: s.zones,
         order_index: s.orderIndex,
+        session_no: s.sessionNo, // el plan congelado (null en combos legacy)
       }))
     )
     if (cpsErr)

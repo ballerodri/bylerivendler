@@ -18,6 +18,7 @@ type ComboRow = {
   combo_services: {
     order_index: number
     sessions: number | null
+    session_no: number | null
     zones: { price_cents: number }[] | null
     service: { name: string; duration_min: number; price_cents: number } | null
   }[]
@@ -38,7 +39,7 @@ export default async function AdminCombosPage() {
     .from("combos")
     .select(`
       id, name, description, total_price_cents, active,
-      combo_services(order_index, sessions, zones, service:services(name, duration_min, price_cents))
+      combo_services(order_index, sessions, session_no, zones, service:services(name, duration_min, price_cents))
     `)
     .order("name", { ascending: true })
 
@@ -64,10 +65,18 @@ export default async function AdminCombosPage() {
           <div className="adm-empty">No hay combos cargados todavía.</div>
         ) : (
           combos.map((c) => {
-            const items = [...c.combo_services].sort((a, b) => a.order_index - b.order_index)
-            // Precio individual con las CANTIDADES (y el snapshot de zona si lo
-            // tiene): Σ precio_de_una_sesión × sesiones. Sin esto un programa de
-            // varias sesiones se ve al precio de 1 sesión de cada uno.
+            // Plan nuevo: (sesión, orden del día). Legacy (session_no null): el
+            // order_index viejo.
+            const items = [...c.combo_services].sort(
+              (a, b) => (a.session_no ?? 999) - (b.session_no ?? 999) || a.order_index - b.order_index
+            )
+            const isPlan = items.some((cs) => cs.session_no !== null)
+            // Sesiones a mostrar: el plan tiene K sesiones (visitas); un combo
+            // legacy suma las cantidades por tratamiento (modelo viejo).
+            const planK = isPlan ? Math.max(0, ...items.map((cs) => cs.session_no ?? 0)) : 0
+            // Precio individual: Σ precio × veces. En el plan cada fila vale 1
+            // (las veces son las apariciones), en legacy la fila trae la cantidad
+            // — la MISMA cuenta sirve para los dos.
             const lines = items.map((cs) => ({
               priceCents: cs.zones?.length
                 ? cs.zones.reduce((a, z) => a + z.price_cents, 0)
@@ -75,15 +84,24 @@ export default async function AdminCombosPage() {
               sessions: cs.sessions ?? 1,
             }))
             const fullPrice = comboIndividualCents(lines)
-            const totalSessions = comboTotalSessions(lines)
+            const totalSessions = isPlan ? planK : comboTotalSessions(lines)
             const saving = fullPrice - c.total_price_cents
+
+            // Detalle por tratamiento con sus veces derivadas (sirve para los
+            // dos modelos: en el plan suma apariciones, en legacy la cantidad).
+            const detail = new Map<string, number>()
+            for (const cs of items) {
+              const n = cs.service?.name ?? "?"
+              detail.set(n, (detail.get(n) ?? 0) + (cs.sessions ?? 1))
+            }
+            const detalle = [...detail.entries()].map(([n, v]) => `${n} ×${v}`).join(" + ")
 
             return (
               <div key={c.id} className="adm-list-row" style={{ gridTemplateColumns: "1fr auto auto auto auto" }}>
                 <div>
                   <div className="adm-name">{c.name}</div>
                   <div className="adm-sub">
-                    {items.map((cs) => `${cs.service?.name ?? "?"} ×${cs.sessions ?? 1}`).join(" + ")}
+                    {detalle}
                     {totalSessions > 0 && <> · {totalSessions} sesiones</>}
                   </div>
                 </div>
