@@ -16,6 +16,7 @@ import ClientDataEditor from "./client-data-editor"
 import SellPack, { type SellablePack } from "./sell-pack"
 import SellPrograma, { type SellablePrograma } from "./sell-programa"
 import ProgramaSessions from "./programa-sessions"
+import ComboPlanSessions from "./combo-plan-sessions"
 import { programSessionStates, programAllScheduled } from "@/lib/servicios/combo-sessions"
 import ClientDeleteButton from "./delete-button"
 import PackDeleteButton from "./pack-delete-button"
@@ -197,11 +198,11 @@ export default async function AdminClientDetailPage({
   // ── Programas (combos multi-sesión) comprados por esta clienta ──
   type ComboPurchaseRow = {
     id: string; combo_name: string; total_price_cents: number; created_at: string
-    combo_purchase_services: { service_id: string; service_name: string; sessions: number; order_index: number; zones: { duration_min: number }[] | null }[]
+    combo_purchase_services: { service_id: string; service_name: string; sessions: number; session_no: number | null; order_index: number; zones: { duration_min: number }[] | null }[]
   }
   const { data: comboPurchasesData } = await admin
     .from("combo_purchases")
-    .select("id, combo_name, total_price_cents, created_at, combo_purchase_services(service_id, service_name, sessions, order_index, zones)")
+    .select("id, combo_name, total_price_cents, created_at, combo_purchase_services(service_id, service_name, sessions, session_no, order_index, zones)")
     .eq("client_id", id)
     .order("created_at", { ascending: false })
   const comboPurchases = (comboPurchasesData ?? []) as unknown as ComboPurchaseRow[]
@@ -221,16 +222,24 @@ export default async function AdminClientDetailPage({
     return svc?.duration_min ?? 0
   }
 
-  // Sesiones VIVAS (no canceladas/no_show) ya agendadas, por (compra, servicio).
+  // Sesiones VIVAS (no canceladas/no_show) ya agendadas: por (compra, servicio)
+  // para las compras legacy, y por (compra, sesión del plan) para las nuevas.
   const comboPurchaseIds = comboPurchases.map((p) => p.id)
   const { data: comboApptsData } = comboPurchaseIds.length
     ? await admin.from("appointments")
-        .select("combo_purchase_id, status, appointment_services(service_id)")
+        .select("combo_purchase_id, combo_session_no, starts_at, status, appointment_services(service_id)")
         .in("combo_purchase_id", comboPurchaseIds)
     : { data: [] as unknown[] }
   const usedByPurchaseService = new Map<string, Record<string, number>>()
-  for (const a of (comboApptsData ?? []) as { combo_purchase_id: string; status: string; appointment_services: { service_id: string }[] }[]) {
+  const scheduledPlanSessions = new Map<string, Map<number, string>>() // purchaseId → sesión → starts_at
+  for (const a of (comboApptsData ?? []) as { combo_purchase_id: string; combo_session_no: number | null; starts_at: string; status: string; appointment_services: { service_id: string }[] }[]) {
     if (a.status === "cancelled" || a.status === "no_show") continue
+    if (a.combo_session_no !== null) {
+      const m = scheduledPlanSessions.get(a.combo_purchase_id) ?? new Map<number, string>()
+      m.set(a.combo_session_no, a.starts_at)
+      scheduledPlanSessions.set(a.combo_purchase_id, m)
+      continue
+    }
     const svcId = a.appointment_services?.[0]?.service_id
     if (!svcId) continue
     const rec = usedByPurchaseService.get(a.combo_purchase_id) ?? {}
@@ -242,14 +251,18 @@ export default async function AdminClientDetailPage({
   // esté encendida todavía).
   const { data: allCombosData } = await admin
     .from("combos")
-    .select("id, name, total_price_cents, combo_services(sessions)")
+    .select("id, name, total_price_cents, combo_services(sessions, session_no)")
     .order("name", { ascending: true })
-  const sellableProgramas: SellablePrograma[] = ((allCombosData ?? []) as { id: string; name: string; total_price_cents: number; combo_services: { sessions: number | null }[] }[])
-    // Un programa vendible tiene al menos 2 servicios (venderPrograma lo rechaza
+  const sellableProgramas: SellablePrograma[] = ((allCombosData ?? []) as { id: string; name: string; total_price_cents: number; combo_services: { sessions: number | null; session_no: number | null }[] }[])
+    // Un combo vendible tiene al menos 2 servicios (venderPrograma lo rechaza
     // si no) — no se ofrecen combos a medio armar.
     .filter((c) => c.combo_services.length >= 2)
     .map((c) => {
-      const totalS = c.combo_services.reduce((a, s) => a + (s.sessions ?? 1), 0)
+      // Plan: K sesiones (visitas). Legacy: la suma de cantidades.
+      const isPlan = c.combo_services.some((s) => s.session_no !== null)
+      const totalS = isPlan
+        ? Math.max(0, ...c.combo_services.map((s) => s.session_no ?? 0))
+        : c.combo_services.reduce((a, s) => a + (s.sessions ?? 1), 0)
       return { id: c.id, label: `${c.name} · ${totalS} sesiones · ${fmtPrice(c.total_price_cents / 100)}` }
     })
 
@@ -383,6 +396,45 @@ export default async function AdminClientDetailPage({
           <div className="adm-empty" style={{ padding: 16 }}>Sin combos comprados.</div>
         ) : (
           comboPurchases.map((p) => {
+            const isPlan = p.combo_purchase_services.some((s) => s.session_no !== null)
+
+            if (isPlan) {
+              // ── Compra con PLAN: una tarjeta por sesión (visita) ──────────
+              const rows = [...p.combo_purchase_services]
+                .filter((s) => s.session_no !== null)
+                .sort((a, b) => (a.session_no! - b.session_no!) || a.order_index - b.order_index)
+              const bySession = new Map<number, typeof rows>()
+              for (const r of rows) {
+                const list = bySession.get(r.session_no!) ?? []
+                list.push(r)
+                bySession.set(r.session_no!, list)
+              }
+              const scheduled = scheduledPlanSessions.get(p.id) ?? new Map<number, string>()
+              const sessions = [...bySession.entries()].map(([n, legs]) => {
+                const durations = legs.map((l) => programSvcDuration(l))
+                return {
+                  sessionNo: n,
+                  label: legs.map((l) => l.service_name).join(" + "),
+                  durationMin: durations.every((d) => d > 0) ? durations.reduce((a, d) => a + d, 0) : 0,
+                  scheduledAtIso: scheduled.get(n) ?? null,
+                }
+              })
+              const allDone = sessions.every((s) => s.scheduledAtIso)
+              return (
+                <div key={p.id} style={{ borderBottom: "1px solid var(--line)", padding: "12px 0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div className="adm-name">{p.combo_name}</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontFamily: "var(--serif)", fontWeight: 500 }}>{fmtPrice(p.total_price_cents / 100)}</span>
+                      <span className={`adm-pill ${allDone ? "adm-pill--inactive" : "adm-pill--active"}`}>{allDone ? "Completo" : "Activo"}</span>
+                    </div>
+                  </div>
+                  <ComboPlanSessions comboPurchaseId={p.id} sessions={sessions} businessHours={businessHours} />
+                </div>
+              )
+            }
+
+            // ── Compra LEGACY (sin plan): el agendador por tratamiento ───────
             const states = programSessionStates(
               [...p.combo_purchase_services]
                 .sort((a, b) => a.order_index - b.order_index)

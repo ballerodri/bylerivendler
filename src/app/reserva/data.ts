@@ -190,10 +190,14 @@ export type Combo = {
   name: string
   description: string
   price: number        // total_price_cents / 100
-  duration: number     // duración de la 1ª sesión del programa (min)
-  services: Service[]  // en order_index (para mostrar nombres)
-  programServices: ComboProgramService[]  // sesiones + precio/zonas congelados por servicio
-  totalSessions: number  // Σ sesiones de todos los servicios
+  duration: number     // duración de la 1ª sesión (min) — plan: la visita completa
+  services: Service[]  // servicios distintos (para mostrar nombres)
+  programServices: ComboProgramService[]  // veces + precio/zonas congelados por servicio
+  // Plan: K sesiones (visitas). Legacy: Σ de cantidades por tratamiento.
+  totalSessions: number
+  // La 1ª sesión que reserva la web: sus tratamientos ("Ultra + Vela Slim") y
+  // la duración COMPLETA de esa visita (bloquea el tiempo real en la agenda).
+  firstSession: { label: string; durationMin: number }
 }
 
 export type ReservaPack = {

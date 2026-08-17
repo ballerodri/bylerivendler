@@ -1645,7 +1645,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
       <>
         <h1 className="headline">Tu <em>primera sesión</em></h1>
         <p className="lede">
-          Empezás con <strong>{firstSvc?.serviceName}</strong>.
+          Empezás con <strong>{selectedCombo.firstSession.label}</strong>
+          {selectedCombo.firstSession.durationMin > 0 && ` (${selectedCombo.firstSession.durationMin} min)`}.
           {restSessions > 0 && ` Las ${restSessions} sesiones restantes del combo las coordinamos con vos después.`}
         </p>
         {state.comboSlot ? (
@@ -1666,7 +1667,8 @@ export function Screen2DateTime({ state, setState, onNext, onBack, onClose, vari
         ) : (
           <PackSessionPicker
             businessHours={businessHours}
-            durationMin={firstSvc?.durationMin ?? 0}
+            // La visita COMPLETA de la sesión 1 (plan) — bloquea el tiempo real.
+            durationMin={selectedCombo.firstSession.durationMin}
             proHint="auto"
             serviceId={firstSvc?.serviceId ?? null}
             minDate={null}
@@ -2935,7 +2937,7 @@ export function Screen5Confirm({
                 {combo && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div>
-                      <strong>1ª sesión — {combo.programServices[0]?.serviceName}</strong>
+                      <strong>1ª sesión — {combo.firstSession.label}</strong>
                       <small>{state.comboSlot ? fmtSlotAR(state.comboSlot) : "—"}</small>
                     </div>
                     {combo.totalSessions > 1 && (

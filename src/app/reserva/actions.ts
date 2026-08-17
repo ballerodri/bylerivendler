@@ -219,6 +219,10 @@ type ComboPlan = {
   combo: { id: string; name: string; totalPriceCents: number }
   services: { serviceId: string; serviceName: string; sessions: number; zones: ZoneSnapshot[] | null; orderIndex: number; sessionNo: number | null }[]
   appointment: PlannedAppointment
+  // ¿El combo tiene PLAN de sesiones? Sólo entonces el portador se marca como
+  // "Sesión 1" (`combo_session_no`) — en legacy ese campo confundiría el conteo
+  // por tratamiento de la ficha.
+  isPlan: boolean
 }
 
 /** El plan de turnos de un pack: lo que habría que crear, todavía sin crear nada. */
@@ -474,11 +478,12 @@ async function planCombo(
       return { ok: false, error: "Ese combo no está disponible para reservar online por ahora. Escribinos y lo coordinamos." }
   }
 
-  // Congelar TODOS los servicios del programa (sesiones + zonas). Un servicio por
+  // Congelar TODOS los servicios del combo (plan + zonas). Un servicio por
   // zona SIN zonas congeladas no se puede reservar (sin duración/precio). El
   // total presupone todos los servicios, así que si falta uno, no se ofrece.
+  // `durations[i]` = la duración de la fila i (para armar la sesión 1).
   const services: ComboPlan["services"] = []
-  let firstDuration = 0
+  const durations: number[] = []
   for (let i = 0; i < rows.length; i++) {
     const cs = rows[i]
     const svc = cs.service
@@ -489,14 +494,29 @@ async function planCombo(
     else if (svc.pricing_mode === "per_zone")
       return { ok: false, error: "Ese combo no se puede reservar online. Escribinos y lo coordinamos." }
     else durationMin = svc.duration_min
-    if (i === 0) firstDuration = durationMin
+    durations.push(durationMin)
     services.push({ serviceId: svc.id, serviceName: svc.name, sessions: cs.sessions ?? 1, zones: frozen, orderIndex: cs.order_index, sessionNo: cs.session_no })
   }
 
-  // La 1ª sesión (portador) = el primer servicio del programa. Su bookability ya
-  // quedó validada arriba (todos los miembros); `memberStaffMap` ya tiene sus links.
-  const first = { serviceId: services[0].serviceId, serviceName: services[0].serviceName, zones: services[0].zones }
-  if (firstDuration <= 0) return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del combo." }
+  // La 1ª sesión que reserva la web: con PLAN, la visita completa de la sesión 1
+  // (todas sus patas encadenadas — bloquea el tiempo real en la agenda, decisión
+  // aprobada); legacy, el 1er tratamiento solo (modelo viejo). El MISMO criterio
+  // que `fetchCombos.firstSession`, así el picker y el server no divergen.
+  const isPlanCombo = rows.some((cs) => cs.session_no !== null)
+  const s1Idx = isPlanCombo
+    ? rows.map((cs, i) => (cs.session_no === 1 ? i : -1)).filter((i) => i !== -1)
+    : [0]
+  if (!s1Idx.length) return { ok: false, error: "Ese combo no está disponible para reservar online." }
+  const s1Legs = s1Idx.map((i) => ({
+    serviceId: services[i].serviceId,
+    serviceName: services[i].serviceName,
+    zones: services[i].zones,
+    durationMin: durations[i],
+  }))
+  const totalDurationS1 = s1Legs.reduce((a, l) => a + l.durationMin, 0)
+  if (totalDurationS1 <= 0 || s1Legs.some((l) => l.durationMin <= 0))
+    return { ok: false, error: "No pudimos calcular la duración de la 1ª sesión del combo." }
+  const first = s1Legs[0]
 
   // Fecha de la 1ª sesión (input.startsAt): futura, en la grilla, con disponibilidad real.
   const startDate = new Date(input.startsAt)
@@ -517,44 +537,63 @@ async function planCombo(
   const slots = (bh?.slots ?? []) as string[]
   if (!bh?.is_open || !slots.includes(timeStr))
     return { ok: false, error: "Ese horario ya no está disponible. Elegí otro." }
-  const free = await fetchDayAvailability(dateStr, firstDuration, askedStaff ?? "auto", [timeStr], { serviceId: first.serviceId })
+  // La MISMA pregunta que hizo el picker (duración total de la visita, ancla en
+  // el 1er servicio) — regla de oro: buscador == creación.
+  const free = await fetchDayAvailability(dateStr, totalDurationS1, askedStaff ?? "auto", [timeStr], { serviceId: first.serviceId })
   if (!free.includes(timeStr)) return { ok: false, error: "Ese horario se ocupó. Elegí otro." }
 
-  // Resolver la profesional de la 1ª sesión.
-  let sessionStaff = askedStaff
-  if (!sessionStaff) {
-    const chosen = await chooseStaffForSlot(supabase, { dateStr, timeStr, durationMin: firstDuration, serviceId: first.serviceId, preferredStaffId: null })
-    if (!chosen) return { ok: false, error: "Ese horario se ocupó. Elegí otro." }
-    sessionStaff = chosen
+  // Profesional POR PATA, cada una en SU tramo de la visita (continuidad:
+  // preferir la de la pata anterior). La 1ª pata es obligatoria (sin candidata,
+  // el horario no sirve); las siguientes pueden quedar sin asignar y el salón
+  // las resuelve (mismo criterio que el agendador de la ficha).
+  let cursorMs = startDate.getTime()
+  let prevStaff: string | null = askedStaff
+  const legStaff: (string | null)[] = []
+  const legStarts: number[] = []
+  for (let i = 0; i < s1Legs.length; i++) {
+    const l = s1Legs[i]
+    const parts = arPartsFromUtc(new Date(cursorMs))
+    const chosen = await chooseStaffForSlot(supabase, {
+      dateStr: parts.dateStr,
+      timeStr: parts.timeStr,
+      durationMin: l.durationMin,
+      serviceId: l.serviceId,
+      preferredStaffId: prevStaff,
+    })
+    if (i === 0 && !chosen) return { ok: false, error: "Ese horario se ocupó. Elegí otro." }
+    legStaff.push(chosen)
+    if (chosen) prevStaff = chosen
+    legStarts.push(cursorMs)
+    cursorMs += l.durationMin * 60_000
   }
 
-  // La plata: el portador lleva el TOTAL del programa; la seña, según payChoice.
+  // La plata: el portador lleva el TOTAL del combo; la seña, según payChoice.
   // Las sesiones 2..N nacen en $0 (se agendan después). IDÉNTICO a un pack.
+  // Multi-pata: el total va en la 1ª pata, las demás en $0 (como las sesiones
+  // 2..N de un pack) — nada suma las patas dos veces.
   const totalCents = combo.total_price_cents
   const depositCents = amountDueNow(totalCents, payChoice)
 
   const appointment: PlannedAppointment = {
     label: `1ª sesión de ${combo.name}`,
     startsAtMs: startDate.getTime(),
-    durationMin: firstDuration,
-    staffId: sessionStaff,
+    durationMin: totalDurationS1,
+    staffId: legStaff[0],
     totalCents,
     depositCents,
     depositPaid: false,
-    notesInternal: `Combo: ${combo.name} (1ª sesión — ${first.serviceName})`,
+    notesInternal: `Combo: ${combo.name} (1ª sesión — ${s1Legs.map((l) => l.serviceName).join(" + ")})`,
     isPackSession: false,
     isComboSession: true,
-    legs: [
-      {
-        serviceId: first.serviceId,
-        name: first.serviceName,
-        durationMin: firstDuration,
-        priceCents: totalCents, // el portador lleva el total (como la sesión 1 del pack)
-        zones: first.zones,
-        staffId: sessionStaff,
-        startsAtMs: startDate.getTime(),
-      },
-    ],
+    legs: s1Legs.map((l, i) => ({
+      serviceId: l.serviceId,
+      name: l.serviceName,
+      durationMin: l.durationMin,
+      priceCents: i === 0 ? totalCents : 0, // el portador lleva el total en su 1ª pata
+      zones: l.zones,
+      staffId: legStaff[i],
+      startsAtMs: legStarts[i],
+    })),
   }
 
   return {
@@ -563,6 +602,7 @@ async function planCombo(
       combo: { id: combo.id, name: combo.name, totalPriceCents: totalCents },
       services,
       appointment,
+      isPlan: isPlanCombo,
     },
   }
 }
@@ -1388,6 +1428,10 @@ export async function createBooking(
         source: adminMode ? "admin" : "web",
         pack_purchase_id: p.isPackSession ? created.packPurchaseId : null,
         combo_purchase_id: p.isComboSession ? created.comboPurchaseId : null,
+        // La web sólo reserva la SESIÓN 1 del plan (el portador). En combos
+        // legacy (sin plan) NO se marca: la ficha cuenta por tratamiento y un
+        // combo_session_no la confundiría.
+        combo_session_no: p.isComboSession && comboPlan?.isPlan ? 1 : null,
         notes_internal: p.notesInternal,
         booking_group_id: bookingGroupId,
       })

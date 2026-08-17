@@ -2495,6 +2495,170 @@ export async function scheduleProgramaSession(
 }
 
 /**
+ * Agenda la SESIÓN N del PLAN de un combo vendido: UNA visita en $0 con los
+ * tratamientos de esa sesión encadenados en el orden del plan. Es la versión
+ * multi-pata de `scheduleProgramaSession` (que queda para compras legacy sin
+ * plan): la disponibilidad se valida por la duración TOTAL de la visita, y la
+ * profesional se resuelve POR TRATAMIENTO en su tramo (prefiriendo la de la
+ * pata anterior — continuidad). El turno guarda `combo_session_no`: cada
+ * sesión del plan se agenda UNA sola vez (turnos vivos).
+ */
+export async function scheduleComboPlanSession(
+  comboPurchaseId: string,
+  sessionNo: number,
+  startsAtIso: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "La fecha no es válida." }
+
+  const { data: purchase } = await admin
+    .from("combo_purchases")
+    .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, session_no, order_index, zones)")
+    .eq("id", comboPurchaseId)
+    .maybeSingle()
+  if (!purchase) return { ok: false, error: "No encontramos ese combo." }
+
+  type CPS = {
+    service_id: string | null
+    service_name: string
+    session_no: number | null
+    order_index: number
+    zones: { name: string; duration_min: number; price_cents: number }[] | null
+  }
+  const legsRows = ((purchase.combo_purchase_services ?? []) as unknown as CPS[])
+    .filter((r) => r.session_no === sessionNo)
+    .sort((a, b) => a.order_index - b.order_index)
+  if (!legsRows.length) return { ok: false, error: "Esa sesión no es parte del plan del combo." }
+
+  // Duración por pata: el snapshot congelado (por-zona) o la del servicio (fijo).
+  // Un servicio borrado (service_id null) o por-zona sin zonas no se agenda desde acá.
+  const svcIds = legsRows.map((r) => r.service_id).filter((id): id is string => !!id)
+  if (svcIds.length !== legsRows.length)
+    return { ok: false, error: "Un tratamiento de esa sesión ya no existe en el sistema. Agendala como un turno común." }
+  const { data: svcRows } = await admin.from("services").select("id, duration_min, pricing_mode").in("id", svcIds)
+  const svcById = new Map(
+    ((svcRows ?? []) as { id: string; duration_min: number; pricing_mode: string }[]).map((s) => [s.id, s])
+  )
+  const legs: { serviceId: string; serviceName: string; durationMin: number; zones: CPS["zones"] }[] = []
+  for (const r of legsRows) {
+    let d: number
+    if (r.zones && r.zones.length) {
+      d = r.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+    } else {
+      const svc = svcById.get(r.service_id!)
+      if (!svc) return { ok: false, error: `"${r.service_name}" ya no existe en el sistema. Agendala como un turno común.` }
+      if (svc.pricing_mode === "per_zone")
+        return { ok: false, error: `"${r.service_name}" es por zona y no tiene zonas cargadas en el combo: agendala como un turno común.` }
+      d = svc.duration_min ?? 0
+    }
+    if (d <= 0) return { ok: false, error: `No pudimos calcular la duración de "${r.service_name}".` }
+    legs.push({ serviceId: r.service_id!, serviceName: r.service_name, durationMin: d, zones: r.zones ?? null })
+  }
+  const totalMin = legs.reduce((a, l) => a + l.durationMin, 0)
+
+  // Las sesiones vivas ya agendadas de este combo.
+  const { data: existing } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, combo_session_no")
+    .eq("combo_purchase_id", comboPurchaseId)
+  type ExRow = { id: string; starts_at: string; duration_min: number; status: string; combo_session_no: number | null }
+  const aliveAll = ((existing ?? []) as ExRow[]).filter((a) => isAliveStatus(a.status))
+
+  if (aliveAll.some((a) => a.combo_session_no === sessionNo))
+    return { ok: false, error: `La sesión ${sessionNo} ya está agendada.` }
+
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + totalMin * 60_000
+  const conflict = aliveAll.find((a) => {
+    const s = new Date(a.starts_at).getTime()
+    return newStartMs < s + a.duration_min * 60_000 && newEndMs > s
+  })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+    return { ok: false, error: `Ese horario se superpone con otra sesión de este combo (${when}hs). Elegí otro horario.` }
+  }
+
+  // Horario del negocio + disponibilidad real por la duración TOTAL de la visita.
+  const { dateStr, timeStr, dayOfWeek } = arPartsFromUtc(startsAt)
+  const { data: bh } = await admin.from("business_hours").select("is_open, slots").eq("day_of_week", dayOfWeek).maybeSingle()
+  if (!bh?.is_open || !(bh.slots as string[] | null)?.includes(timeStr))
+    return { ok: false, error: "Ese horario está fuera del horario de atención." }
+  const free = await fetchDayAvailability(dateStr, totalMin, "auto", [timeStr])
+  if (!free.includes(timeStr)) return { ok: false, error: "Ese horario no está disponible." }
+
+  // Profesional POR PATA, cada una en SU tramo de la visita (continuidad:
+  // preferir la de la pata anterior). Sin candidata → queda sin asignar (igual
+  // que el agendador de packs: el salón la resuelve a mano si hace falta).
+  let cursorMs = newStartMs
+  let prevStaff: string | null = null
+  const legStaff: (string | null)[] = []
+  const legStarts: number[] = []
+  for (const l of legs) {
+    const parts = arPartsFromUtc(new Date(cursorMs))
+    const chosen = await chooseStaffForSlot(admin, {
+      dateStr: parts.dateStr,
+      timeStr: parts.timeStr,
+      durationMin: l.durationMin,
+      serviceId: l.serviceId,
+      preferredStaffId: prevStaff,
+    })
+    legStaff.push(chosen)
+    if (chosen) prevStaff = chosen
+    legStarts.push(cursorMs)
+    cursorMs += l.durationMin * 60_000
+  }
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+
+  // SIEMPRE $0: el combo ya está pagado. Si la sesión llevara precio, completarla
+  // ofrecería "Facturar" y saldría una 2ª factura.
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: purchase.client_id,
+      staff_id: legStaff[0],
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: new Date(newEndMs).toISOString(),
+      duration_min: totalMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      combo_purchase_id: comboPurchaseId,
+      combo_session_no: sessionNo,
+      notes_internal: `Combo ${purchase.combo_name}: Sesión ${sessionNo}`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos crear la sesión: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert(
+    legs.map((l, i) => ({
+      appointment_id: appt.id,
+      service_id: l.serviceId,
+      duration_min: l.durationMin,
+      price_cents: 0,
+      zones: l.zones,
+      staff_id: legStaff[i],
+      starts_at: new Date(legStarts[i]).toISOString(),
+    }))
+  )
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicios de la sesión: ${linkErr.message}` }
+  }
+
+  revalidatePath(`/admin/clientas/${purchase.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
  * Registra una sesión de pack QUE YA SE HIZO (fecha pasada).
  *
  * Para packs vendidos fuera del sistema o cargados tarde: la sesión ocurrió,

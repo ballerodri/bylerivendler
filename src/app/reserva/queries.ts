@@ -298,6 +298,22 @@ export async function fetchCombos(): Promise<Combo[]> {
       const programServices = [...byService.values()]
       if (unbookable || programServices.length < 2) return null
 
+      // La 1ª sesión que reserva la web: en el plan, TODOS los tratamientos de
+      // la sesión 1 (la visita completa, con su duración real); legacy, el 1er
+      // tratamiento solo (modelo viejo). La duración por aparición sale del
+      // mismo criterio de arriba (snapshot congelado o servicio fijo).
+      const durOf = (cs: (typeof rows)[number]): number => {
+        const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
+        if (frozen) return frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+        return cs.service!.duration_min
+      }
+      const s1Rows = isPlan ? rows.filter((cs) => cs.session_no === 1) : rows.slice(0, 1)
+      if (!s1Rows.length) return null // plan sin sesión 1: mal armado, no se ofrece
+      const firstSession = {
+        label: s1Rows.map((cs) => cs.service!.name).join(" + "),
+        durationMin: s1Rows.reduce((a, cs) => a + durOf(cs), 0),
+      }
+
       const services = programServices.map((ps): Service => {
         const svc = rows.find((cs) => cs.service!.id === ps.serviceId)!.service!
         return {
@@ -317,13 +333,14 @@ export async function fetchCombos(): Promise<Combo[]> {
         name: c.name,
         description: c.description ?? "",
         price: Math.round(c.total_price_cents / 100),
-        duration: programServices[0].durationMin,
+        duration: firstSession.durationMin,
         services,
         programServices,
         // Plan: K sesiones (visitas). Legacy: la suma de cantidades (modelo viejo).
         totalSessions: isPlan
           ? Math.max(0, ...rows.map((cs) => cs.session_no ?? 0))
           : programServices.reduce((a, ps) => a + ps.sessions, 0),
+        firstSession,
       }
     })
     .filter((c): c is Combo => c !== null)
