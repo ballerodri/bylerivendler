@@ -2395,9 +2395,14 @@ export async function fetchSequentialAvailability(
   // mal). Fail-closed: si esta consulta falla, el mapa queda vacío → cuando
   // `enforce`, ningún servicio tiene candidatas → no se ofrece ningún horario.
   // Cota inferior para las excepciones por fecha: hoy (AR). Una búsqueda de
-  // horarios siempre mira a futuro, así que las excepciones pasadas no importan
-  // — y evita traer filas viejas que se acumulan.
-  const seqToday = arPartsFromUtc(new Date()).dateStr
+  // horarios siempre mira a futuro. Se ACOTA a la ventana exacta de la búsqueda
+  // (`fromDate` .. `fromDate+daysAhead`) y con `limit` alto: sin cota, un salón que
+  // bloquea un mes a todo el equipo podría pasar el tope de filas de PostgREST y
+  // que se trunquen excepciones → oversell silencioso.
+  const [seqFy, seqFm, seqFd] = fromDate.split("-").map(Number)
+  const seqLastDate = new Date(Date.UTC(seqFy, seqFm - 1, seqFd) + daysAhead * 24 * 3_600_000)
+    .toISOString()
+    .slice(0, 10)
   const [bhRes, prosRes, rulesRes, availRes, orderLastRes, staffSvcRes, excRes] = await Promise.all([
     supabase.from("business_hours").select("day_of_week, is_open, slots").order("day_of_week"),
     supabase.from("staff").select("id").eq("is_professional", true).eq("active", true),
@@ -2409,11 +2414,15 @@ export async function fetchSequentialAvailability(
     supabase.from("staff_blocked_slots").select("staff_id, day_of_week, slot"),
     supabase.from("services").select("id, order_last").in("id", serviceIds),
     supabase.from("staff_services").select("service_id, staff_id"),
-    supabase.from("staff_date_exceptions").select("staff_id, date, slot").gte("date", seqToday),
+    supabase.from("staff_date_exceptions").select("staff_id, date, slot").gte("date", fromDate).lte("date", seqLastDate).limit(10000),
   ])
 
   const staffMap: StaffServiceMap = {}
   if (staffSvcRes.error) console.error("staff_services:", staffSvcRes.error.message)
+  // Fail-open (igual que la disponibilidad semanal): si esta consulta falla, el
+  // mapa de excepciones queda vacío y se podrían ofrecer días bloqueados. No
+  // puede quedar invisible — se loguea (createBooking revalida por fecha igual).
+  if (excRes.error) console.error("staff_date_exceptions:", excRes.error.message)
   for (const r of (staffSvcRes.data ?? []) as { service_id: string; staff_id: string }[]) {
     ;(staffMap[r.service_id] ??= []).push(r.staff_id)
   }
