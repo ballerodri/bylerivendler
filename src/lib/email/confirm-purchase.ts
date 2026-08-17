@@ -37,6 +37,7 @@ type GroupApptRow = {
   duration_min: number | null
   pack_purchase_id: string | null
   combo_purchase_id: string | null
+  combo_session_no: number | null
   client_id: string
   appointment_services: {
     starts_at: string | null
@@ -77,7 +78,7 @@ export async function sendGroupConfirmationEmail(
   const { data } = await admin
     .from("appointments")
     .select(
-      `id, starts_at, status, duration_min, pack_purchase_id, combo_purchase_id, client_id,
+      `id, starts_at, status, duration_min, pack_purchase_id, combo_purchase_id, combo_session_no, client_id,
        appointment_services(starts_at, duration_min, service:services(name), staff:staff(id, full_name, email, active))`
     )
     .eq("booking_group_id", bookingGroupId)
@@ -149,21 +150,28 @@ export async function sendGroupConfirmationEmail(
       packRemaining = Math.max(0, (pack?.sessions_total ?? sessions) - sessions)
     }
 
-    // 5.b) Datos del PROGRAMA (combo), si la compra incluía uno: el nombre para
-    //     etiquetar la sesión y cuántas quedan por agendar (Σ sesiones por
-    //     servicio congeladas − las ya agendadas de esta compra).
+    // 5.b) Datos del COMBO, si la compra incluía uno: el nombre para etiquetar
+    //     la sesión y cuántas VISITAS quedan por agendar. Con plan (session_no
+    //     congelado): total = sesiones del plan (máx session_no), agendadas por
+    //     sesión del plan; legacy: Σ cantidades por tratamiento.
     const comboId = appts.find((a) => a.combo_purchase_id)?.combo_purchase_id ?? null
     let comboName = ""
     let comboRemaining = 0
     if (comboId) {
       const { data: comboRow } = await admin
         .from("combo_purchases")
-        .select("combo_name, combo_purchase_services(sessions)")
+        .select("combo_name, combo_purchase_services(sessions, session_no)")
         .eq("id", comboId)
         .single()
-      const combo = comboRow as { combo_name: string; combo_purchase_services: { sessions: number }[] } | null
-      const comboTotal = combo?.combo_purchase_services?.reduce((acc, s) => acc + (s.sessions ?? 0), 0) ?? 0
-      const scheduled = appts.filter((a) => a.combo_purchase_id === comboId).length
+      const combo = comboRow as { combo_name: string; combo_purchase_services: { sessions: number; session_no: number | null }[] } | null
+      const comboRows = combo?.combo_purchase_services ?? []
+      const comboIsPlan = comboRows.some((s) => s.session_no !== null)
+      const comboTotal = comboIsPlan
+        ? Math.max(0, ...comboRows.map((s) => s.session_no ?? 0))
+        : comboRows.reduce((acc, s) => acc + (s.sessions ?? 0), 0)
+      const scheduled = comboIsPlan
+        ? new Set(appts.filter((a) => a.combo_purchase_id === comboId && a.combo_session_no !== null).map((a) => a.combo_session_no)).size
+        : appts.filter((a) => a.combo_purchase_id === comboId).length
       comboName = combo?.combo_name ?? "Combo"
       comboRemaining = Math.max(0, comboTotal - scheduled)
     }

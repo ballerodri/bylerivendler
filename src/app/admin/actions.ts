@@ -2144,7 +2144,16 @@ export async function updateCombo(id: string, input: ComboInput): Promise<{ ok: 
   const newIds = inserted.map((r: { id: string }) => r.id)
   const { error: delErr } = await admin
     .from("combo_services").delete().eq("combo_id", id).not("id", "in", `(${newIds.join(",")})`)
-  if (delErr) return { ok: false, error: delErr.message }
+  if (delErr) {
+    // Sin el borrado, el combo queda con el plan viejo Y el nuevo (duplicado):
+    // precio individual doblado y sesiones con patas repetidas. Deshacer lo
+    // insertado deja el plan ANTERIOR intacto; si ni eso se puede, avisar que
+    // vuelva a guardar (re-guardar borra todo lo que no sea lo nuevo y se cura).
+    const { error: undoErr } = await admin.from("combo_services").delete().in("id", newIds)
+    if (undoErr)
+      return { ok: false, error: "El plan quedó duplicado por un error de guardado. Volvé a apretar Guardar para arreglarlo." }
+    return { ok: false, error: `No se pudo reemplazar el plan (quedó el anterior). Probá de nuevo: ${delErr.message}` }
+  }
 
   revalidatePath("/admin/combos")
   revalidatePath(`/admin/combos/${id}`)
@@ -2513,6 +2522,8 @@ export async function scheduleComboPlanSession(
 
   const startsAt = new Date(startsAtIso)
   if (isNaN(startsAt.getTime())) return { ok: false, error: "La fecha no es válida." }
+  if (startsAt.getTime() <= Date.now())
+    return { ok: false, error: "La fecha tiene que ser futura." }
 
   const { data: purchase } = await admin
     .from("combo_purchases")
@@ -2631,7 +2642,13 @@ export async function scheduleComboPlanSession(
       source: "admin",
       combo_purchase_id: comboPurchaseId,
       combo_session_no: sessionNo,
-      notes_internal: `Combo ${purchase.combo_name}: Sesión ${sessionNo}`,
+      // Una pata sin profesional resuelta queda a la vista en las notas del
+      // turno — el salón la asigna a mano antes del día.
+      notes_internal:
+        `Combo ${purchase.combo_name}: Sesión ${sessionNo}` +
+        (legStaff.some((s) => !s)
+          ? ` · SIN PROFESIONAL: ${legs.filter((_, i) => !legStaff[i]).map((l) => l.serviceName).join(", ")}`
+          : ""),
     })
     .select("id")
     .single()

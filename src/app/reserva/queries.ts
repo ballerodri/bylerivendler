@@ -271,17 +271,20 @@ export async function fetchCombos(): Promise<Combo[]> {
       for (const cs of rows) {
         const svc = cs.service!
         const veces = cs.sessions ?? 1
+        // El chequeo por-zona corre para CADA aparición (no sólo la primera):
+        // una fila sin snapshot haría fallar la reserva aunque otra lo tenga.
+        const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
+        if (!frozen && svc.pricing_mode === "per_zone") {
+          unbookable = true // por zona sin zonas congeladas: no reservable online
+          break
+        }
         const existing = byService.get(svc.id)
         if (existing) { existing.sessions += veces; continue }
-        const frozen = Array.isArray(cs.zones) && cs.zones.length ? cs.zones : null
         let durationMin: number
         let priceCents: number
         if (frozen) {
           durationMin = frozen.reduce((a, z) => a + (z.duration_min ?? 0), 0)
           priceCents = frozen.reduce((a, z) => a + (z.price_cents ?? 0), 0)
-        } else if (svc.pricing_mode === "per_zone") {
-          unbookable = true // por zona sin zonas congeladas: no reservable online
-          break
         } else {
           durationMin = svc.duration_min
           priceCents = svc.price_cents

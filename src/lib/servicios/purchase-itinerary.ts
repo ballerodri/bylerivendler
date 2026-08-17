@@ -98,8 +98,10 @@ export function buildItinerary(
 
     const cn = comboSessionNumber.get(a.id)
     if (cn) {
+      // La duración es la de la VISITA entera (el turno): una sesión de combo
+      // puede tener varias patas encadenadas — `legs[0]` sola mentiría.
       rows.push(
-        row(a.id, apptMs, `Sesión ${cn} · ${comboName ?? "Combo"}`, legs[0]?.durationMin ?? a.durationMin, legs[0]?.staffName ?? null)
+        row(a.id, apptMs, `Sesión ${cn} · ${comboName ?? "Combo"}`, a.durationMin ?? legs[0]?.durationMin ?? null, legs[0]?.staffName ?? null)
       )
       continue
     }

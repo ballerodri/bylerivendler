@@ -21,3 +21,11 @@ alter table public.combo_purchase_services add column if not exists session_no i
 -- Qué sesión del plan es este turno (1..K). El estado del plan (agendada /
 -- pendiente) se lee de acá y no se confunde al cancelar/reagendar.
 alter table public.appointments add column if not exists combo_session_no int;
+
+-- Cada sesión del plan se agenda UNA sola vez (entre turnos vivos): cierra la
+-- carrera de dos agendados simultáneos de la misma sesión a nivel base.
+create unique index if not exists idx_appointments_combo_session_once
+  on public.appointments (combo_purchase_id, combo_session_no)
+  where combo_purchase_id is not null
+    and combo_session_no is not null
+    and status not in ('cancelled', 'no_show');

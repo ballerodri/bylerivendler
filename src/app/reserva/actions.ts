@@ -582,7 +582,13 @@ async function planCombo(
     totalCents,
     depositCents,
     depositPaid: false,
-    notesInternal: `Combo: ${combo.name} (1ª sesión — ${s1Legs.map((l) => l.serviceName).join(" + ")})`,
+    // Una pata sin profesional resuelta queda a la vista en las notas — el
+    // salón la asigna a mano antes del día (decisión aceptada del diseño).
+    notesInternal:
+      `Combo: ${combo.name} (1ª sesión — ${s1Legs.map((l) => l.serviceName).join(" + ")})` +
+      (legStaff.some((s) => !s)
+        ? ` · SIN PROFESIONAL: ${s1Legs.filter((_, i) => !legStaff[i]).map((l) => l.serviceName).join(", ")}`
+        : ""),
     isPackSession: false,
     isComboSession: true,
     legs: s1Legs.map((l, i) => ({
