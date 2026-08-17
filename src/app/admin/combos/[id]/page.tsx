@@ -2,24 +2,17 @@ import { notFound } from "next/navigation"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
-import ComboForm, { type ServiceOption } from "../combo-form"
+import ComboForm from "../combo-form"
+import { mapDbServiceToOption, SERVICE_SELECT, type DbService } from "../service-option"
 
 export const dynamic = "force-dynamic"
-
-type DbService = {
-  id: string
-  name: string
-  duration_min: number
-  price_cents: number
-  category: { name: string } | null
-}
 
 type DbCombo = {
   id: string
   name: string
   description: string | null
   total_price_cents: number
-  combo_services: { order_index: number; service_id: string }[]
+  combo_services: { order_index: number; service_id: string; sessions: number | null; zones: { name: string }[] | null }[]
 }
 
 export default async function EditComboPage({ params }: { params: Promise<{ id: string }> }) {
@@ -38,12 +31,12 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
   const [{ data: comboData }, { data: servicesData }] = await Promise.all([
     admin
       .from("combos")
-      .select("id, name, description, total_price_cents, combo_services(order_index, service_id)")
+      .select("id, name, description, total_price_cents, combo_services(order_index, service_id, sessions, zones)")
       .eq("id", id)
       .maybeSingle(),
     admin
       .from("services")
-      .select("id, name, duration_min, price_cents, category:service_categories(name)")
+      .select(SERVICE_SELECT)
       .eq("active", true)
       .order("name", { ascending: true }),
   ])
@@ -51,22 +44,16 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
   if (!comboData) notFound()
 
   const combo = comboData as unknown as DbCombo
-  const serviceIds = [...combo.combo_services]
+  const initialServices = [...combo.combo_services]
     .sort((a, b) => a.order_index - b.order_index)
-    .map((cs) => cs.service_id)
+    .map((cs) => ({ serviceId: cs.service_id, sessions: cs.sessions ?? 1, zonesSnapshot: cs.zones ?? null }))
 
-  const services = ((servicesData ?? []) as unknown as DbService[]).map((s): ServiceOption => ({
-    id: s.id,
-    name: s.name,
-    duration_min: s.duration_min,
-    price_cents: s.price_cents,
-    category: (s.category as unknown as { name: string } | null)?.name ?? "Sin categoría",
-  }))
+  const services = ((servicesData ?? []) as unknown as DbService[]).map(mapDbServiceToOption)
 
   return (
     <>
-      <p className="adm-eyebrow">Combos</p>
-      <h1 className="adm-h1">Editar <em>combo</em></h1>
+      <p className="adm-eyebrow">Programas</p>
+      <h1 className="adm-h1">Editar <em>programa</em></h1>
       <ComboForm
         services={services}
         initial={{
@@ -74,7 +61,7 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
           name: combo.name,
           description: combo.description ?? "",
           totalPriceCents: combo.total_price_cents,
-          serviceIds,
+          services: initialServices,
         }}
       />
     </>

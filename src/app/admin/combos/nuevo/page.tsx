@@ -1,17 +1,10 @@
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
-import ComboForm, { type ServiceOption } from "../combo-form"
+import ComboForm from "../combo-form"
+import { mapDbServiceToOption, SERVICE_SELECT, type DbService } from "../service-option"
 
 export const dynamic = "force-dynamic"
-
-type DbService = {
-  id: string
-  name: string
-  duration_min: number
-  price_cents: number
-  category: { name: string } | null
-}
 
 export default async function NuevoComboPage() {
   const ssr = await createSsrClient()
@@ -26,23 +19,17 @@ export default async function NuevoComboPage() {
 
   const { data } = await admin
     .from("services")
-    .select("id, name, duration_min, price_cents, category:service_categories(name)")
+    .select(SERVICE_SELECT)
     .eq("active", true)
     .order("name", { ascending: true })
 
-  const services = ((data ?? []) as unknown as DbService[]).map((s): ServiceOption => ({
-    id: s.id,
-    name: s.name,
-    duration_min: s.duration_min,
-    price_cents: s.price_cents,
-    category: (s.category as unknown as { name: string } | null)?.name ?? "Sin categoría",
-  }))
+  const services = ((data ?? []) as unknown as DbService[]).map(mapDbServiceToOption)
 
   return (
     <>
-      <p className="adm-eyebrow">Combos</p>
-      <h1 className="adm-h1">Nuevo <em>combo</em></h1>
-      <p className="adm-lede">Seleccioná los tratamientos, definí el orden y el precio especial.</p>
+      <p className="adm-eyebrow">Programas</p>
+      <h1 className="adm-h1">Nuevo <em>programa</em></h1>
+      <p className="adm-lede">Elegí los tratamientos, cuántas sesiones de cada uno y el precio del programa.</p>
       <ComboForm services={services} />
     </>
   )
