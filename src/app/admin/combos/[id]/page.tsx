@@ -28,22 +28,26 @@ export default async function EditComboPage({ params }: { params: Promise<{ id: 
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const [{ data: comboData }, { data: servicesData }] = await Promise.all([
-    admin
-      .from("combos")
-      .select("id, name, description, total_price_cents, combo_services(order_index, service_id, sessions, zones)")
-      .eq("id", id)
-      .maybeSingle(),
-    admin
-      .from("services")
-      .select(SERVICE_SELECT)
-      .eq("active", true)
-      .order("name", { ascending: true }),
-  ])
+  const { data: comboData } = await admin
+    .from("combos")
+    .select("id, name, description, total_price_cents, combo_services(order_index, service_id, sessions, zones)")
+    .eq("id", id)
+    .maybeSingle()
 
   if (!comboData) notFound()
 
   const combo = comboData as unknown as DbCombo
+
+  // Servicios para el selector: los ACTIVOS + los que ya son miembros del
+  // programa aunque estén inactivos (si no, al editar se caerían en silencio y
+  // el guardado los borraría). Los service_id de combo_services siempre existen
+  // (FK on delete cascade), así que un servicio borrado ya no está acá.
+  const memberIds = combo.combo_services.map((cs) => cs.service_id)
+  let svcQuery = admin.from("services").select(SERVICE_SELECT)
+  svcQuery = memberIds.length
+    ? svcQuery.or(`active.eq.true,id.in.(${memberIds.join(",")})`)
+    : svcQuery.eq("active", true)
+  const { data: servicesData } = await svcQuery.order("name", { ascending: true })
   const initialServices = [...combo.combo_services]
     .sort((a, b) => a.order_index - b.order_index)
     .map((cs) => ({ serviceId: cs.service_id, sessions: cs.sessions ?? 1, zonesSnapshot: cs.zones ?? null }))
