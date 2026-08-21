@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
-import { scheduleProgramaSession } from "../../actions"
+import { scheduleProgramaSession, registrarSesionProgramaPasada } from "../../actions"
 import type { BusinessHour } from "@/app/reserva/data"
 
 export type ProgramaServiceView = {
@@ -38,6 +38,29 @@ export default function ProgramaSessions({
     })
   }
 
+  // ── Registrar una sesión que YA se hizo (programa cargado tarde) ──
+  const [pasadaFor, setPasadaFor] = useState<string | null>(null)
+  const [pasadaWhen, setPasadaWhen] = useState("")
+  // El input no deja elegir el futuro: esto es sólo para lo que ya pasó (el
+  // servidor lo vuelve a exigir igual). Mismo patrón que pack-sessions.
+  const maxPasada = new Date(new Date().getTime() - 60_000)
+    .toLocaleString("sv", { timeZone: "America/Argentina/Buenos_Aires" })
+    .slice(0, 16)
+    .replace(" ", "T")
+
+  const registrarPasada = (serviceId: string) => {
+    setError(null)
+    // El input da hora ARGENTINA sin zona ("2026-07-14T15:00"); se convierte a
+    // instante real con el mismo desfase que usa toda la app (UTC-3).
+    const cuando = new Date(`${pasadaWhen}:00-03:00`)
+    if (isNaN(cuando.getTime())) { setError("Fecha inválida."); return }
+    start(async () => {
+      const r = await registrarSesionProgramaPasada(comboPurchaseId, serviceId, cuando.toISOString())
+      if (r.ok) { setPasadaFor(null); setPasadaWhen("") }
+      else setError(r.error ?? "Error")
+    })
+  }
+
   return (
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
       {services.map((s, i) => {
@@ -51,8 +74,14 @@ export default function ProgramaSessions({
               </span>
               {!done && s.durationMin > 0 && pickingService !== s.serviceId && (
                 <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} disabled={pending}
-                  onClick={() => { setError(null); setPickingService(s.serviceId) }}>
+                  onClick={() => { setError(null); setPasadaFor(null); setPickingService(s.serviceId) }}>
                   + Agendar sesión
+                </button>
+              )}
+              {!done && s.durationMin > 0 && pasadaFor !== s.serviceId && (
+                <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} disabled={pending}
+                  onClick={() => { setError(null); setPickingService(null); setPasadaWhen(""); setPasadaFor(s.serviceId) }}>
+                  Ya se hizo
                 </button>
               )}
             </div>
@@ -74,6 +103,40 @@ export default function ProgramaSessions({
                   onPick={(iso) => pick(s.serviceId, iso)}
                   onCancel={() => setPickingService(null)}
                 />
+              </div>
+            )}
+            {/* Para programas vendidos/cargados tarde: la sesión ya ocurrió, así
+                que no hay disponibilidad que chequear ni mail que mandar — sólo
+                queda dejar constancia. Mismo patrón que pack-sessions. */}
+            {pasadaFor === s.serviceId && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <label style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                  ¿Cuándo se hizo? (fecha y hora, ya pasada)
+                </label>
+                <input
+                  type="datetime-local"
+                  className="adm-input"
+                  value={pasadaWhen}
+                  max={maxPasada}
+                  onChange={(e) => setPasadaWhen(e.target.value)}
+                  style={{ maxWidth: 260 }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    className="adm-btn adm-btn--primary"
+                    disabled={pending || !pasadaWhen}
+                    onClick={() => registrarPasada(s.serviceId)}
+                  >
+                    {pending ? "Registrando…" : "Registrar como realizada"}
+                  </button>
+                  <button className="adm-btn" disabled={pending}
+                    onClick={() => { setPasadaFor(null); setPasadaWhen(""); setError(null) }}>
+                    Cancelar
+                  </button>
+                </div>
+                <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: 0 }}>
+                  Queda como <strong>completada</strong>. No se le avisa nada a la clienta.
+                </p>
               </div>
             )}
           </div>
