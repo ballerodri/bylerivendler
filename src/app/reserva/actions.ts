@@ -526,11 +526,11 @@ async function planCombo(
   // Fecha de la 1ª sesión (input.startsAt): futura, en la grilla, con disponibilidad real.
   const startDate = new Date(input.startsAt)
   if (isNaN(startDate.getTime())) return { ok: false, error: "La fecha de la 1ª sesión es inválida." }
-  // Futura SIEMPRE, también en modo admin: a diferencia de los packs, un combo
-  // no tiene forma de registrar sesiones ya ocurridas (`scheduleComboPlanSession`
-  // también las rechaza), así que aceptar una fecha pasada acá dejaría una compra
-  // a medio registrar que después no se puede completar. Un combo vendido hace
-  // semanas se carga desde la ficha ("Vender combo"), que no agenda nada.
+  // Futura SIEMPRE, también en modo admin: este flujo reserva de verdad
+  // (disponibilidad, profesional), así que no acepta fechas pasadas. Un combo
+  // vendido hace semanas se carga desde la ficha ("Vender combo", que no agenda
+  // nada) y sus sesiones ya hechas se registran ahí con "Ya se hizo"
+  // (`registrarSesionComboPasada`), igual que en los packs.
   if (startDate.getTime() <= Date.now())
     return { ok: false, error: "La 1ª sesión tiene que ser en una fecha futura." }
 

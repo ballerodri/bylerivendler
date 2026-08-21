@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import PackSessionPicker from "@/app/reserva/_components/pack-session-picker"
-import { scheduleComboPlanSession } from "../../actions"
+import { scheduleComboPlanSession, registrarSesionComboPasada } from "../../actions"
 import type { BusinessHour } from "@/app/reserva/data"
 
 export type ComboPlanSessionView = {
@@ -45,6 +45,29 @@ export default function ComboPlanSessions({
     })
   }
 
+  // ── Registrar una sesión del plan que YA se hizo (combo cargado tarde) ──
+  const [pasadaFor, setPasadaFor] = useState<number | null>(null)
+  const [pasadaWhen, setPasadaWhen] = useState("")
+  // El input no deja elegir el futuro: esto es sólo para lo que ya pasó (el
+  // servidor lo vuelve a exigir igual). Mismo patrón que pack-sessions.
+  const maxPasada = new Date(new Date().getTime() - 60_000)
+    .toLocaleString("sv", { timeZone: "America/Argentina/Buenos_Aires" })
+    .slice(0, 16)
+    .replace(" ", "T")
+
+  const registrarPasada = (sessionNo: number) => {
+    setError(null)
+    // El input da hora ARGENTINA sin zona ("2026-07-14T15:00"); se convierte a
+    // instante real con el mismo desfase que usa toda la app (UTC-3).
+    const cuando = new Date(`${pasadaWhen}:00-03:00`)
+    if (isNaN(cuando.getTime())) { setError("Fecha inválida."); return }
+    start(async () => {
+      const r = await registrarSesionComboPasada(comboPurchaseId, sessionNo, cuando.toISOString())
+      if (r.ok) { setPasadaFor(null); setPasadaWhen("") }
+      else setError(r.error ?? "Error")
+    })
+  }
+
   return (
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
       {sessions.map((s) => (
@@ -58,8 +81,14 @@ export default function ComboPlanSessions({
             </span>
             {!s.scheduledAtIso && s.durationMin > 0 && picking !== s.sessionNo && (
               <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} disabled={pending}
-                onClick={() => { setError(null); setPicking(s.sessionNo) }}>
+                onClick={() => { setError(null); setPasadaFor(null); setPicking(s.sessionNo) }}>
                 + Agendar
+              </button>
+            )}
+            {!s.scheduledAtIso && s.durationMin > 0 && pasadaFor !== s.sessionNo && (
+              <button className="adm-btn" style={{ fontSize: 11, padding: "3px 10px" }} disabled={pending}
+                onClick={() => { setError(null); setPicking(null); setPasadaWhen(""); setPasadaFor(s.sessionNo) }}>
+                Ya se hizo
               </button>
             )}
           </div>
@@ -81,6 +110,40 @@ export default function ComboPlanSessions({
                 onPick={(iso) => pick(s.sessionNo, iso)}
                 onCancel={() => setPicking(null)}
               />
+            </div>
+          )}
+          {/* Para combos vendidos/cargados tarde: la sesión ya ocurrió, así que
+              no hay disponibilidad que chequear ni mail que mandar — sólo queda
+              dejar constancia. Mismo patrón que pack-sessions. */}
+          {pasadaFor === s.sessionNo && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <label style={{ fontSize: 12, color: "var(--ink-mute)" }}>
+                ¿Cuándo se hizo? (fecha y hora, ya pasada)
+              </label>
+              <input
+                type="datetime-local"
+                className="adm-input"
+                value={pasadaWhen}
+                max={maxPasada}
+                onChange={(e) => setPasadaWhen(e.target.value)}
+                style={{ maxWidth: 260 }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  className="adm-btn adm-btn--primary"
+                  disabled={pending || !pasadaWhen}
+                  onClick={() => registrarPasada(s.sessionNo)}
+                >
+                  {pending ? "Registrando…" : "Registrar como realizada"}
+                </button>
+                <button className="adm-btn" disabled={pending}
+                  onClick={() => { setPasadaFor(null); setPasadaWhen(""); setError(null) }}>
+                  Cancelar
+                </button>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--ink-mute)", margin: 0 }}>
+                Queda como <strong>completada</strong>. No se le avisa nada a la clienta.
+              </p>
             </div>
           )}
         </div>

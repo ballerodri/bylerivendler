@@ -2676,6 +2676,300 @@ export async function scheduleComboPlanSession(
 }
 
 /**
+ * Registra la SESIÓN N del PLAN de un combo QUE YA SE HIZO (fecha pasada).
+ *
+ * Es el gemelo de `registrarSesionPasada` (packs) para los combos con plan:
+ * un combo vendido tarde (la clienta ya venía haciéndose las sesiones) se
+ * carga desde la ficha, pero `scheduleComboPlanSession` exige fecha futura,
+ * así que sin esto el plan miente — muestra como pendientes sesiones que en
+ * realidad ya se hicieron.
+ *
+ * Igual que en los packs: NO chequea horario de atención ni disponibilidad ni
+ * asigna profesional (no hay nada que reservar — sólo se deja constancia de
+ * algo que pasó), y no le manda ningún mail a la clienta. SÍ conserva que la
+ * sesión no esté ya agendada y que no se pise con otra sesión viva del mismo
+ * combo (eso sería un error de carga).
+ *
+ * Queda COMPLETADA pasando por `updateAppointmentStatus`, el mismo camino de
+ * siempre — así los puntos del Programa Cerca se suman una sola vez y sin una
+ * segunda copia de esa lógica.
+ */
+export async function registrarSesionComboPasada(
+  comboPurchaseId: string,
+  sessionNo: number,
+  startsAtIso: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "La fecha no es válida." }
+  // Al revés que agendar: acá EXIGIMOS que ya haya pasado. Una sesión futura
+  // se agenda con "+ Agendar", que sí chequea disponibilidad.
+  if (startsAt.getTime() >= Date.now())
+    return { ok: false, error: "Esto es para sesiones que YA se hicieron: elegí una fecha pasada." }
+  // Piso contra un error de tipeo (un año mal escrito): sin esto la sesión
+  // quedaría registrada en una fecha absurda. Mismo criterio que los packs.
+  if (startsAt.getTime() < Date.now() - 365 * 24 * 3600 * 1000)
+    return { ok: false, error: "Esa fecha es de hace más de un año: revisá que esté bien escrita." }
+
+  const { data: purchase } = await admin
+    .from("combo_purchases")
+    .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, session_no, order_index, zones)")
+    .eq("id", comboPurchaseId)
+    .maybeSingle()
+  if (!purchase) return { ok: false, error: "No encontramos ese combo." }
+
+  // Las patas de la sesión N y su duración: idéntico a `scheduleComboPlanSession`
+  // (snapshot congelado por-zona, o la duración del servicio cuando es fijo).
+  type CPS = {
+    service_id: string | null
+    service_name: string
+    session_no: number | null
+    order_index: number
+    zones: { name: string; duration_min: number; price_cents: number }[] | null
+  }
+  const legsRows = ((purchase.combo_purchase_services ?? []) as unknown as CPS[])
+    .filter((r) => r.session_no === sessionNo)
+    .sort((a, b) => a.order_index - b.order_index)
+  if (!legsRows.length) return { ok: false, error: "Esa sesión no es parte del plan del combo." }
+
+  const svcIds = legsRows.map((r) => r.service_id).filter((id): id is string => !!id)
+  if (svcIds.length !== legsRows.length)
+    return { ok: false, error: "Un tratamiento de esa sesión ya no existe en el sistema. Registrala como un turno común." }
+  const { data: svcRows } = await admin.from("services").select("id, duration_min, pricing_mode").in("id", svcIds)
+  const svcById = new Map(
+    ((svcRows ?? []) as { id: string; duration_min: number; pricing_mode: string }[]).map((s) => [s.id, s])
+  )
+  const legs: { serviceId: string; serviceName: string; durationMin: number; zones: CPS["zones"] }[] = []
+  for (const r of legsRows) {
+    let d: number
+    if (r.zones && r.zones.length) {
+      d = r.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+    } else {
+      const svc = svcById.get(r.service_id!)
+      if (!svc) return { ok: false, error: `"${r.service_name}" ya no existe en el sistema. Registrala como un turno común.` }
+      if (svc.pricing_mode === "per_zone")
+        return { ok: false, error: `"${r.service_name}" es por zona y no tiene zonas cargadas en el combo: registrala como un turno común.` }
+      d = svc.duration_min ?? 0
+    }
+    if (d <= 0) return { ok: false, error: `No pudimos calcular la duración de "${r.service_name}".` }
+    legs.push({ serviceId: r.service_id!, serviceName: r.service_name, durationMin: d, zones: r.zones ?? null })
+  }
+  const totalMin = legs.reduce((a, l) => a + l.durationMin, 0)
+
+  // Las sesiones vivas ya agendadas/registradas de este combo.
+  const { data: existing } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, combo_session_no")
+    .eq("combo_purchase_id", comboPurchaseId)
+  type ExRow = { id: string; starts_at: string; duration_min: number; status: string; combo_session_no: number | null }
+  const aliveAll = ((existing ?? []) as ExRow[]).filter((a) => isAliveStatus(a.status))
+
+  if (aliveAll.some((a) => a.combo_session_no === sessionNo))
+    return { ok: false, error: `La sesión ${sessionNo} ya está agendada.` }
+
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + totalMin * 60_000
+  const conflict = aliveAll.find((a) => {
+    const s = new Date(a.starts_at).getTime()
+    return newStartMs < s + a.duration_min * 60_000 && newEndMs > s
+  })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+    return { ok: false, error: `Se superpone con otra sesión de este combo (${when}hs).` }
+  }
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+
+  // SIEMPRE $0: el combo ya está pagado (Factura C al vender). Sin profesional:
+  // ya pasó, no hay agenda que resolver — igual que la sesión pasada de un pack.
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: purchase.client_id,
+      staff_id: null,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: new Date(newEndMs).toISOString(),
+      duration_min: totalMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      combo_purchase_id: comboPurchaseId,
+      combo_session_no: sessionNo,
+      notes_internal: `Combo ${purchase.combo_name}: Sesión ${sessionNo} · ya realizada, registrada a mano`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos registrarla: ${apptErr?.message}` }
+
+  let cursorMs = newStartMs
+  const { error: linkErr } = await admin.from("appointment_services").insert(
+    legs.map((l) => {
+      const row = {
+        appointment_id: appt.id,
+        service_id: l.serviceId,
+        duration_min: l.durationMin,
+        price_cents: 0,
+        zones: l.zones,
+        staff_id: null,
+        starts_at: new Date(cursorMs).toISOString(),
+      }
+      cursorMs += l.durationMin * 60_000
+      return row
+    })
+  )
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicios de la sesión: ${linkErr.message}` }
+  }
+
+  // Completarla por el camino de siempre (suma los puntos una sola vez). Si
+  // fallara, la sesión queda creada como pendiente y se completa desde la agenda.
+  const done = await updateAppointmentStatus(appt.id, "completed")
+  if (!done.ok) {
+    revalidatePath(`/admin/clientas/${purchase.client_id}`)
+    revalidatePath("/admin/turnos")
+    return {
+      ok: false,
+      error: `Se registró la sesión pero quedó pendiente (${done.error ?? "error"}). Completala desde la agenda, con el filtro "Pasados".`,
+    }
+  }
+
+  revalidatePath(`/admin/clientas/${purchase.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
+ * Registra UNA sesión de UN servicio de un programa LEGACY (compra sin plan)
+ * QUE YA SE HIZO (fecha pasada). El gemelo sin-plan de
+ * `registrarSesionComboPasada`, igual que `scheduleProgramaSession` lo es de
+ * `scheduleComboPlanSession`: mismas reglas (fecha pasada obligatoria, sin
+ * disponibilidad ni profesional ni mail, tope de sesiones por servicio, sin
+ * pisarse con otra sesión viva del combo) y también queda COMPLETADA vía
+ * `updateAppointmentStatus`.
+ */
+export async function registrarSesionProgramaPasada(
+  comboPurchaseId: string,
+  serviceId: string,
+  startsAtIso: string
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  if (!serviceId) return { ok: false, error: "Ese servicio ya no existe en el sistema. Registralo como un turno común." }
+
+  const startsAt = new Date(startsAtIso)
+  if (isNaN(startsAt.getTime())) return { ok: false, error: "La fecha no es válida." }
+  if (startsAt.getTime() >= Date.now())
+    return { ok: false, error: "Esto es para sesiones que YA se hicieron: elegí una fecha pasada." }
+  if (startsAt.getTime() < Date.now() - 365 * 24 * 3600 * 1000)
+    return { ok: false, error: "Esa fecha es de hace más de un año: revisá que esté bien escrita." }
+
+  const { data: purchase } = await admin
+    .from("combo_purchases")
+    .select("id, client_id, combo_name, combo_purchase_services(service_id, service_name, sessions, zones)")
+    .eq("id", comboPurchaseId)
+    .maybeSingle()
+  if (!purchase) return { ok: false, error: "No encontramos ese combo." }
+  type CPS = { service_id: string; service_name: string; sessions: number; zones: ZoneSnapshot[] | null }
+  const cps = (purchase.combo_purchase_services ?? []) as unknown as CPS[]
+  const target = cps.find((s) => s.service_id === serviceId)
+  if (!target) return { ok: false, error: "Ese servicio no es parte del combo." }
+
+  // Duración: del snapshot de zonas congelado (por-zona) o del servicio (fijo).
+  let durationMin: number
+  if (target.zones && target.zones.length) {
+    durationMin = target.zones.reduce((a, z) => a + (z.duration_min ?? 0), 0)
+  } else {
+    const { data: svc } = await admin.from("services").select("duration_min, pricing_mode").eq("id", serviceId).maybeSingle()
+    if (svc?.pricing_mode === "per_zone")
+      return { ok: false, error: `"${target.service_name}" es por zona y no tiene zonas cargadas en el combo: registralo como un turno común.` }
+    durationMin = (svc?.duration_min as number | null) ?? 0
+  }
+  if (durationMin <= 0) return { ok: false, error: "No pudimos calcular la duración de la sesión." }
+
+  const { data: existing } = await admin
+    .from("appointments")
+    .select("id, starts_at, duration_min, status, appointment_services(service_id)")
+    .eq("combo_purchase_id", comboPurchaseId)
+  type ExRow = { id: string; starts_at: string; duration_min: number; status: string; appointment_services: { service_id: string }[] }
+  const aliveAll = ((existing ?? []) as unknown as ExRow[]).filter((a) => isAliveStatus(a.status))
+
+  const usedForService = aliveAll.filter((a) => a.appointment_services?.some((l) => l.service_id === serviceId)).length
+  if (usedForService >= target.sessions)
+    return { ok: false, error: `Ya agendaste las ${target.sessions} sesión(es) de "${target.service_name}" de este combo.` }
+
+  const newStartMs = startsAt.getTime()
+  const newEndMs = newStartMs + durationMin * 60_000
+  const conflict = aliveAll.find((a) => {
+    const s = new Date(a.starts_at).getTime()
+    return newStartMs < s + a.duration_min * 60_000 && newEndMs > s
+  })
+  if (conflict) {
+    const when = new Date(conflict.starts_at).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+    return { ok: false, error: `Se superpone con otra sesión de este combo (${when}hs).` }
+  }
+
+  const { data: room } = await admin.from("rooms").select("id").eq("active", true).limit(1).maybeSingle()
+  const endsAt = new Date(startsAt.getTime() + durationMin * 60_000)
+
+  // SIEMPRE $0 y sin profesional, igual que `registrarSesionComboPasada`.
+  const { data: appt, error: apptErr } = await admin
+    .from("appointments")
+    .insert({
+      client_id: purchase.client_id,
+      staff_id: null,
+      room_id: room?.id ?? null,
+      starts_at: startsAt.toISOString(),
+      ends_at: endsAt.toISOString(),
+      duration_min: durationMin,
+      total_cents: 0,
+      deposit_cents: 0,
+      deposit_paid: true,
+      status: "pending",
+      source: "admin",
+      combo_purchase_id: comboPurchaseId,
+      notes_internal: `Combo ${purchase.combo_name}: ${target.service_name} · ya realizada, registrada a mano`,
+    })
+    .select("id")
+    .single()
+  if (apptErr || !appt) return { ok: false, error: `No pudimos registrarla: ${apptErr?.message}` }
+
+  const { error: linkErr } = await admin.from("appointment_services").insert({
+    appointment_id: appt.id,
+    service_id: serviceId,
+    duration_min: durationMin,
+    price_cents: 0,
+    zones: target.zones ?? null,
+    staff_id: null,
+    starts_at: startsAt.toISOString(),
+  })
+  if (linkErr) {
+    await admin.from("appointments").delete().eq("id", appt.id)
+    return { ok: false, error: `Servicio de la sesión: ${linkErr.message}` }
+  }
+
+  const done = await updateAppointmentStatus(appt.id, "completed")
+  if (!done.ok) {
+    revalidatePath(`/admin/clientas/${purchase.client_id}`)
+    revalidatePath("/admin/turnos")
+    return {
+      ok: false,
+      error: `Se registró la sesión pero quedó pendiente (${done.error ?? "error"}). Completala desde la agenda, con el filtro "Pasados".`,
+    }
+  }
+
+  revalidatePath(`/admin/clientas/${purchase.client_id}`)
+  revalidatePath("/admin/turnos")
+  return { ok: true }
+}
+
+/**
  * Registra una sesión de pack QUE YA SE HIZO (fecha pasada).
  *
  * Para packs vendidos fuera del sistema o cargados tarde: la sesión ocurrió,
