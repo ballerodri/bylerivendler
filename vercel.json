@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/reminders",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/birthdays",
+      "schedule": "0 12 * * *"
     }
   ]
 }
