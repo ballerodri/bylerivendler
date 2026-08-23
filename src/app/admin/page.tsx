@@ -101,9 +101,9 @@ export default async function AdminTodayPage() {
   }
 
   // Cumpleaños del mes (sólo admin/recepción, como el resto de la info de
-  // negocio): para saludarlas por WhatsApp — el cron diario manda además un
-  // mail con las del día. El filtro por mes (y el caso 29/02) vive en el
-  // módulo compartido con ese cron.
+  // negocio) — el cron diario manda además un mail con las del día; el saludo
+  // en sí lo hace el salón por fuera de la app. El filtro por mes (y el caso
+  // 29/02) vive en el módulo compartido con ese cron.
   let cumples: CumpleDelMes[] = []
   if (!staffProfile?.isProfessionalOnly) {
     const { data: birthdayRows } = await admin
@@ -226,33 +226,20 @@ export default async function AdminTodayPage() {
             Cumpleaños del mes
           </h2>
           <div className="adm-card">
-            {cumples.map((c) => {
-              const saludo = `¡Feliz cumpleaños, ${c.first_name}! 🎂 Todo el equipo de By Leri Vendler te desea un día hermoso. ¡Te esperamos para festejarlo con un mimo!`
-              const link = c.phone ? clientWhatsappLink(c.phone, saludo) : null
-              return (
-                <div key={c.id} className="adm-list-row" style={{ gridTemplateColumns: "70px 1fr auto" }}>
-                  <div className="adm-time">{c.day} {arNow.toLocaleDateString("es-AR", { month: "short", timeZone: TZ })}</div>
-                  <div>
-                    <div className="adm-name">
-                      <Link href={`/admin/clientas/${c.id}`}>
-                        {c.first_name} {c.last_name}
-                      </Link>
-                      {c.esHoy && <span className="adm-pill adm-pill--confirmed" style={{ marginLeft: 8 }}>¡Hoy!</span>}
-                    </div>
-                    {c.age !== null && <div className="adm-sub">cumple {c.age}</div>}
+            {cumples.map((c) => (
+              <div key={c.id} className="adm-list-row" style={{ gridTemplateColumns: "70px 1fr" }}>
+                <div className="adm-time">{c.day} {arNow.toLocaleDateString("es-AR", { month: "short", timeZone: TZ })}</div>
+                <div>
+                  <div className="adm-name">
+                    <Link href={`/admin/clientas/${c.id}`}>
+                      {c.first_name} {c.last_name}
+                    </Link>
+                    {c.esHoy && <span className="adm-pill adm-pill--confirmed" style={{ marginLeft: 8 }}>¡Hoy!</span>}
                   </div>
-                  <div className="adm-actions">
-                    {/* El saludo sólo el día del cumpleaños: antes sería spoiler,
-                        después llega tarde. El resto del mes es para planificar. */}
-                    {c.esHoy && link && (
-                      <a className="adm-btn" href={link} target="_blank" rel="noreferrer">
-                        Saludarla por WhatsApp
-                      </a>
-                    )}
-                  </div>
+                  {c.age !== null && <div className="adm-sub">cumple {c.age}</div>}
                 </div>
-              )
-            })}
+              </div>
+            ))}
           </div>
         </>
       )}
