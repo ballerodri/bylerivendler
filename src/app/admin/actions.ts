@@ -1450,6 +1450,37 @@ export async function updateStaffCalendarColor(
   return { ok: true }
 }
 
+/**
+ * Guarda de una sola vez el color de Calendar de VARIOS servicios (la pantalla
+ * "Colores del calendario": la lista completa, un color por fila). Sólo toca
+ * `calendar_color_id` — nada más del servicio.
+ *
+ * Se hace fila por fila a propósito: son pocas (los servicios del salón) y así
+ * un id que ya no existe no voltea el guardado de los demás; se informa cuántos
+ * fallaron en vez de mentir un "listo".
+ */
+export async function updateServiceCalendarColors(
+  rows: { serviceId: string; colorId: string | null }[]
+): Promise<{ ok: boolean; error?: string }> {
+  await requireStaff()
+  const admin = adminClient()
+
+  let failed = 0
+  for (const r of rows) {
+    const { error } = await admin
+      .from("services")
+      .update({ calendar_color_id: r.colorId })
+      .eq("id", r.serviceId)
+    if (error) failed++
+  }
+  if (failed > 0)
+    return { ok: false, error: `No se pudieron guardar ${failed} de ${rows.length} colores. Probá de nuevo.` }
+
+  revalidatePath("/admin/servicios")
+  revalidatePath("/admin/servicios/colores")
+  return { ok: true }
+}
+
 // ─── Comisiones por servicio ──────────────────────────────────────────────────
 
 export type CommissionInput = {

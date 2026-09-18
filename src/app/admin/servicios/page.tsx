@@ -61,8 +61,13 @@ export default async function AdminServiciosPage() {
 
   return (
     <>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
         <p className="adm-eyebrow" style={{ marginBottom: 0 }}>Catálogo</p>
+        {/* Los colores de Calendar se ponen mejor de corrido, viendo toda la
+            lista, que entrando servicio por servicio. */}
+        <Link href="/admin/servicios/colores" className="adm-btn" style={{ fontSize: 12 }}>
+          Colores del calendario
+        </Link>
       </div>
       <h1 className="adm-h1">
         Tus <em>servicios</em>
