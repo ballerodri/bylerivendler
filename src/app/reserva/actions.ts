@@ -10,6 +10,7 @@ import { sendGroupConfirmationEmail } from "@/lib/email/confirm-purchase"
 import { parseDob } from "@/lib/servicios/dob"
 import { ymd, filterFutureSlots, slotToUtcMs, AR_UTC_OFFSET } from "./data"
 import { createCalendarEvent } from "@/lib/google-calendar"
+import { pickCalendarColorId, firstServiceIdOfVisit } from "@/lib/servicios/calendar-color"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validatePackSlots, packSessionPrices, arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { slotHitsBlocked } from "@/lib/servicios/staff-blocks"
@@ -1005,7 +1006,9 @@ async function planLooseServices(
 async function createCalendarEventsForAppointments(
   supabase: ReturnType<typeof adminClient>,
   clientName: string,
-  items: { appointmentId: string; staffId: string | null; label: string; startsAtMs: number; durationMin: number }[]
+  // `serviceId` = el tratamiento que ARRANCA esa visita: de ahí sale el color
+  // del evento (si no tiene uno propio, se usa el de la profesional).
+  items: { appointmentId: string; staffId: string | null; serviceId: string | null; label: string; startsAtMs: number; durationMin: number }[]
 ): Promise<void> {
   const staffCache = new Map<string, { full_name: string | null; email: string | null; calendar_color_id: string | null }>()
   try {
@@ -1025,6 +1028,26 @@ async function createCalendarEventsForAppointments(
     // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
   }
 
+  // Colores propios de los servicios que arrancan cada visita (una sola
+  // consulta para todos). Si falla, los eventos caen al color de la profesional.
+  const serviceColor = new Map<string, string | null>()
+  try {
+    const distinctServiceIds = [...new Set(
+      items.map((item) => item.serviceId).filter((id): id is string => !!id)
+    )]
+    if (distinctServiceIds.length) {
+      const { data: svcRows } = await supabase
+        .from("services")
+        .select("id, calendar_color_id")
+        .in("id", distinctServiceIds)
+      for (const row of (svcRows ?? []) as { id: string; calendar_color_id: string | null }[]) {
+        serviceColor.set(row.id, row.calendar_color_id)
+      }
+    }
+  } catch {
+    // Non-fatal: sin esto el evento usa el color de la profesional.
+  }
+
   for (const item of items) {
     try {
       const cached = item.staffId ? staffCache.get(item.staffId) : undefined
@@ -1034,7 +1057,10 @@ async function createCalendarEventsForAppointments(
         serviceNames: [item.label],
         staffName: cached?.full_name ?? null,
         staffEmail: cached?.email ?? null,
-        staffColorId: cached?.calendar_color_id ?? null,
+        colorId: pickCalendarColorId(
+          item.serviceId ? serviceColor.get(item.serviceId) : null,
+          cached?.calendar_color_id ?? null
+        ),
         startsAt: new Date(item.startsAtMs),
         endsAt: new Date(item.startsAtMs + item.durationMin * 60_000),
         notes: null,
@@ -1508,6 +1534,7 @@ export async function createBooking(
       ordered.map((p, i) => ({
         appointmentId: created.appointmentIds[i],
         staffId: p.staffId,
+        serviceId: firstServiceIdOfVisit(p.legs),
         label: p.label,
         startsAtMs: p.startsAtMs,
         durationMin: p.durationMin,
@@ -1526,6 +1553,7 @@ export async function createBooking(
       ordered.map((p, i) => ({
         appointmentId: created.appointmentIds[i],
         staffId: p.staffId,
+        serviceId: firstServiceIdOfVisit(p.legs),
         label: p.label,
         startsAtMs: p.startsAtMs,
         durationMin: p.durationMin,
@@ -1549,6 +1577,7 @@ export async function createBooking(
         ordered.map((item, i) => ({
           appointmentId: created.appointmentIds[i],
           staffId: item.staffId,
+          serviceId: firstServiceIdOfVisit(item.legs),
           label: item.label,
           startsAtMs: item.startsAtMs,
           durationMin: item.durationMin,
@@ -1583,7 +1612,19 @@ export async function createBooking(
             .maybeSingle()
           staffName = staffRow?.full_name ?? null
           staffEmail = staffRow?.email ?? null
-          staffColorId = (staffRow as any)?.calendar_color_id ?? null
+          staffColorId = (staffRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
+        }
+        // El color lo define el tratamiento que ARRANCA la visita (puede tener
+        // varias patas encadenadas); sin color propio, el de la profesional.
+        const firstSvcId = firstServiceIdOfVisit(plannedAppt.legs)
+        let firstSvcColor: string | null = null
+        if (firstSvcId) {
+          const { data: svcRow } = await supabase
+            .from("services")
+            .select("calendar_color_id")
+            .eq("id", firstSvcId)
+            .maybeSingle()
+          firstSvcColor = (svcRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
         }
         const eventId = await createCalendarEvent({
           appointmentId: apptId,
@@ -1591,7 +1632,7 @@ export async function createBooking(
           serviceNames: services.map((s) => s.name),
           staffName,
           staffEmail,
-          staffColorId,
+          colorId: pickCalendarColorId(firstSvcColor, staffColorId),
           startsAt,
           endsAt,
           notes: null,
@@ -1619,6 +1660,7 @@ export async function createBooking(
       ordered.map((p, i) => ({
         appointmentId: created.appointmentIds[i],
         staffId: p.staffId,
+        serviceId: firstServiceIdOfVisit(p.legs),
         label: p.label,
         startsAtMs: p.startsAtMs,
         durationMin: p.durationMin,

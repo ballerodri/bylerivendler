@@ -19,6 +19,8 @@ export type ServiceRow = {
   pricing_mode: "fixed" | "per_zone"
   zone_selection: "multiple" | "single"
   order_last: boolean
+  /** Color del evento en Google Calendar (id de Google, "1".."11"); null = sin color propio. */
+  calendar_color_id: string | null
 }
 
 type CategoryRow = { id: string; name: string }
@@ -51,7 +53,7 @@ export default async function AdminServiceDetailPage({
     await Promise.all([
       admin
         .from("services")
-        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public, pricing_mode, zone_selection, order_last")
+        .select("id, category_id, name, description, duration_min, price_cents, points_earned, points_cost, active, visible_public, pricing_mode, zone_selection, order_last, calendar_color_id")
         .eq("id", id)
         .maybeSingle<ServiceRow>(),
       admin

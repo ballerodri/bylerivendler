@@ -5,6 +5,7 @@ import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { sendPurchaseCancellation, sendBookingReschedule } from "@/lib/email/booking-emails"
 import { deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
+import { pickCalendarColorId, firstServiceIdOfVisit } from "@/lib/servicios/calendar-color"
 import { arPartsFromUtc } from "@/lib/servicios/pack-sessions"
 import { fetchDayAvailability } from "@/app/reserva/actions"
 import { filterFutureSlots, AR_UTC_OFFSET } from "@/app/reserva/data"
@@ -151,7 +152,7 @@ export async function rescheduleMyAppointment(
       `id, status, starts_at, ends_at, duration_min, total_cents, google_event_id, staff_id,
        client:clients(id, user_id, email, first_name, last_name),
        staff:staff(full_name),
-       appointment_services(service_id, staff_id, starts_at, duration_min, service:services(name))`
+       appointment_services(service_id, staff_id, starts_at, duration_min, service:services(name, calendar_color_id))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -174,12 +175,13 @@ export async function rescheduleMyAppointment(
       first_name: string | null
       last_name: string | null
     } | null
+    staff: { full_name: string } | null
     appointment_services: {
       service_id: string
       staff_id: string | null
       starts_at: string | null
       duration_min: number
-      service: { name: string } | null
+      service: { name: string; calendar_color_id: string | null } | null
     }[]
   }
   const a = appt as unknown as ApptShape
@@ -334,12 +336,35 @@ export async function rescheduleMyAppointment(
     const serviceNames = a.appointment_services
       .map((s) => s.service?.name)
       .filter((n): n is string => Boolean(n))
+    // El portal no traía el color de la profesional (no lo necesitaba): se
+    // busca sólo acá, para poder aplicar la misma regla que el resto.
+    const staffColorForEvent = a.staff_id
+      ? ((await admin.from("staff").select("calendar_color_id").eq("id", a.staff_id).maybeSingle())
+          .data as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
+      : null
     updateCalendarEvent(a.google_event_id, {
       appointmentId,
       clientName: `${a.client?.first_name ?? ""} ${a.client?.last_name ?? ""}`.trim(),
       serviceNames,
-      staffName: (a as any).staff?.full_name ?? null,
+      staffName: a.staff?.full_name ?? null,
       staffEmail: null,
+      // MISMA regla que en los demás caminos: el color sale del tratamiento que
+      // arranca la visita, y si no tiene, de la profesional. Antes acá no se
+      // mandaba ninguno (el evento conservaba el que tenía); ahora se refresca,
+      // así un cambio de color del servicio también llega al reprogramar.
+      colorId: pickCalendarColorId(
+        (() => {
+          const firstId = firstServiceIdOfVisit(
+            a.appointment_services.map((x) => ({
+              serviceId: x.service_id,
+              // Sin `starts_at` (filas viejas) va al FINAL (ver admin/actions).
+              startsAtMs: x.starts_at ? new Date(x.starts_at).getTime() : Number.POSITIVE_INFINITY,
+            }))
+          )
+          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.calendar_color_id ?? null
+        })(),
+        staffColorForEvent
+      ),
       startsAt: newDate,
       endsAt,
       notes: null,

@@ -8,6 +8,7 @@ import { isStaffUser, requireAdmin } from "@/lib/staff"
 import { validatePayment, distributePayment } from "@/lib/servicios/payments"
 import { parseDob } from "@/lib/servicios/dob"
 import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from "@/lib/google-calendar"
+import { pickCalendarColorId, firstServiceIdOfVisit } from "@/lib/servicios/calendar-color"
 import { sendBookingReschedule } from "@/lib/email/booking-emails"
 import { computeZonePricing, resolveSelectedZones, type Zone, type ZoneSnapshot } from "@/lib/servicios/zones"
 import { validateComboPlan, planDistinctServices } from "@/lib/servicios/combo-plan"
@@ -514,7 +515,7 @@ export async function rescheduleAppointment(
       `id, status, starts_at, ends_at, duration_min, total_cents, google_event_id, staff_id,
        client:clients(email, first_name, last_name),
        staff:staff(full_name, email),
-       appointment_services(service_id, starts_at, duration_min, service:services(name))`
+       appointment_services(service_id, starts_at, duration_min, service:services(name, calendar_color_id))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -522,7 +523,7 @@ export async function rescheduleAppointment(
   if (apptErr) return { ok: false, error: apptErr.message }
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
-  type SvcShape = { service_id: string; starts_at: string | null; duration_min: number; service: { name: string } | null }
+  type SvcShape = { service_id: string; starts_at: string | null; duration_min: number; service: { name: string; calendar_color_id: string | null } | null }
   type ApptShape = {
     id: string
     status: string
@@ -624,9 +625,25 @@ export async function rescheduleAppointment(
       serviceNames,
       staffName: a.staff?.full_name ?? null,
       staffEmail: a.staff?.email ?? null,
-      staffColorId: a.staff_id
-        ? ((await admin.from("staff").select("calendar_color_id").eq("id", a.staff_id).maybeSingle()).data as any)?.calendar_color_id ?? null
-        : null,
+      // MISMA regla que al crear el evento: manda el color del tratamiento que
+      // arranca la visita. Si acá se mandara sólo el de la profesional, un turno
+      // creado con color de servicio lo perdería al reprogramarlo.
+      colorId: pickCalendarColorId(
+        (() => {
+          const firstId = firstServiceIdOfVisit(
+            a.appointment_services.map((x) => ({
+              serviceId: x.service_id,
+              // Sin `starts_at` (filas viejas) va al FINAL, no al principio: si no,
+              // una pata sin hora le ganaría a todas y elegiría el color equivocado.
+              startsAtMs: x.starts_at ? new Date(x.starts_at).getTime() : Number.POSITIVE_INFINITY,
+            }))
+          )
+          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.calendar_color_id ?? null
+        })(),
+        a.staff_id
+          ? ((await admin.from("staff").select("calendar_color_id").eq("id", a.staff_id).maybeSingle()).data as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
+          : null
+      ),
       startsAt: newDate,
       endsAt,
       notes: null,
@@ -718,6 +735,9 @@ const ServicePatch = z.object({
   active: z.boolean(),
   visible_public: z.boolean(),
   order_last: z.boolean(),
+  // Color del evento en Google Calendar: un id de Google ("1".."11") o null
+  // (sin color propio → el turno usa el de la profesional).
+  calendar_color_id: z.string().min(1).nullable().default(null),
   zones: z.array(ZoneInput).default([]),
 })
 
@@ -1017,6 +1037,7 @@ export async function createService(
     price_cents: number
     points_earned?: number
     points_cost?: number
+    calendar_color_id?: string | null
     zones: { name: string; duration_min: number; price_cents: number | null }[]
   }
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
@@ -1042,6 +1063,7 @@ export async function createService(
       price_cents: data.price_cents,
       points_earned: data.points_earned ?? 0,
       points_cost: data.points_cost ?? 0,
+      calendar_color_id: data.calendar_color_id ?? null,
       active: true,
       visible_public: true,
     })
@@ -1799,13 +1821,22 @@ export async function createAdminBooking(
     const { data: staffRow } = mainStaffId
       ? await admin.from("staff").select("full_name, email, calendar_color_id").eq("id", mainStaffId).maybeSingle()
       : { data: null }
+    // El color lo define el tratamiento que ARRANCA la visita (`serviceOrder[0]`,
+    // que por construcción es el primero en el tiempo); sin color propio, el de
+    // la profesional. Va acá adentro a propósito: este bloque es no-bloqueante,
+    // así que un problema con el color nunca puede impedir crear el turno.
+    const firstSvcIdAdmin = input.serviceOrder[0] ?? input.serviceIds[0]
+    const { data: firstSvcRow } = firstSvcIdAdmin
+      ? await admin.from("services").select("calendar_color_id").eq("id", firstSvcIdAdmin).maybeSingle()
+      : { data: null }
+    const firstSvcColor = (firstSvcRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
       clientName: `${clientRow?.first_name ?? ""} ${clientRow?.last_name ?? ""}`.trim(),
       serviceNames: services.map((s) => s.name),
       staffName: staffRow?.full_name ?? null,
       staffEmail: staffRow?.email ?? null,
-      staffColorId: (staffRow as any)?.calendar_color_id ?? null,
+      colorId: pickCalendarColorId(firstSvcColor, (staffRow as { calendar_color_id?: string | null } | null)?.calendar_color_id ?? null),
       startsAt,
       endsAt,
       notes: input.notes || null,

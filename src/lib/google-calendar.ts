@@ -25,7 +25,12 @@ export type CalendarEventInput = {
   serviceNames: string[]
   staffName: string | null
   staffEmail: string | null
-  staffColorId?: string | null
+  /**
+   * Color del evento. Sale de `pickCalendarColorId`: el del SERVICIO si tiene
+   * uno propio, si no el de la profesional. Ya no es "el color del staff" — por
+   * eso el nombre es `colorId` a secas.
+   */
+  colorId?: string | null
   startsAt: Date
   endsAt: Date
   notes?: string | null
@@ -51,7 +56,7 @@ function buildRequestBody(input: CalendarEventInput) {
     start: { dateTime: input.startsAt.toISOString(), timeZone: AR_TZ },
     end: { dateTime: input.endsAt.toISOString(), timeZone: AR_TZ },
     attendees,
-    ...(input.staffColorId ? { colorId: input.staffColorId } : {}),
+    ...(input.colorId ? { colorId: input.colorId } : {}),
     reminders: {
       useDefault: false,
       overrides: [{ method: "popup" as const, minutes: 60 }],
