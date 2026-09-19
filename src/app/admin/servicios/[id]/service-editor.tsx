@@ -4,7 +4,6 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { updateService, deleteService, updateServiceStaff, updateServiceOrderRules } from "../../actions"
 import type { OtherService, ProfessionalRow, ServiceRow } from "./page"
-import CalendarColorSwatches, { calendarColorHex, calendarColorName } from "../../_components/calendar-color-swatches"
 
 export default function ServiceEditor({
   service,
@@ -83,7 +82,6 @@ export default function ServiceEditor({
     active: service.active,
     visible_public: service.visible_public,
     order_last: service.order_last,
-    calendar_color_id: service.calendar_color_id,
   })
   const [zones, setZones] = useState<{ name: string; duration_min: number; price_cents: number | null }[]>(initialZones)
   const [pending, startTransition] = useTransition()
@@ -244,36 +242,6 @@ export default function ServiceEditor({
           </div>
         </>
       )}
-
-      {/* ── Color del evento en Google Calendar ── */}
-      <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Color en Google Calendar</p>
-      <div style={{ marginBottom: 20 }}>
-        <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
-          Con qué color aparecen en el calendario los turnos de este tratamiento.
-          <strong> Pesa más que el color de la profesional</strong>: sin color propio, el turno
-          toma el de quien lo atiende.
-        </p>
-        <CalendarColorSwatches
-          value={data.calendar_color_id}
-          onChange={(colorId) => setData({ ...data, calendar_color_id: colorId })}
-          disabled={pending}
-        />
-        <div style={{ fontSize: 12, color: "var(--ink-mute)", display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-          {data.calendar_color_id ? (
-            <>
-              <span
-                style={{
-                  display: "inline-block", width: 12, height: 12, borderRadius: "50%",
-                  background: calendarColorHex(data.calendar_color_id) ?? undefined,
-                }}
-              />
-              {calendarColorName(data.calendar_color_id)}
-            </>
-          ) : (
-            "Sin color propio (usa el de la profesional)"
-          )}
-        </div>
-      </div>
 
       {/* ── Orden al combinar con otros servicios ── */}
       <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Orden al combinar</p>

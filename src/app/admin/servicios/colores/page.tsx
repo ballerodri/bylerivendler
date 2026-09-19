@@ -2,18 +2,19 @@ import Link from "next/link"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin } from "@/lib/staff"
-import ServiceColorsEditor from "./colors-editor"
+import CategoryColorsEditor from "./colors-editor"
 
 export const dynamic = "force-dynamic"
 
-export type ColorServiceRow = {
+export type ColorCategoryRow = {
   id: string
   name: string
-  category: string | null
   calendar_color_id: string | null
+  /** Los tratamientos que van a usar ese color (para ver qué se está pintando). */
+  services: string[]
 }
 
-export default async function ServiceColorsPage() {
+export default async function CategoryColorsPage() {
   const ssr = await createSsrClient()
   const { data: { user } } = await ssr.auth.getUser()
   if (user) await requireAdmin(user.id)
@@ -24,21 +25,19 @@ export default async function ServiceColorsPage() {
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  // Sólo los activos: colorear uno dado de baja no sirve para nada (no se
-  // reserva). El orden es por categoría y nombre, igual que la lista.
   const { data } = await admin
-    .from("services")
-    .select("id, name, calendar_color_id, category:service_categories(name)")
-    .eq("active", true)
+    .from("service_categories")
+    .select("id, name, calendar_color_id, services(name, active)")
     .order("name")
 
-  const services: ColorServiceRow[] = ((data ?? []) as unknown as {
-    id: string; name: string; calendar_color_id: string | null; category: { name: string } | null
-  }[]).map((s) => ({
-    id: s.id,
-    name: s.name,
-    category: s.category?.name ?? null,
-    calendar_color_id: s.calendar_color_id,
+  const categories: ColorCategoryRow[] = ((data ?? []) as unknown as {
+    id: string; name: string; calendar_color_id: string | null; services: { name: string; active: boolean }[] | null
+  }[]).map((c) => ({
+    id: c.id,
+    name: c.name,
+    calendar_color_id: c.calendar_color_id,
+    // Sólo los activos: los dados de baja no se reservan, no aportan a la vista.
+    services: (c.services ?? []).filter((s) => s.active).map((s) => s.name).sort(),
   }))
 
   return (
@@ -48,9 +47,9 @@ export default async function ServiceColorsPage() {
       </p>
       <h1 className="adm-h1">Colores del <em>calendario</em></h1>
       <p className="adm-lede">
-        El color con el que aparece cada tratamiento en Google Calendar, todos en una pantalla.
+        Un color por categoría: todos sus tratamientos aparecen con ese color en Google Calendar.
       </p>
-      <ServiceColorsEditor services={services} />
+      <CategoryColorsEditor categories={categories} />
     </>
   )
 }

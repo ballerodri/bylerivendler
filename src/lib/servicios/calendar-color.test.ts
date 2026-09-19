@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest"
 import { pickCalendarColorId, firstServiceIdOfVisit } from "./calendar-color"
 
-describe("pickCalendarColorId — el servicio pesa más que la profesional", () => {
-  it("con color del servicio, manda ese", () => {
+describe("pickCalendarColorId — la categoría pesa más que la profesional", () => {
+  it("con color de la categoría, manda ese", () => {
     expect(pickCalendarColorId("5", "9")).toBe("5")
   })
-  it("sin color del servicio, cae al de la profesional", () => {
+  it("sin color de la categoría, cae al de la profesional", () => {
     expect(pickCalendarColorId(null, "9")).toBe("9")
   })
   it("sin ninguno de los dos, no hay color (queda el del calendario)", () => {

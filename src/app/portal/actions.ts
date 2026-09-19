@@ -152,7 +152,7 @@ export async function rescheduleMyAppointment(
       `id, status, starts_at, ends_at, duration_min, total_cents, google_event_id, staff_id,
        client:clients(id, user_id, email, first_name, last_name),
        staff:staff(full_name),
-       appointment_services(service_id, staff_id, starts_at, duration_min, service:services(name, calendar_color_id))`
+       appointment_services(service_id, staff_id, starts_at, duration_min, service:services(name, category:service_categories(calendar_color_id)))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -181,7 +181,7 @@ export async function rescheduleMyAppointment(
       staff_id: string | null
       starts_at: string | null
       duration_min: number
-      service: { name: string; calendar_color_id: string | null } | null
+      service: { name: string; category: { calendar_color_id: string | null } | null } | null
     }[]
   }
   const a = appt as unknown as ApptShape
@@ -348,8 +348,8 @@ export async function rescheduleMyAppointment(
       serviceNames,
       staffName: a.staff?.full_name ?? null,
       staffEmail: null,
-      // MISMA regla que en los demás caminos: el color sale del tratamiento que
-      // arranca la visita, y si no tiene, de la profesional. Antes acá no se
+      // MISMA regla que en los demás caminos: el color sale de la CATEGORÍA del
+      // tratamiento que arranca la visita, y si no tiene, de la profesional. Antes acá no se
       // mandaba ninguno (el evento conservaba el que tenía); ahora se refresca,
       // así un cambio de color del servicio también llega al reprogramar.
       colorId: pickCalendarColorId(
@@ -361,7 +361,7 @@ export async function rescheduleMyAppointment(
               startsAtMs: x.starts_at ? new Date(x.starts_at).getTime() : Number.POSITIVE_INFINITY,
             }))
           )
-          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.calendar_color_id ?? null
+          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.category?.calendar_color_id ?? null
         })(),
         staffColorForEvent
       ),

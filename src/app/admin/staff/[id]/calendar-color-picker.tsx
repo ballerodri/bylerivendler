@@ -32,7 +32,8 @@ export default function CalendarColorPicker({
       </h3>
       <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 16 }}>
         Los turnos de esta profesional aparecen con este color en el calendario, salvo que
-        el tratamiento tenga uno propio: <strong>el color del servicio pesa más</strong>.
+        la categoría del tratamiento tenga uno propio: <strong>el color de la categoría pesa
+        más</strong> (se define en Servicios → Colores del calendario).
       </p>
 
       <div style={{ marginBottom: 16 }}>

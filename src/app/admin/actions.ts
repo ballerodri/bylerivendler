@@ -515,7 +515,7 @@ export async function rescheduleAppointment(
       `id, status, starts_at, ends_at, duration_min, total_cents, google_event_id, staff_id,
        client:clients(email, first_name, last_name),
        staff:staff(full_name, email),
-       appointment_services(service_id, starts_at, duration_min, service:services(name, calendar_color_id))`
+       appointment_services(service_id, starts_at, duration_min, service:services(name, category:service_categories(calendar_color_id)))`
     )
     .eq("id", appointmentId)
     .maybeSingle()
@@ -523,7 +523,7 @@ export async function rescheduleAppointment(
   if (apptErr) return { ok: false, error: apptErr.message }
   if (!appt) return { ok: false, error: "Turno no encontrado" }
 
-  type SvcShape = { service_id: string; starts_at: string | null; duration_min: number; service: { name: string; calendar_color_id: string | null } | null }
+  type SvcShape = { service_id: string; starts_at: string | null; duration_min: number; service: { name: string; category: { calendar_color_id: string | null } | null } | null }
   type ApptShape = {
     id: string
     status: string
@@ -638,7 +638,7 @@ export async function rescheduleAppointment(
               startsAtMs: x.starts_at ? new Date(x.starts_at).getTime() : Number.POSITIVE_INFINITY,
             }))
           )
-          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.calendar_color_id ?? null
+          return a.appointment_services.find((x) => x.service_id === firstId)?.service?.category?.calendar_color_id ?? null
         })(),
         a.staff_id
           ? ((await admin.from("staff").select("calendar_color_id").eq("id", a.staff_id).maybeSingle()).data as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
@@ -735,9 +735,6 @@ const ServicePatch = z.object({
   active: z.boolean(),
   visible_public: z.boolean(),
   order_last: z.boolean(),
-  // Color del evento en Google Calendar: un id de Google ("1".."11") o null
-  // (sin color propio → el turno usa el de la profesional).
-  calendar_color_id: z.string().min(1).nullable().default(null),
   zones: z.array(ZoneInput).default([]),
 })
 
@@ -1037,7 +1034,6 @@ export async function createService(
     price_cents: number
     points_earned?: number
     points_cost?: number
-    calendar_color_id?: string | null
     zones: { name: string; duration_min: number; price_cents: number | null }[]
   }
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
@@ -1063,7 +1059,6 @@ export async function createService(
       price_cents: data.price_cents,
       points_earned: data.points_earned ?? 0,
       points_cost: data.points_cost ?? 0,
-      calendar_color_id: data.calendar_color_id ?? null,
       active: true,
       visible_public: true,
     })
@@ -1451,16 +1446,14 @@ export async function updateStaffCalendarColor(
 }
 
 /**
- * Guarda de una sola vez el color de Calendar de VARIOS servicios (la pantalla
- * "Colores del calendario": la lista completa, un color por fila). Sólo toca
- * `calendar_color_id` — nada más del servicio.
+ * Guarda de una sola vez el color de Calendar de VARIAS categorías (la pantalla
+ * "Colores del calendario"). Todos los servicios de una categoría usan su color.
  *
- * Se hace fila por fila a propósito: son pocas (los servicios del salón) y así
- * un id que ya no existe no voltea el guardado de los demás; se informa cuántos
- * fallaron en vez de mentir un "listo".
+ * Fila por fila a propósito: son pocas, y así una categoría borrada no voltea el
+ * guardado de las demás; se informa cuántas fallaron en vez de mentir un "listo".
  */
-export async function updateServiceCalendarColors(
-  rows: { serviceId: string; colorId: string | null }[]
+export async function updateCategoryCalendarColors(
+  rows: { categoryId: string; colorId: string | null }[]
 ): Promise<{ ok: boolean; error?: string }> {
   await requireStaff()
   const admin = adminClient()
@@ -1468,9 +1461,9 @@ export async function updateServiceCalendarColors(
   let failed = 0
   for (const r of rows) {
     const { error } = await admin
-      .from("services")
+      .from("service_categories")
       .update({ calendar_color_id: r.colorId })
-      .eq("id", r.serviceId)
+      .eq("id", r.categoryId)
     if (error) failed++
   }
   if (failed > 0)
@@ -1852,15 +1845,15 @@ export async function createAdminBooking(
     const { data: staffRow } = mainStaffId
       ? await admin.from("staff").select("full_name, email, calendar_color_id").eq("id", mainStaffId).maybeSingle()
       : { data: null }
-    // El color lo define el tratamiento que ARRANCA la visita (`serviceOrder[0]`,
-    // que por construcción es el primero en el tiempo); sin color propio, el de
-    // la profesional. Va acá adentro a propósito: este bloque es no-bloqueante,
+    // El color sale de la CATEGORÍA del tratamiento que ARRANCA la visita
+    // (`serviceOrder[0]`, que por construcción es el primero en el tiempo); sin
+    // color en la categoría, el de la profesional. Va acá adentro a propósito: este bloque es no-bloqueante,
     // así que un problema con el color nunca puede impedir crear el turno.
     const firstSvcIdAdmin = input.serviceOrder[0] ?? input.serviceIds[0]
     const { data: firstSvcRow } = firstSvcIdAdmin
-      ? await admin.from("services").select("calendar_color_id").eq("id", firstSvcIdAdmin).maybeSingle()
+      ? await admin.from("services").select("category:service_categories(calendar_color_id)").eq("id", firstSvcIdAdmin).maybeSingle()
       : { data: null }
-    const firstSvcColor = (firstSvcRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
+    const firstSvcColor = (firstSvcRow as unknown as { category: { calendar_color_id: string | null } | null } | null)?.category?.calendar_color_id ?? null
     const eventId = await createCalendarEvent({
       appointmentId: appt.id,
       clientName: `${clientRow?.first_name ?? ""} ${clientRow?.last_name ?? ""}`.trim(),

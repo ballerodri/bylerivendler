@@ -1028,8 +1028,8 @@ async function createCalendarEventsForAppointments(
     // Non-fatal: los eventos de Calendar quedarán sin nombre de profesional.
   }
 
-  // Colores propios de los servicios que arrancan cada visita (una sola
-  // consulta para todos). Si falla, los eventos caen al color de la profesional.
+  // Color de la CATEGORÍA de los tratamientos que arrancan cada visita (una
+  // sola consulta para todos). Si falla, los eventos caen al de la profesional.
   const serviceColor = new Map<string, string | null>()
   try {
     const distinctServiceIds = [...new Set(
@@ -1038,10 +1038,10 @@ async function createCalendarEventsForAppointments(
     if (distinctServiceIds.length) {
       const { data: svcRows } = await supabase
         .from("services")
-        .select("id, calendar_color_id")
+        .select("id, category:service_categories(calendar_color_id)")
         .in("id", distinctServiceIds)
-      for (const row of (svcRows ?? []) as { id: string; calendar_color_id: string | null }[]) {
-        serviceColor.set(row.id, row.calendar_color_id)
+      for (const row of (svcRows ?? []) as unknown as { id: string; category: { calendar_color_id: string | null } | null }[]) {
+        serviceColor.set(row.id, row.category?.calendar_color_id ?? null)
       }
     }
   } catch {
@@ -1614,17 +1614,17 @@ export async function createBooking(
           staffEmail = staffRow?.email ?? null
           staffColorId = (staffRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
         }
-        // El color lo define el tratamiento que ARRANCA la visita (puede tener
-        // varias patas encadenadas); sin color propio, el de la profesional.
+        // El color sale de la CATEGORÍA del tratamiento que ARRANCA la visita
+        // (puede tener varias patas encadenadas); sin color, el de la profesional.
         const firstSvcId = firstServiceIdOfVisit(plannedAppt.legs)
         let firstSvcColor: string | null = null
         if (firstSvcId) {
           const { data: svcRow } = await supabase
             .from("services")
-            .select("calendar_color_id")
+            .select("category:service_categories(calendar_color_id)")
             .eq("id", firstSvcId)
             .maybeSingle()
-          firstSvcColor = (svcRow as { calendar_color_id: string | null } | null)?.calendar_color_id ?? null
+          firstSvcColor = (svcRow as unknown as { category: { calendar_color_id: string | null } | null } | null)?.category?.calendar_color_id ?? null
         }
         const eventId = await createCalendarEvent({
           appointmentId: apptId,

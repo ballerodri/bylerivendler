@@ -3,7 +3,6 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { createService } from "../../actions"
-import CalendarColorSwatches, { calendarColorHex, calendarColorName } from "../../_components/calendar-color-swatches"
 
 export default function NewServiceForm({
   categories,
@@ -23,7 +22,6 @@ export default function NewServiceForm({
     zone_selection: "multiple" as "multiple" | "single",
     duration_min: 60,
     price_cents: 0,
-    calendar_color_id: null as string | null,
   })
   const [zones, setZones] = useState<{ name: string; duration_min: number; price_cents: number | null }[]>([])
 
@@ -37,7 +35,6 @@ export default function NewServiceForm({
         zone_selection: data.zone_selection,
         duration_min: data.duration_min,
         price_cents: data.price_cents,
-        calendar_color_id: data.calendar_color_id,
         zones: data.pricing_mode === "per_zone" ? zones : [],
       })
       if (r.ok) {
@@ -127,36 +124,6 @@ export default function NewServiceForm({
       {data.pricing_mode === "per_zone" && (
         <ZonesEditor zones={zones} setZones={setZones} single={data.zone_selection === "single"} />
       )}
-
-      {/* Color del evento en Google Calendar (opcional, se puede cambiar después). */}
-      <div style={{ marginTop: 20 }}>
-        <p className="adm-eyebrow" style={{ marginBottom: 8 }}>Color en Google Calendar</p>
-        <p style={{ fontSize: 12, color: "var(--ink-mute)", marginBottom: 12 }}>
-          Con qué color aparecen en el calendario los turnos de este tratamiento.
-          <strong> Pesa más que el color de la profesional</strong>: sin color propio, el turno
-          toma el de quien lo atiende.
-        </p>
-        <CalendarColorSwatches
-          value={data.calendar_color_id}
-          onChange={(colorId) => setData({ ...data, calendar_color_id: colorId })}
-          disabled={pending}
-        />
-        <div style={{ fontSize: 12, color: "var(--ink-mute)", display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
-          {data.calendar_color_id ? (
-            <>
-              <span
-                style={{
-                  display: "inline-block", width: 12, height: 12, borderRadius: "50%",
-                  background: calendarColorHex(data.calendar_color_id) ?? undefined,
-                }}
-              />
-              {calendarColorName(data.calendar_color_id)}
-            </>
-          ) : (
-            "Sin color propio (usa el de la profesional)"
-          )}
-        </div>
-      </div>
 
       <p style={{ fontSize: 12, color: "var(--ink-mute)", marginTop: 8 }}>
         Después de crear el servicio, definí sus puntos en la sección <strong>Programa Cerca</strong> del menú.
