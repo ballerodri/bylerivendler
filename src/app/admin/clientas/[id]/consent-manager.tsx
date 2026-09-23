@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { uploadClientPhoto, deleteClientPhoto, updateClientPhotoNote } from "../../actions"
-import { DropZone, Previews, filtrarImagenes, type Elegida } from "./image-picker"
+import { DropZone, Previews, filtrarImagenes, comprimirImagen, type Elegida } from "./image-picker"
 
 // Las hojas del consentimiento en PAPEL (ficha técnica + consentimiento
 // informado, 3 hojas) fotografiadas. Vive en la misma tabla y el mismo bucket
@@ -67,9 +67,11 @@ export default function ConsentManager({
       for (let i = 0; i < aSubir.length; i++) {
         setProgreso(`Subiendo ${i + 1} de ${aSubir.length}…`)
         const fd = new FormData()
-        fd.set("file", aSubir[i].file)
+        // Achicada en el navegador, igual que las fotos antes/después: la
+        // original de cámara pasa el límite del cuerpo de la server action.
+        fd.set("file", await comprimirImagen(aSubir[i].file))
         fd.set("type", "consent")
-        const r = await uploadClientPhoto(clientId, fd)
+        const r = await uploadClientPhoto(clientId, fd).catch(() => ({ ok: false as const }))
         if (r.ok) URL.revokeObjectURL(aSubir[i].url)
         else fallidas.push(aSubir[i])
       }

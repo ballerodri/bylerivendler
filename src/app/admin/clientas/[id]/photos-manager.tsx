@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { uploadClientPhoto, deleteClientPhoto, togglePhotoVisibility } from "../../actions"
-import { DropZone, Previews, filtrarImagenes, type Elegida } from "./image-picker"
+import { DropZone, Previews, filtrarImagenes, comprimirImagen, type Elegida } from "./image-picker"
 
 type Photo = {
   id: string
@@ -51,9 +51,13 @@ export default function PhotosManager({
       for (let i = 0; i < aSubir.length; i++) {
         setProgreso(`Subiendo ${i + 1} de ${aSubir.length}…`)
         const fd = new FormData()
-        fd.set("file", aSubir[i].file)
+        // Achicada en el navegador: la original de cámara pasa el límite del
+        // cuerpo de la server action y tumbaba la página entera.
+        fd.set("file", await comprimirImagen(aSubir[i].file))
         fd.set("type", type)
-        const r = await uploadClientPhoto(clientId, fd)
+        // Si el POST en sí falla (foto igual demasiado grande, sin señal), que
+        // quede como fallida y se reintente — antes volteaba la página.
+        const r = await uploadClientPhoto(clientId, fd).catch(() => ({ ok: false as const }))
         if (r.ok) URL.revokeObjectURL(aSubir[i].url)
         else fallidas.push(aSubir[i])
       }
