@@ -17,6 +17,73 @@ export const ACCEPTED_IMAGE_TYPES = [
 
 export type Elegida = { file: File; url: string }
 
+// Una foto de cámara (iPhone/Android) pesa 3–15 MB y en iPhone viene en HEIC.
+// Subirla tal cual reventaba el límite del cuerpo de las server actions (la
+// página moría con "This page couldn't load"), y el HEIC después no se ve en
+// navegadores que no son Safari. Antes de subir se re-encoda en el navegador a
+// JPEG de como mucho 2000px de lado: queda en ~0,5–1,5 MB y en un formato que
+// se ve en cualquier lado. Si el navegador no puede decodificarla (raro), se
+// sube la original y el servidor decide.
+const MAX_LADO = 2000
+const CALIDAD_JPEG = 0.85
+
+async function decodificar(file: File): Promise<ImageBitmap | HTMLImageElement | null> {
+  try {
+    // Aplica la orientación EXIF (las fotos de cámara la traen casi siempre).
+    return await createImageBitmap(file, { imageOrientation: "from-image" })
+  } catch {}
+  try {
+    return await createImageBitmap(file)
+  } catch {}
+  // Último intento: un <img> común (también respeta EXIF).
+  const url = URL.createObjectURL(file)
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode()
+    return img
+  } catch {
+    return null
+  } finally {
+    // El <img> ya decodificado se puede dibujar igual con la URL revocada.
+    URL.revokeObjectURL(url)
+  }
+}
+
+export async function comprimirImagen(file: File): Promise<File> {
+  const fuente = await decodificar(file)
+  if (!fuente) return file
+
+  const w = "naturalWidth" in fuente ? fuente.naturalWidth : fuente.width
+  const h = "naturalHeight" in fuente ? fuente.naturalHeight : fuente.height
+  if (!w || !h) return file
+  const escala = Math.min(1, MAX_LADO / Math.max(w, h))
+
+  // Un JPEG que ya es chico y no hay que achicar se sube tal cual.
+  if (escala === 1 && file.type === "image/jpeg" && file.size <= 1_500_000) return file
+
+  try {
+    const canvas = document.createElement("canvas")
+    canvas.width = Math.round(w * escala)
+    canvas.height = Math.round(h * escala)
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return file
+    ctx.drawImage(fuente, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", CALIDAD_JPEG)
+    )
+    if (!blob) return file
+    // Si "comprimir" la agrandó (un JPEG ya óptimo), mejor la original.
+    if (file.type === "image/jpeg" && blob.size >= file.size) return file
+    const nombre = file.name.replace(/\.[^.]+$/, "") || "foto"
+    return new File([blob], `${nombre}.jpg`, { type: "image/jpeg" })
+  } catch {
+    return file
+  } finally {
+    if ("close" in fuente) fuente.close()
+  }
+}
+
 /**
  * Separa lo que es imagen de lo que no. Las válidas ya vienen con su URL de
  * vista previa: hay que revocarla (URL.revokeObjectURL) al quitarlas o cuando
