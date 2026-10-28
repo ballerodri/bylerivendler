@@ -12,11 +12,14 @@ export default function FacturarForm({
   tieneDni,
   dni,
   clientId,
+  volver = "/admin/facturacion",
 }: {
   appointmentId: string
   tieneDni: boolean
   dni?: string | null
   clientId?: string
+  /** A dónde ir después de emitir. */
+  volver?: string
 }) {
   const router = useRouter()
   const [pending, start] = useTransition()
@@ -78,7 +81,7 @@ export default function FacturarForm({
                   ? { doc: persona.doc, condIva: persona.condicionIva, nombre: persona.nombre || null }
                   : undefined
               )
-              if (r.ok) router.push("/admin/facturacion")
+              if (r.ok) router.push(volver)
               else setError(r.error ?? "Error al emitir")
             })
           }

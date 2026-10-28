@@ -47,9 +47,14 @@ export default async function FacturacionPage() {
     <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
         <p className="adm-eyebrow" style={{ marginBottom: 0 }}>Facturación</p>
-        <Link href="/admin/facturacion/nueva" className="adm-btn" style={{ fontSize: 12 }}>
-          + Factura manual
-        </Link>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link href="/admin/facturacion/realizados" className="adm-btn" style={{ fontSize: 12 }}>
+            Turnos realizados
+          </Link>
+          <Link href="/admin/facturacion/nueva" className="adm-btn" style={{ fontSize: 12 }}>
+            + Factura manual
+          </Link>
+        </div>
       </div>
       <h1 className="adm-h1">Fac<em>turas</em></h1>
       <p className="adm-lede">{invoices.length} comprobante{invoices.length === 1 ? "" : "s"}.</p>

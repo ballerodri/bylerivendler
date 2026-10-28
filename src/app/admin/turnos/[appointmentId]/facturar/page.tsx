@@ -9,8 +9,18 @@ import FacturarForm from "./facturar-form"
 
 export const dynamic = "force-dynamic"
 
-export default async function FacturarTurnoPage({ params }: { params: Promise<{ appointmentId: string }> }) {
+export default async function FacturarTurnoPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ appointmentId: string }>
+  searchParams: Promise<{ volver?: string }>
+}) {
   const { appointmentId } = await params
+  // A dónde volver después de emitir (p. ej. la lista de turnos realizados).
+  // Sólo rutas internas del admin: nada de redirigir a otro sitio.
+  const { volver: volverParam } = await searchParams
+  const volver = volverParam?.startsWith("/admin/") ? volverParam : "/admin/facturacion"
   const ssr = await createSsrClient()
   const { data: { user } } = await ssr.auth.getUser()
   if (user) await requireAdmin(user.id)
@@ -90,6 +100,7 @@ export default async function FacturarTurnoPage({ params }: { params: Promise<{ 
         tieneDni={!!client?.dni}
         dni={client?.dni ?? null}
         clientId={client?.id}
+        volver={volver}
       />
     </>
   )

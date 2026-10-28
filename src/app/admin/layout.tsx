@@ -94,6 +94,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                 <Link href="/admin/facturacion" className="adm-nav__item">
                   Facturación
                 </Link>
+                <Link href="/admin/facturacion/realizados" className="adm-nav__item">
+                  Turnos realizados
+                </Link>
                 <Link href="/admin/estadisticas" className="adm-nav__item">
                   Estadísticas
                 </Link>
