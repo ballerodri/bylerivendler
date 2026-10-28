@@ -3,6 +3,8 @@ import {
   handleRpcMessage,
   negotiateProtocolVersion,
   secretsMatch,
+  MIN_SECRET_LEN,
+  ErrorParaElAsistente,
   LATEST_PROTOCOL_VERSION,
   RPC_METHOD_NOT_FOUND,
   RPC_INVALID_PARAMS,
@@ -19,9 +21,15 @@ const tools: McpTool[] = [
   },
   {
     name: "rompe",
-    description: "Falla siempre.",
+    description: "Falla siempre con algo que NO se puede mostrar afuera.",
     inputSchema: { type: "object", properties: {} },
-    run: async () => { throw new Error("se cayó la base") },
+    run: async () => { throw new Error("relation \"clients\" does not exist") },
+  },
+  {
+    name: "avisa",
+    description: "Falla con un mensaje escrito a propósito.",
+    inputSchema: { type: "object", properties: {} },
+    run: async () => { throw new ErrorParaElAsistente("Esa fecha ya pasó.") },
   },
 ]
 
@@ -59,7 +67,7 @@ describe("tools/list", () => {
   it("lista las herramientas con su esquema", async () => {
     const r = await handleRpcMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }, tools)
     const listed = (r!.result as { tools: { name: string }[] }).tools
-    expect(listed.map((t) => t.name)).toEqual(["agenda_del_dia", "rompe"])
+    expect(listed.map((t) => t.name)).toEqual(["agenda_del_dia", "rompe", "avisa"])
   })
   it("NO expone la función interna, sólo lo que el modelo necesita", async () => {
     const r = await handleRpcMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }, tools)
@@ -89,7 +97,26 @@ describe("tools/call", () => {
       tools
     )
     expect(r!.error).toBeUndefined()
-    expect(r!.result).toEqual({ content: [{ type: "text", text: "Error: se cayó la base" }], isError: true })
+    expect(r!.result).toEqual({
+      content: [{ type: "text", text: "No pude completar esa consulta. Probá de nuevo en un rato." }],
+      isError: true,
+    })
+  })
+  it("un error inesperado NO cuenta nada del sistema (ni tablas ni columnas)", async () => {
+    const r = await handleRpcMessage(
+      { jsonrpc: "2.0", id: 44, method: "tools/call", params: { name: "rompe" } },
+      tools
+    )
+    const texto = (r!.result as { content: { text: string }[] }).content[0].text
+    expect(texto).not.toContain("clients")
+    expect(texto).not.toContain("relation")
+  })
+  it("un mensaje escrito a propósito SÍ sale tal cual", async () => {
+    const r = await handleRpcMessage(
+      { jsonrpc: "2.0", id: 45, method: "tools/call", params: { name: "avisa" } },
+      tools
+    )
+    expect(r!.result).toEqual({ content: [{ type: "text", text: "Esa fecha ya pasó." }], isError: true })
   })
   it("una herramienta inexistente es error de parámetros", async () => {
     const r = await handleRpcMessage(
@@ -112,19 +139,26 @@ describe("mensajes inválidos", () => {
 })
 
 describe("secretsMatch — la puerta de entrada", () => {
+  const BUENO = "secreto-largo-de-prueba-0123456789"
   it("acepta el secreto correcto", () => {
-    expect(secretsMatch("abc123", "abc123")).toBe(true)
+    expect(secretsMatch(BUENO, BUENO)).toBe(true)
   })
   it("rechaza uno distinto, uno vacío o la falta de configuración", () => {
-    expect(secretsMatch("abc123", "abc124")).toBe(false)
-    expect(secretsMatch("", "abc123")).toBe(false)
-    expect(secretsMatch("abc123", "")).toBe(false)
-    expect(secretsMatch(null, "abc123")).toBe(false)
-    expect(secretsMatch("abc123", undefined)).toBe(false)
+    expect(secretsMatch(BUENO.slice(0, -1) + "X", BUENO)).toBe(false)
+    expect(secretsMatch("", BUENO)).toBe(false)
+    expect(secretsMatch(BUENO, "")).toBe(false)
+    expect(secretsMatch(null, BUENO)).toBe(false)
+    expect(secretsMatch(BUENO, undefined)).toBe(false)
     expect(secretsMatch(undefined, undefined)).toBe(false)
   })
   it("rechaza un prefijo correcto (no alcanza con adivinar el principio)", () => {
-    expect(secretsMatch("abc", "abc123")).toBe(false)
+    expect(secretsMatch(BUENO.slice(0, 5), BUENO)).toBe(false)
+  })
+  it("rechaza un secreto corto aunque coincida: mejor cerrado que adivinable", () => {
+    expect(secretsMatch("hola", "hola")).toBe(false)
+    expect("x".repeat(MIN_SECRET_LEN).length).toBe(MIN_SECRET_LEN)
+    expect(secretsMatch("x".repeat(MIN_SECRET_LEN), "x".repeat(MIN_SECRET_LEN))).toBe(true)
+    expect(secretsMatch("x".repeat(MIN_SECRET_LEN - 1), "x".repeat(MIN_SECRET_LEN - 1))).toBe(false)
   })
 })
 

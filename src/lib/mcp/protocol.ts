@@ -16,6 +16,12 @@ export const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 export const SERVER_INFO = { name: "bylerivendler", version: "1.0.0" } as const
 
 /** Una herramienta: cómo se describe y qué hace. */
+/**
+ * Un error cuyo mensaje SÍ se le puede mostrar al asistente (y por lo tanto a
+ * quien le escriba). Todo lo demás que se rompa se cuenta genérico.
+ */
+export class ErrorParaElAsistente extends Error {}
+
 export type McpTool = {
   name: string
   /** Lo que lee el modelo para decidir cuándo usarla. En español: lo usa ella. */
@@ -127,8 +133,17 @@ export async function handleRpcMessage(
       } catch (e) {
         // Un error DE LA HERRAMIENTA no es un error de protocolo: va como
         // resultado con `isError`, para que el modelo pueda leerlo y reintentar.
-        const message = e instanceof Error ? e.message : String(e)
-        return ok(id, { content: [{ type: "text", text: `Error: ${message}` }], isError: true })
+        // Pero sólo salen los mensajes escritos a propósito: cualquier otra
+        // excepción (un fallo de red, una variable de entorno que falta) podría
+        // contar cómo está armado el sistema, así que queda en el log del
+        // servidor y afuera va algo genérico.
+        if (e instanceof ErrorParaElAsistente)
+          return ok(id, { content: [{ type: "text", text: e.message }], isError: true })
+        console.error("[mcp] falló la herramienta " + String(name) + ":", e)
+        return ok(id, {
+          content: [{ type: "text", text: "No pude completar esa consulta. Probá de nuevo en un rato." }],
+          isError: true,
+        })
       }
     }
 
@@ -137,13 +152,19 @@ export async function handleRpcMessage(
   }
 }
 
+/** Un secreto más corto que esto se adivina probando: no se acepta nunca. */
+export const MIN_SECRET_LEN = 24
+
 /**
  * Compara dos secretos sin filtrar por CUÁNTO tardó la comparación (un `===`
  * corta en la primera letra distinta y deja adivinar el secreto de a poco).
- * Devuelve false si falta alguno: sin secreto configurado, no se entra.
+ * Devuelve false si falta alguno: sin secreto configurado, no se entra. También
+ * rechaza un secreto corto: si alguien configura `MCP_SECRET=hola`, el endpoint
+ * queda cerrado en lugar de quedar abierto de hecho.
  */
 export function secretsMatch(provided: string | null | undefined, expected: string | null | undefined): boolean {
   if (!provided || !expected) return false
+  if (expected.length < MIN_SECRET_LEN) return false
   if (provided.length !== expected.length) return false
   let diff = 0
   for (let i = 0; i < provided.length; i++) diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i)
