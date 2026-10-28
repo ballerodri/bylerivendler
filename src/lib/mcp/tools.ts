@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js"
-import { slotsForDate, MIN_ADVANCE_MIN, type BusinessHour } from "@/app/reserva/data"
+import { slotsForDate, slotToUtcMs, MIN_ADVANCE_MIN, type BusinessHour } from "@/app/reserva/data"
 import { esEmailPlaceholder } from "@/lib/servicios/email-placeholder"
+import { overlappingBlock, type BlockedInterval } from "@/lib/servicios/slot-overlap"
 import {
   hoyAR,
   rangoDelDiaAR,
@@ -162,13 +163,18 @@ export function buildTools(): McpTool[] {
       description:
         "Los horarios LIBRES para un tratamiento en una fecha: los que la clienta encuentra en la web, " +
         "más los de hoy que ya entraron en las 2 horas de antelación que pide la web (esos salen marcados: " +
-        "la web no los vende, pero el salón los puede cargar a mano). No ofrece horarios que ya pasaron ni " +
-        "que se pasen del cierre. El nombre del tratamiento puede ser parcial.",
+        "la web no los vende, pero el salón los puede cargar a mano). Con una fecha que ya pasó responde " +
+        "qué quedó sin ocupar ese día, que es lo que hace falta para cargar a mano un turno que ya se hizo. " +
+        "El nombre del tratamiento puede ser parcial.",
       inputSchema: {
         type: "object",
         properties: {
           tratamiento: { type: "string", description: "Nombre (o parte) del tratamiento. Ej: vela slim." },
-          fecha: { type: "string", description: "Fecha YYYY-MM-DD en hora argentina (hoy o futura)." },
+          fecha: {
+            type: "string",
+            description:
+              "Fecha YYYY-MM-DD en hora argentina. Puede ser pasada: el salón carga turnos que ya se hicieron.",
+          },
         },
         required: ["tratamiento", "fecha"],
       },
@@ -177,7 +183,11 @@ export function buildTools(): McpTool[] {
         const fecha = args.fecha
         if (!tratamiento) return "Decime qué tratamiento."
         if (!esFechaValida(fecha)) return "La fecha tiene que ser YYYY-MM-DD (por ejemplo 2026-10-28)."
-        if (fecha < hoyAR()) return "Esa fecha ya pasó: decime una de hoy en adelante."
+        // Una fecha pasada NO se rechaza: el panel agenda en el pasado a
+        // propósito (cargar una sesión que ya se hizo), y para eso hay que poder
+        // preguntar qué quedó sin ocupar ese día. Lo único que cambia es que no
+        // se filtra por hora y que la respuesta aclara qué está contestando.
+        const yaPaso = fecha < hoyAR()
 
         const db = admin()
         const { data: svcs, error: svcErr } = await db
@@ -243,7 +253,76 @@ export function buildTools(): McpTool[] {
         })
         const soloPanel = new Set(aMarcar)
         if (!candidatos.length)
-          return "Ya no quedan horarios para " + svc.name + " el " + fechaLegible(fecha) + "."
+          return yaPaso
+            ? "Ese día no había ningún horario donde entrara " + svc.name + " (" + fechaLegible(fecha) + ")."
+            : "Ya no quedan horarios para " + svc.name + " el " + fechaLegible(fecha) + "."
+
+        // Para una fecha PASADA no sirve el buscador de la reserva: ese cuenta
+        // como ocupado sólo lo pendiente y lo confirmado, y un turno viejo ya
+        // está completado o marcado "no vino" — contestaría que el día entero
+        // estuvo libre. Acá se mide contra los turnos que QUEDARON cargados.
+        if (yaPaso) {
+          const { desde: d0, hasta: d1 } = rangoDelDiaAR(fecha)
+          const { data: delDiaAppts, error: apptErr } = await db
+            .from("appointments")
+            .select(
+              "starts_at, duration_min, status, client:clients(first_name, last_name), staff:staff(full_name)"
+            )
+            .gte("starts_at", d0)
+            .lt("starts_at", d1)
+            .order("starts_at")
+          if (apptErr) fallaDeBase("disponibilidad/pasado", apptErr)
+          type ApptPasado = {
+            starts_at: string
+            duration_min: number | null
+            status: string
+            client: { first_name: string | null; last_name: string | null } | null
+            staff: { full_name: string } | null
+          }
+          const cargados = ((delDiaAppts ?? []) as unknown as ApptPasado[]).filter(
+            (a) => a.status !== "cancelled"
+          )
+          const ocupado: BlockedInterval[] = cargados.map((a) => {
+            const ini = new Date(a.starts_at).getTime()
+            return {
+              startMs: ini,
+              endMs: ini + (a.duration_min ?? 0) * 60_000,
+              name: ((a.client?.first_name ?? "") + " " + (a.client?.last_name ?? "")).trim() || "turno",
+            }
+          })
+          const sinNada = candidatos.filter(
+            (hm) => !overlappingBlock(slotToUtcMs(fecha, hm), svc.duration_min, ocupado)
+          )
+          const lineasPasado = [
+            svc.name + " (" + svc.duration_min + " min) el " + fechaLegible(fecha) +
+              " — esa fecha ya pasó, así que mido contra los turnos que quedaron cargados:",
+            sinNada.length
+              ? "  Horas sin ningún turno encima: " + sinNada.join(" · ")
+              : "  No quedó ninguna hora sin turno encima.",
+          ]
+          if (cargados.length)
+            lineasPasado.push(
+              "  Ese día hubo " + cargados.length + " turno(s): " +
+              cargados
+                .map(
+                  (a) =>
+                    horaAR(a.starts_at) + " " +
+                    (((a.client?.first_name ?? "") + " " + (a.client?.last_name ?? "")).trim() || "sin nombre") +
+                    (a.staff?.full_name ? " con " + a.staff.full_name : "") +
+                    " (" + (ESTADO[a.status] ?? a.status) + ")"
+                )
+                .join(", ") + "."
+            )
+          else lineasPasado.push("  Ese día no hubo ningún turno cargado.")
+          if (cargados.length)
+            lineasPasado.push(
+              "  Ojo: si esos turnos fueron de otra profesional, esa hora igual puede servir. " +
+              "La agenda completa del día sale con agenda_del_dia."
+            )
+          if (svc.visible_public === false)
+            lineasPasado.push("  ⚠ Este tratamiento está activo pero NO publicado en la web.")
+          return lineasPasado.join("\n")
+        }
 
         const libres = await fetchDayAvailability(fecha, svc.duration_min, "auto", candidatos, {
           serviceId: svc.id,
