@@ -39,9 +39,14 @@ jobs:
           supabase migration repair --status applied 20260620000001 || true
           supabase migration repair --status applied 20260620000002 || true
 
+      # `--yes` tampoco: el CLI nuevo pide confirmar antes de tocar produccion
+      # y aca no hay nadie para contestarle ("stdout is not a terminal").
+      # Confirmar es justamente lo que este workflow viene a hacer: corre solo
+      # cuando se empuja una migracion a main.
+      #
       # `--remote` NO es opcional: las versiones nuevas del CLI apuntan por
       # defecto a una base LOCAL (127.0.0.1:54322), que en el runner no existe,
       # y el paso muere con "ECONNREFUSED". El propio CLI lo dice: "To use the
       # linked project instead, pass --remote."
       - name: Push migrations
-        run: supabase db push --include-all --remote
+        run: supabase db push --include-all --remote --yes
