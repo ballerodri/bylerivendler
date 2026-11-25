@@ -1,0 +1,317 @@
+/* Calendario de Adviento — By Leri Vendler
+   Misma paleta que la reserva (sale del logo). Pensado para celular: una sola
+   columna, todo al alcance del pulgar. */
+
+.adv {
+  --ink: #2b2623;
+  --ink-mute: #7a6e64;
+  --paper: #f2ede6;
+  --paper-deep: #eae2d7;
+  --nude: #c9a78e;
+  --nude-soft: #e3cdb8;
+  --gold: #b68a5f;
+  --rose: #b9707a;
+  --sheet: #fbf8f4;
+  --line: rgba(43, 38, 35, 0.12);
+  --shadow: rgba(60, 40, 25, 0.18);
+
+  --serif: var(--font-serif), Georgia, serif;
+  --sans: var(--font-sans), -apple-system, BlinkMacSystemFont, sans-serif;
+  --script: var(--font-script), var(--serif);
+
+  min-height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 28px 16px 48px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.adv *,
+.adv *::before,
+.adv *::after {
+  box-sizing: border-box;
+}
+
+.adv__wrap {
+  max-width: 460px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+.adv__logo {
+  height: 64px;
+  width: auto;
+}
+
+.adv__head {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adv__title {
+  font-family: var(--script);
+  font-weight: 400;
+  font-size: clamp(34px, 10vw, 46px);
+  line-height: 1;
+  margin: 0;
+}
+
+.adv__sub {
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: 14px;
+  max-width: 32ch;
+}
+
+.adv__kicker {
+  font-size: 11px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+/* ── Tarjetas ─────────────────────────────────────────────────────────── */
+.adv__card {
+  width: 100%;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 8px 24px rgba(60, 40, 25, 0.07);
+}
+
+.adv__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adv__field label {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.adv__field input[type="text"],
+.adv__field input[type="tel"] {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font: 400 16px/1.4 var(--sans); /* 16px: menos de eso, el iPhone hace zoom */
+}
+
+.adv__field input:focus-visible,
+.adv__btn:focus-visible,
+.adv__door:focus-visible,
+.adv__link:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.adv__check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.adv__check input {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--gold);
+  flex: none;
+}
+
+/* El campo trampa: invisible para una persona, tentador para un robot. */
+.adv__trap {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.adv__fine {
+  font-size: 12px;
+  color: var(--ink-mute);
+  margin: 0;
+}
+
+.adv__fine a {
+  color: var(--gold);
+}
+
+.adv__error {
+  margin: 0;
+  font-size: 13px;
+  color: #a2454f;
+  background: #f8e9e9;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+/* ── Botones ──────────────────────────────────────────────────────────── */
+.adv__btn {
+  min-height: 48px;
+  border-radius: 10px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font: 500 15px var(--sans);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 18px;
+  text-decoration: none;
+  width: 100%;
+}
+
+.adv__btn:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.adv__btn--ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.adv__btn--wa {
+  background: #1f9d55;
+  border-color: #1f9d55;
+  color: #fff;
+}
+
+/* ── Los 24 casilleros ────────────────────────────────────────────────── */
+.adv__grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 420px) {
+  .adv__grid {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+
+.adv__door {
+  position: relative;
+  aspect-ratio: 1;
+  border: 0;
+  padding: 0;
+  margin-top: 7px;
+  border-radius: 50%;
+  cursor: pointer;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.75) 0 9%, transparent 10%),
+    radial-gradient(circle at 40% 35%, var(--c1), var(--c2));
+  box-shadow: 0 6px 12px var(--shadow);
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(17px, 5vw, 20px);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease;
+}
+
+/* La tapita dorada de la esfera. */
+.adv__door::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  width: 12px;
+  height: 8px;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, var(--gold), #e8cf9f, var(--gold));
+  border-radius: 2px 2px 1px 1px;
+}
+
+.adv__door--a { --c1: #e3cdb8; --c2: #c9a78e; }
+.adv__door--b { --c1: #e7b3b5; --c2: #b9707a; }
+.adv__door--c { --c1: #ecd3a8; --c2: #b68a5f; }
+.adv__door--d { --c1: #ffffff; --c2: #e6dbd0; color: #6f5c4c; text-shadow: none; }
+
+.adv__door:hover:not(:disabled) {
+  transform: translateY(-3px) rotate(-3deg);
+}
+
+.adv__door:disabled {
+  cursor: progress;
+  filter: grayscale(0.5) opacity(0.6);
+}
+
+/* ── La sorpresa ──────────────────────────────────────────────────────── */
+.adv__prize {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adv__prize-num {
+  font-family: var(--script);
+  font-size: 56px;
+  line-height: 1;
+  color: var(--gold);
+}
+
+.adv__prize-text {
+  font-family: var(--serif);
+  font-size: 24px;
+  line-height: 1.2;
+  margin: 6px 0 0;
+  text-wrap: balance;
+}
+
+.adv__code {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--gold);
+  border-radius: 10px;
+  padding: 10px;
+  font: 600 17px/1 var(--font-mono), ui-monospace, monospace;
+  letter-spacing: 0.06em;
+}
+
+.adv__foot {
+  font-size: 12px;
+  color: var(--ink-mute);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adv * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

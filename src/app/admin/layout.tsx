@@ -91,6 +91,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                 <Link href="/admin/programa-cerca" className="adm-nav__item">
                   Programa Cerca
                 </Link>
+                <Link href="/admin/adviento" className="adm-nav__item">
+                  Adviento
+                </Link>
                 <Link href="/admin/facturacion" className="adm-nav__item">
                   Facturación
                 </Link>
