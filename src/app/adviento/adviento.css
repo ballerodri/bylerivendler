@@ -61,6 +61,7 @@
   text-align: center;
   display: flex;
   flex-direction: column;
+  align-items: center; /* si no, un hijo más angosto que el cajon se va a la izquierda */
   gap: 6px;
 }
 
@@ -73,7 +74,11 @@
 }
 
 .adv__sub {
-  margin: 0;
+  /* El `auto` NO es decorativo: con `max-width` la cajita es más angosta que
+     el ancho disponible, y sin margen automático queda pegada a la izquierda.
+     El texto se ve centrado adentro de la cajita y la cajita, corrida: eso era
+     lo que se veía "sin centrar". */
+  margin: 0 auto;
   color: var(--ink-mute);
   font-size: 14px;
   max-width: 32ch;
