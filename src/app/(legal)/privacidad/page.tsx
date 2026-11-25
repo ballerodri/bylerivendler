@@ -12,7 +12,7 @@ export default function PrivacidadPage() {
         <h1 className="legal__title">
           Cómo cuidamos tu <em>información</em>.
         </h1>
-        <p className="legal__updated">Última actualización: mayo 2026</p>
+        <p className="legal__updated">Última actualización: noviembre 2026</p>
       </header>
 
       <article className="legal__content">
@@ -33,7 +33,10 @@ export default function PrivacidadPage() {
         </p>
 
         <h2>2. Qué datos recolectamos</h2>
-        <p>Cuando reservás un turno o creás una cuenta, recolectamos:</p>
+        <p>
+          Cuando reservás un turno, creás una cuenta o participás de una acción
+          promocional, recolectamos:
+        </p>
         <ul>
           <li>
             <strong>Datos de contacto:</strong> nombre, apellido, email,
@@ -55,12 +58,22 @@ export default function PrivacidadPage() {
             <strong>Datos técnicos básicos</strong> (dirección IP, tipo de
             navegador) para seguridad y prevención de fraude.
           </li>
+          <li>
+            <strong>Acciones promocionales</strong> (por ejemplo el Calendario
+            de Adviento): nombre y celular, para poder contactarte por el
+            premio que obtuviste. Si además marcás la casilla correspondiente,
+            usamos ese contacto para enviarte novedades y promociones.
+          </li>
         </ul>
 
         <h2>3. Por qué los necesitamos</h2>
         <p>Usamos tus datos exclusivamente para:</p>
         <ul>
           <li>Coordinar y confirmar tus turnos.</li>
+          <li>
+            Contactarte por un premio o beneficio que obtuviste en una acción
+            promocional del salón.
+          </li>
           <li>
             Brindarte un tratamiento seguro y personalizado, evitando
             contraindicaciones según tu ficha clínica.

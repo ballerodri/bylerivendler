@@ -25,6 +25,7 @@ export default function JugadaRow(props: {
   usadoEl: string | null
   usadoPor: string | null
   puedeBorrar: boolean
+  prueba: boolean
 }) {
   const [pendiente, empezar] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -46,6 +47,22 @@ export default function JugadaRow(props: {
       <div style={{ flex: "1 1 260px", minWidth: 0 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
           <strong className="adm-name">{props.nombre}</strong>
+          {props.prueba && (
+            <span
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                padding: "2px 7px",
+                borderRadius: 999,
+                background: "#efe3e3",
+                color: "#8a4a4a",
+              }}
+              title="Jugada anterior al 1 de diciembre: no cuenta en los totales"
+            >
+              prueba
+            </span>
+          )}
           <span
             style={{
               fontSize: 10,

@@ -7,6 +7,7 @@ import {
   generarCodigo,
   telefonoParaAdviento,
   telefonoLindo,
+  clavePorTelefono,
   partirNombre,
   mensajeParaLeri,
   linkParaLeri,
@@ -115,7 +116,23 @@ describe("telefonoParaAdviento — la llave de una sorpresa por persona", () => 
   it("lo muestra lindo para que la persona lo confirme", () => {
     const r = telefonoParaAdviento("1123456789")
     expect(r.ok && r.lindo).toBe("+54 9 11 2345-6789")
-    expect(telefonoLindo("2216543210")).toBe("+54 9 221 6543-210")
+  })
+  it("no inventa la característica cuando no la sabe (un número de Zárate no es de 348)", () => {
+    expect(telefonoLindo("3487654321")).toBe("+54 9 3487 654 321")
+    expect(telefonoLindo("2216543210")).toBe("+54 9 2216 543 210")
+  })
+})
+
+describe("clavePorTelefono — la MISMA cuenta para el calendario y para las clientas", () => {
+  it("convierte todas las formas en una sola llave", () => {
+    for (const f of ["1123456789", "011 2345-6789", "+54 9 11 2345 6789", "11 15 2345-6789"])
+      expect(clavePorTelefono(f)).toBe("+5491123456789")
+  })
+  it("devuelve null con lo que no es un celular", () => {
+    expect(clavePorTelefono("")).toBeNull()
+    expect(clavePorTelefono(null)).toBeNull()
+    expect(clavePorTelefono("sin telefono")).toBeNull()
+    expect(clavePorTelefono("12345")).toBeNull()
   })
 })
 

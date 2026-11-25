@@ -56,13 +56,22 @@ export async function marcarUsado(id: string, usado: boolean): Promise<{ ok: boo
 }
 
 /**
- * Borra una jugada. Sólo admin: es la salida para las pruebas y para la que
- * se equivocó al tipear su celular (y quedaría trabada para siempre, porque el
+ * Borra una jugada: la salida para las pruebas y para la clienta que se
+ * equivocó al tipear su celular, que si no queda trabada para siempre (el
  * celular es único).
+ *
+ * Recepción puede borrar una jugada SIN usar —el caso del mostrador, que pasa
+ * con la clienta parada ahí— pero no una ya canjeada: eso lo decide un admin.
  */
 export async function borrarJugada(id: string): Promise<{ ok: boolean; error?: string }> {
   const perfil = await quienLlama()
-  if (!perfil || perfil.role !== "admin") return { ok: false, error: "Esto lo puede hacer sólo un admin." }
+  if (!perfil) return { ok: false, error: "No autorizado." }
+
+  if (perfil.role !== "admin") {
+    const { data } = await db().from("advent_picks").select("redeemed_at").eq("id", id).maybeSingle()
+    if (data?.redeemed_at)
+      return { ok: false, error: "Esa jugada ya se usó: para borrarla tiene que entrar un admin." }
+  }
 
   const { error } = await db().from("advent_picks").delete().eq("id", id)
   if (error) {

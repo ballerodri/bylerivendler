@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { estadoCalendario } from "@/lib/servicios/adviento"
 import { isActiveStaffSession } from "@/lib/staff"
+import { ADDRESS_LINE, ADDRESS_AREA } from "@/lib/location"
 import AdvientoClient from "./adviento-client"
 import "./adviento.css"
 
@@ -47,9 +48,13 @@ export default async function AdvientoPage() {
 
         {esStaff && (
           <p className="adv__fine" style={{ textAlign: "center" }}>
-            Lo estás viendo en modo prueba porque entraste al panel. Para el resto, el calendario
-            {real === "antes" ? " arranca el 1 de diciembre" : " ya terminó"}. Las jugadas que hagas se
-            guardan de verdad: borralas después desde Adviento.
+            Lo estás viendo en modo prueba porque entraste al panel.{" "}
+            {real === "antes"
+              ? "Para el resto, la elección arranca el 1 de diciembre."
+              : real === "solo-canje"
+                ? "Para el resto, la elección cerró el 24, pero quien ya jugó puede ver su premio y usarlo hasta el 31."
+                : "Para el resto, el calendario ya terminó."}{" "}
+            Las jugadas que hagas se guardan de verdad: borralas después desde Adviento.
           </p>
         )}
 
@@ -69,7 +74,7 @@ export default async function AdvientoPage() {
         )}
 
         <footer className="adv__foot">
-          <span>Sanguinetti 297 · Villa Morra, Pilar</span>
+          <span>{ADDRESS_LINE} · {ADDRESS_AREA}</span>
           <span>Una sorpresa por persona. Válida hasta el 31 de diciembre.</span>
         </footer>
       </div>

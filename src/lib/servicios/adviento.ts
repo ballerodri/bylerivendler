@@ -120,14 +120,31 @@ export type TelefonoMal = { ok: false; motivo: string }
  * mails de todo el sitio.
  */
 export function telefonoParaAdviento(raw: string): TelefonoOk | TelefonoMal {
-  let d = (raw ?? "").replace(/\D/g, "")
+  const d = soloDigitos(raw)
   if (!d) return { ok: false, motivo: "Escribí tu celular." }
+  // Ninguna característica argentina empieza con 15: eso es el viejo prefijo de
+  // celular y, solo, no dice de qué ciudad es.
+  if (d.length === 10 && d.startsWith("15"))
+    return { ok: false, motivo: "Falta la característica: en vez del 15, poné 11 (o la de tu ciudad)." }
+  if (d.length !== 10)
+    return {
+      ok: false,
+      motivo: "Fijate el número: va la característica sin el 0 y el celular sin el 15 (son 10 dígitos).",
+    }
+  return { ok: true, clave: "+549" + d, lindo: telefonoLindo(d) }
+}
 
+/**
+ * Los 10 dígitos de un celular argentino, o "" si no se puede. Es la cuenta que
+ * convierte todas las formas de escribir el mismo número en una sola.
+ */
+function soloDigitos(raw: string): string {
+  let d = (raw ?? "").replace(/\D/g, "")
+  if (!d) return ""
   if (d.startsWith("00")) d = d.slice(2) // salió marcado como del exterior
   if (d.startsWith("54")) d = d.slice(2) // país
   if (d.length === 11 && d.startsWith("9")) d = d.slice(1) // el 9 de celular
   if (d.startsWith("0")) d = d.slice(1) // el 0 de larga distancia
-
   // El viejo 15 metido entre la característica y el número: "11 15 2345-6789".
   if (d.length === 12) {
     for (const car of [2, 3, 4]) {
@@ -137,27 +154,31 @@ export function telefonoParaAdviento(raw: string): TelefonoOk | TelefonoMal {
       }
     }
   }
-
-  if (d.length !== 10)
-    return {
-      ok: false,
-      motivo: "Fijate el número: va la característica sin el 0 y el celular sin el 15 (son 10 dígitos).",
-    }
-  // Ninguna característica argentina empieza con 15: eso es el viejo prefijo de
-  // celular y, solo, no dice de qué ciudad es.
-  if (d.startsWith("15"))
-    return { ok: false, motivo: "Falta la característica: en vez del 15, poné 11 (o la de tu ciudad)." }
-
-  return { ok: true, clave: "+549" + d, lindo: telefonoLindo(d) }
+  return d
 }
 
-/** "1123456789" → "+54 9 11 2345-6789" (característica de 2, 3 o 4 dígitos). */
+/**
+ * La llave con la que se compara un celular contra otro, venga de donde venga
+ * (del calendario o de la ficha de una clienta). UNA sola cuenta: si hubiera
+ * dos copias, el día que alguien toque una, el panel empezaría a decir "nueva"
+ * de clientas de siempre y nadie se daría cuenta.
+ */
+export function clavePorTelefono(raw: string | null | undefined): string | null {
+  const d = soloDigitos(raw ?? "")
+  return d.length === 10 ? "+549" + d : null
+}
+
+/**
+ * Para mostrar. SÓLO se separa la característica cuando es segura (11, el AMBA):
+ * adivinarla con los demás sale mal — un número de Zárate (3487) se veía como
+ * "+54 9 348 7654-321", y en la pantalla que pregunta "¿te escribimos acá?" eso
+ * hace que la persona conteste que no.
+ */
 export function telefonoLindo(nacional: string): string {
-  const car = nacional.startsWith("11") ? 2 : nacional.length === 10 ? 3 : 2
-  const area = nacional.slice(0, car)
-  const resto = nacional.slice(car)
-  const corte = Math.ceil(resto.length / 2)
-  return `+54 9 ${area} ${resto.slice(0, corte)}-${resto.slice(corte)}`
+  if (nacional.length !== 10) return "+54 9 " + nacional
+  if (nacional.startsWith("11"))
+    return `+54 9 11 ${nacional.slice(2, 6)}-${nacional.slice(6)}`
+  return `+54 9 ${nacional.slice(0, 4)} ${nacional.slice(4, 7)} ${nacional.slice(7)}`
 }
 
 /**

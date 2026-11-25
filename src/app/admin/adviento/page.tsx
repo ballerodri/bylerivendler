@@ -1,7 +1,7 @@
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin, getStaffProfile } from "@/lib/staff"
-import { CAMPANA, premioPorId, telefonoLindo } from "@/lib/servicios/adviento"
+import { CAMPANA, PRIMER_DIA, premioPorId, telefonoLindo, clavePorTelefono } from "@/lib/servicios/adviento"
 import JugadaRow from "./jugada-row"
 
 /**
@@ -13,6 +13,9 @@ import JugadaRow from "./jugada-row"
  */
 
 export const dynamic = "force-dynamic"
+
+/** El arranque real de la campaña: medianoche en Argentina (UTC-3). */
+const ARRANQUE = PRIMER_DIA + "T03:00:00.000Z"
 
 type Fila = {
   id: string
@@ -35,25 +38,6 @@ const fechaCorta = (iso: string) =>
     month: "2-digit",
     timeZone: "America/Argentina/Buenos_Aires",
   })
-
-/** Mismo criterio que el calendario: el celular, comparable entre tablas. */
-function claveDeTelefono(raw: string | null): string | null {
-  let d = (raw ?? "").replace(/\D/g, "")
-  if (!d) return null
-  if (d.startsWith("00")) d = d.slice(2)
-  if (d.startsWith("54")) d = d.slice(2)
-  if (d.length === 11 && d.startsWith("9")) d = d.slice(1)
-  if (d.startsWith("0")) d = d.slice(1)
-  if (d.length === 12) {
-    for (const car of [2, 3, 4]) {
-      if (d.slice(car, car + 2) === "15") {
-        d = d.slice(0, car) + d.slice(car + 2)
-        break
-      }
-    }
-  }
-  return d.length === 10 ? "+549" + d : null
-}
 
 export default async function AdminAdvientoPage({
   searchParams,
@@ -78,52 +62,102 @@ export default async function AdminAdvientoPage({
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
 
-  const { data, error } = await admin
+  const COLUMNAS =
+    "id, first_name, last_name, phone, phone_key, marketing_consent, door, prize_id, code, redeemed_at, created_at, staff:staff(full_name)"
+
+  let q = admin
     .from("advent_picks")
-    .select(
-      "id, first_name, last_name, phone, phone_key, marketing_consent, door, prize_id, code, redeemed_at, created_at, staff:staff(full_name)"
-    )
+    .select(COLUMNAS)
     .eq("campaign", CAMPANA)
     .order("created_at", { ascending: false })
-    .limit(1000)
+    .limit(300)
 
+  if (busqueda) {
+    // Filtra la base, no la memoria. El código es la prueba que mira Leri en el
+    // mostrador: tiene que encontrarse aunque la jugada sea del 2 de diciembre
+    // y haya 900 jugadas más arriba.
+    const limpio = busqueda.replace(/[%,()\\*_]/g, " ").trim()
+    const digitos = busqueda.replace(/\D/g, "")
+    const condiciones = [
+      `first_name.ilike.%${limpio}%`,
+      `last_name.ilike.%${limpio}%`,
+      `code.ilike.%${limpio}%`,
+    ]
+    if (digitos.length >= 3) condiciones.push(`phone_key.ilike.%${digitos}%`)
+    q = q.or(condiciones.join(","))
+  }
+  if (soloPendientes) q = q.is("redeemed_at", null)
+
+  const { data, error } = await q
   if (error) console.error("[adviento/admin] listado:", error.message)
-  const todas = (data ?? []) as unknown as Fila[]
+  const visibles = (data ?? []) as unknown as Fila[]
 
-  // El cruce con clientas: una sola consulta, comparando el celular ya
-  // normalizado de las dos puntas.
-  const { data: clientas } = await admin.from("clients").select("phone")
-  const telefonosDeClientas = new Set(
-    ((clientas ?? []) as { phone: string | null }[])
-      .map((c) => claveDeTelefono(c.phone))
-      .filter((x): x is string => !!x)
-  )
+
+
+  // El cruce con clientas. Paginado a propósito: el servidor corta las
+  // consultas largas sin avisar, y una clienta que quedara afuera se contaría
+  // como NUEVA — que es el número por el que se hizo toda la campaña.
+  const telefonosDeClientas = new Set<string>()
+  for (let desde = 0; desde < 20_000; ) {
+    const { data: pagina, error: errCli } = await admin
+      .from("clients")
+      .select("phone")
+      .order("id")
+      .range(desde, desde + 999)
+    if (errCli) {
+      console.error("[adviento/admin] clientas:", errCli.message)
+      break
+    }
+    const filas = (pagina ?? []) as { phone: string | null }[]
+    for (const c of filas) {
+      const clave = clavePorTelefono(c.phone)
+      if (clave) telefonosDeClientas.add(clave)
+    }
+    if (filas.length === 0) break
+    desde += filas.length
+  }
 
   const esNueva = (f: Fila) => !telefonosDeClientas.has(f.phone_key)
-  const nuevas = todas.filter(esNueva).length
+  // Una jugada anterior al 1 de diciembre es una prueba del salón: no cuenta.
+  const esPrueba = (f: Fila) => f.created_at < ARRANQUE
 
-  const texto = busqueda.toLowerCase()
-  const visibles = todas.filter((f) => {
-    if (soloPendientes && f.redeemed_at) return false
-    if (!texto) return true
-    return (
-      `${f.first_name} ${f.last_name}`.toLowerCase().includes(texto) ||
-      f.phone.toLowerCase().includes(texto) ||
-      f.phone_key.includes(texto.replace(/\D/g, "")) ||
-      f.code.toLowerCase().includes(texto)
-    )
-  })
+  // Los totales se cuentan sobre TODAS las jugadas, no sobre las que entraron
+  // en la lista: con 300 jugadas arriba, contar lo visible diría un número
+  // menor, y es justo EL número que Leri va a repetir. Son dos columnitas, y
+  // se pagina porque el servidor corta las consultas largas sin avisar.
+  let jugaron = 0
+  let nuevas = 0
+  for (let desde = 0; desde < 20_000; ) {
+    const { data: pagina, error: errTot } = await admin
+      .from("advent_picks")
+      .select("phone_key, created_at")
+      .eq("campaign", CAMPANA)
+      .order("created_at")
+      .range(desde, desde + 999)
+    if (errTot) {
+      console.error("[adviento/admin] totales:", errTot.message)
+      break
+    }
+    const filas = (pagina ?? []) as { phone_key: string; created_at: string }[]
+    for (const f of filas) {
+      if (f.created_at < ARRANQUE) continue // prueba del salón
+      jugaron++
+      if (!telefonosDeClientas.has(f.phone_key)) nuevas++
+    }
+    if (filas.length === 0) break
+    desde += filas.length
+  }
 
   return (
     <>
       <p className="adm-eyebrow">Diciembre</p>
       <h1 className="adm-h1">Calendario de Adviento</h1>
       <p className="adm-lede">
-        {todas.length === 0
+        {jugaron === 0
           ? "Todavía no jugó nadie."
-          : `${todas.length} ${todas.length === 1 ? "persona jugó" : "personas jugaron"} · ${nuevas} ${
+          : `${jugaron} ${jugaron === 1 ? "persona jugó" : "personas jugaron"} · ${nuevas} ${
               nuevas === 1 ? "es nueva" : "son nuevas"
-            } · ${todas.length - nuevas} ya ${todas.length - nuevas === 1 ? "era clienta" : "eran clientas"}`}
+            } · ${jugaron - nuevas} ya ${jugaron - nuevas === 1 ? "era clienta" : "eran clientas"}`}
       </p>
 
       <form className="adm-card" method="get" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -146,9 +180,9 @@ export default async function AdminAdvientoPage({
 
       {visibles.length === 0 ? (
         <p className="adm-empty">
-          {todas.length === 0
-            ? "Cuando alguien elija su número, va a aparecer acá."
-            : "Ninguna jugada coincide con eso."}
+          {busqueda || soloPendientes
+            ? "Ninguna jugada coincide con eso."
+            : "Cuando alguien elija su número, va a aparecer acá."}
         </p>
       ) : (
         <div className="adm-card" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -159,6 +193,7 @@ export default async function AdminAdvientoPage({
               fecha={fechaCorta(f.created_at)}
               nombre={`${f.first_name} ${f.last_name}`}
               telefono={telefonoLindo(f.phone_key.replace("+549", ""))}
+              prueba={esPrueba(f)}
               telefonoCrudo={f.phone_key}
               nueva={esNueva(f)}
               novedades={f.marketing_consent}
@@ -167,7 +202,7 @@ export default async function AdminAdvientoPage({
               codigo={f.code}
               usadoEl={f.redeemed_at ? fechaCorta(f.redeemed_at) : null}
               usadoPor={f.staff?.full_name ?? null}
-              puedeBorrar={esAdmin}
+              puedeBorrar={esAdmin || !f.redeemed_at}
             />
           ))}
         </div>

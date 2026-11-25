@@ -50,50 +50,64 @@ export type Entrada =
 export type Jugada = { ok: true; sorpresa: Sorpresa; yaLaTenia: boolean } | { ok: false; error: string }
 
 /**
- * Un freno de mano para robots, sin molestar a nadie: tantos intentos por IP
- * en diez minutos. Vive en memoria, así que cada instancia del servidor tiene
- * su propia cuenta — no es una muralla, es un amortiguador. La muralla de
- * verdad es que el celular es único en la base.
+ * Un freno de mano para robots. Dos topes distintos, a propósito.
+ *
+ * En el salón (o en el wifi de un café, o detrás del CGNAT de una operadora
+ * móvil) MUCHAS personas comparten una sola IP. Con un tope chico, la sexta
+ * clienta que prueba el calendario en la misma sala se come un "probaste
+ * muchas veces": le estaríamos diciendo tramposa a alguien que entró por
+ * primera vez, en la página hecha para atraerla. Por eso mirar es casi libre y
+ * lo acotado es guardar. La muralla de verdad no es esta: es que el celular es
+ * único en la base.
+ *
+ * Vive en memoria, así que cada instancia del servidor lleva su propia cuenta.
+ * Es un amortiguador, no una muralla.
  */
-const TOPE_POR_IP = 12
+const TOPE_MIRAR = 60 // por IP, en 10 minutos
+const TOPE_GUARDAR = 25
 const VENTANA_MS = 10 * 60_000
-const intentos = new Map<string, { n: number; desde: number }>()
+const intentos = new Map<string, { mirar: number; guardar: number; desde: number }>()
 
-async function demasiadosIntentos(): Promise<boolean> {
+async function demasiados(tipo: "mirar" | "guardar"): Promise<boolean> {
   const h = await headers()
   const ip = (h.get("x-forwarded-for") ?? "").split(",")[0].trim() || "sin-ip"
   const ahora = Date.now()
-  const actual = intentos.get(ip)
+  let actual = intentos.get(ip)
   if (!actual || ahora - actual.desde > VENTANA_MS) {
-    intentos.set(ip, { n: 1, desde: ahora })
-    return false
+    actual = { mirar: 0, guardar: 0, desde: ahora }
+    intentos.set(ip, actual)
   }
-  actual.n++
-  // Que no crezca para siempre si el servidor vive mucho.
+  actual[tipo]++
   if (intentos.size > 5_000) intentos.clear()
-  return actual.n > TOPE_POR_IP
+  return actual[tipo] > (tipo === "mirar" ? TOPE_MIRAR : TOPE_GUARDAR)
 }
 
 type Fila = {
-  first_name: string
-  last_name: string
   door: number
   prize_id: number
   code: string
 }
 
-function aSorpresa(f: Fila): Sorpresa {
+/**
+ * Arma la pantalla de la sorpresa.
+ *
+ * El nombre que sale es el que escribió QUIEN ESTÁ PREGUNTANDO, nunca el que
+ * quedó guardado. Si se devolviera el guardado, cualquiera podría escribir un
+ * nombre inventado con el celular de otra persona y la página le contestaría
+ * con el nombre real de esa clienta: un directorio de nombres y teléfonos.
+ */
+function aSorpresa(f: Fila, nombre: string, apellido: string): Sorpresa {
   const premio = premioPorId(f.prize_id)
   const texto = premio?.texto ?? "Tu sorpresa (preguntale a Leri)."
   return {
-    nombre: f.first_name,
-    apellido: f.last_name,
+    nombre,
+    apellido,
     casillero: f.door,
     premio: texto,
     codigo: f.code,
     link: linkParaLeri({
-      nombre: f.first_name,
-      apellido: f.last_name,
+      nombre,
+      apellido,
       casillero: f.door,
       premio: texto,
       codigo: f.code,
@@ -104,7 +118,7 @@ function aSorpresa(f: Fila): Sorpresa {
 async function buscarPorTelefono(clave: string): Promise<Fila | null> {
   const { data, error } = await db()
     .from("advent_picks")
-    .select("first_name, last_name, door, prize_id, code")
+    .select("door, prize_id, code")
     .eq("campaign", CAMPANA)
     .eq("phone_key", clave)
     .maybeSingle<Fila>()
@@ -119,30 +133,25 @@ async function buscarPorTelefono(clave: string): Promise<Fila | null> {
  * Paso 1: los datos. Todavía no elige casillero ni se guarda nada. Si ese
  * celular ya jugó, se le muestra su sorpresa en vez de dejarla elegir otra vez.
  */
-export async function entrar(input: {
-  nombre: string
-  telefono: string
-  trampa?: string
-}): Promise<Entrada> {
-  // Campo invisible: una persona nunca lo completa, un robot sí.
-  if (input.trampa) return { ok: false, error: "No pude guardar tu jugada." }
-  if (await demasiadosIntentos())
-    return { ok: false, error: "Probaste muchas veces seguidas. Esperá unos minutos." }
-
+export async function entrar(input: { nombre: string; telefono: string }): Promise<Entrada> {
   // Fuera de diciembre sólo juega el salón, para probar cómo quedó.
   const real = estadoCalendario()
   const estado = real === "abierto" || !(await isActiveStaffSession()) ? real : "abierto"
   if (estado === "antes") return { ok: false, error: "El calendario arranca el 1 de diciembre." }
   if (estado === "terminado") return { ok: false, error: "El calendario terminó el 31 de diciembre." }
 
-  const quien = partirNombre(input.nombre)
+  const quien = partirNombre(String(input?.nombre ?? ""))
   if (!quien) return { ok: false, error: "Poné tu nombre y tu apellido." }
 
-  const tel = telefonoParaAdviento(input.telefono)
+  const tel = telefonoParaAdviento(String(input?.telefono ?? ""))
   if (!tel.ok) return { ok: false, error: tel.motivo }
 
+  if (await demasiados("mirar"))
+    return { ok: false, error: "Estamos recibiendo muchas consultas desde tu conexión. Probá en unos minutos." }
+
   const ya = await buscarPorTelefono(tel.clave)
-  if (ya) return { ok: true, estado: "ya-jugo", sorpresa: aSorpresa(ya) }
+  if (ya)
+    return { ok: true, estado: "ya-jugo", sorpresa: aSorpresa(ya, quien.nombre, quien.apellido) }
 
   if (estado === "solo-canje")
     return {
@@ -159,27 +168,25 @@ export async function jugar(input: {
   telefono: string
   casillero: number
   novedades: boolean
-  trampa?: string
 }): Promise<Jugada> {
-  if (input.trampa) return { ok: false, error: "No pude guardar tu jugada." }
-  if (await demasiadosIntentos())
-    return { ok: false, error: "Probaste muchas veces seguidas. Esperá unos minutos." }
-
   if (estadoCalendario() !== "abierto" && !(await isActiveStaffSession()))
     return { ok: false, error: "El calendario no está abierto en este momento." }
 
-  const quien = partirNombre(input.nombre)
+  const quien = partirNombre(String(input?.nombre ?? ""))
   if (!quien) return { ok: false, error: "Poné tu nombre y tu apellido." }
 
-  const tel = telefonoParaAdviento(input.telefono)
+  const tel = telefonoParaAdviento(String(input?.telefono ?? ""))
   if (!tel.ok) return { ok: false, error: tel.motivo }
 
-  const casillero = Math.trunc(Number(input.casillero))
+  const casillero = Math.trunc(Number(input?.casillero))
   if (!Number.isFinite(casillero) || casillero < 1 || casillero > CASILLEROS)
     return { ok: false, error: "Elegí un número del 1 al 24." }
 
+  if (await demasiados("guardar"))
+    return { ok: false, error: "Estamos recibiendo muchas jugadas desde tu conexión. Probá en unos minutos." }
+
   const ya = await buscarPorTelefono(tel.clave)
-  if (ya) return { ok: true, sorpresa: aSorpresa(ya), yaLaTenia: true }
+  if (ya) return { ok: true, sorpresa: aSorpresa(ya, quien.nombre, quien.apellido), yaLaTenia: true }
 
   // El sorteo: acá, en el servidor, una sola vez.
   const premio = sortearPremio()
@@ -194,24 +201,26 @@ export async function jugar(input: {
         campaign: CAMPANA,
         first_name: quien.nombre,
         last_name: quien.apellido,
-        phone: input.telefono.trim().slice(0, 40),
+        phone: String(input?.telefono ?? "").trim().slice(0, 40),
         phone_key: tel.clave,
-        marketing_consent: !!input.novedades,
+        marketing_consent: !!input?.novedades,
         door: casillero,
         prize_id: premio.id,
         code: codigo,
       })
-      .select("first_name, last_name, door, prize_id, code")
+      .select("door, prize_id, code")
       .single<Fila>()
 
-    if (!error && data) return { ok: true, sorpresa: aSorpresa(data), yaLaTenia: false }
+    if (!error && data)
+      return { ok: true, sorpresa: aSorpresa(data, quien.nombre, quien.apellido), yaLaTenia: false }
 
     // 23505 = algo único se repitió.
     if (error?.code === "23505") {
       // Si lo repetido fue el teléfono, es que jugó en el mismo instante desde
       // otra pestaña: se le muestra la que quedó.
       const dePaso = await buscarPorTelefono(tel.clave)
-      if (dePaso) return { ok: true, sorpresa: aSorpresa(dePaso), yaLaTenia: true }
+      if (dePaso)
+        return { ok: true, sorpresa: aSorpresa(dePaso, quien.nombre, quien.apellido), yaLaTenia: true }
       continue // fue el código: otro intento
     }
 
