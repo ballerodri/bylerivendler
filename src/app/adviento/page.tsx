@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
-import { estadoCalendario } from "@/lib/servicios/adviento"
+import { estadoCalendario, casilleroDeHoy } from "@/lib/servicios/adviento"
 import { isActiveStaffSession } from "@/lib/staff"
+import { flagPrendido, ADVIENTO_PRUEBA } from "@/lib/app-settings"
 import { ADDRESS_LINE, ADDRESS_AREA } from "@/lib/location"
 import AdvientoClient from "./adviento-client"
 import "./adviento.css"
@@ -22,11 +23,13 @@ export const metadata: Metadata = {
 
 export default async function AdvientoPage() {
   const real = estadoCalendario()
-  // Modo prueba: el salón puede recorrer el calendario entero antes del 1 de
-  // diciembre (y después del 31) para ver cómo quedó. Sólo con sesión del
-  // panel: para cualquier otra persona la fecha manda.
-  const esStaff = real === "abierto" ? false : await isActiveStaffSession()
-  const estado = esStaff ? "abierto" : real
+  // Dos maneras de abrirlo fuera de diciembre, las dos para probar:
+  //  · el interruptor del panel, que lo abre para CUALQUIERA que tenga el link
+  //    (para mirarlo en otro celular, o mostrárselo a alguien);
+  //  · tener sesión del panel, que alcanza para mirarlo una misma.
+  const prueba = real === "abierto" ? false : await flagPrendido(ADVIENTO_PRUEBA)
+  const esStaff = real === "abierto" || prueba ? false : await isActiveStaffSession()
+  const estado = prueba || esStaff ? "abierto" : real
 
   return (
     <div className="adv">
@@ -42,19 +45,21 @@ export default async function AdvientoPage() {
               ? "24 sorpresas para tu piel. Arranca el 1 de diciembre."
               : estado === "terminado"
                 ? "Terminó el 31 de diciembre. ¡Gracias por jugar!"
-                : "Detrás de cada número hay una sorpresa. Elegís una sola."}
+                : "Cada día se abre una esfera distinta. Abrís una sola, y no sabés qué hay detrás."}
           </p>
         </header>
 
-        {esStaff && (
+        {(prueba || esStaff) && (
           <p className="adv__fine" style={{ textAlign: "center" }}>
-            Lo estás viendo en modo prueba porque entraste al panel.{" "}
+            {prueba
+              ? "Esto es una prueba: el salón dejó el calendario abierto a mano."
+              : "Lo estás viendo en modo prueba porque entraste al panel."}{" "}
             {real === "antes"
               ? "Para el resto, la elección arranca el 1 de diciembre."
               : real === "solo-canje"
                 ? "Para el resto, la elección cerró el 24, pero quien ya jugó puede ver su premio y usarlo hasta el 31."
                 : "Para el resto, el calendario ya terminó."}{" "}
-            Las jugadas que hagas se guardan de verdad: borralas después desde Adviento.
+            Las jugadas que se hagan se guardan de verdad: bórralas después desde Adviento.
           </p>
         )}
 
@@ -70,7 +75,7 @@ export default async function AdvientoPage() {
             </a>
           </div>
         ) : (
-          <AdvientoClient puedeElegir={estado === "abierto"} />
+          <AdvientoClient puedeElegir={estado === "abierto"} casilleroHoy={casilleroDeHoy()} />
         )}
 
         <footer className="adv__foot">

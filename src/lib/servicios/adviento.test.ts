@@ -12,6 +12,9 @@ import {
   mensajeParaLeri,
   linkParaLeri,
   premioPorId,
+  casilleroDeHoy,
+  FILAS_DEL_ARBOL,
+  REGALOS_DEL_ARBOL,
 } from "./adviento"
 
 describe("los 24 premios", () => {
@@ -170,5 +173,35 @@ describe("el mensaje para Leri", () => {
     const link = linkParaLeri(datos)
     expect(link).toContain("wa.me/5491133643359")
     expect(decodeURIComponent(link)).toContain("ADV-7K3M")
+  })
+})
+
+describe("casilleroDeHoy — se abre el del día, no uno cualquiera", () => {
+  const alMediodiaAR = (iso: string) => new Date(iso + "T15:00:00Z")
+
+  it("el 1 de diciembre es el 1; el 24, el 24", () => {
+    expect(casilleroDeHoy(alMediodiaAR("2026-12-01"))).toBe(1)
+    expect(casilleroDeHoy(alMediodiaAR("2026-12-09"))).toBe(9)
+    expect(casilleroDeHoy(alMediodiaAR("2026-12-24"))).toBe(24)
+  })
+  it("fuera del 1 al 24 no hay casillero del día", () => {
+    expect(casilleroDeHoy(alMediodiaAR("2026-11-30"))).toBeNull()
+    expect(casilleroDeHoy(alMediodiaAR("2026-12-25"))).toBeNull()
+    expect(casilleroDeHoy(alMediodiaAR("2027-01-05"))).toBeNull()
+  })
+  it("cambia a la medianoche argentina, no a la de Londres", () => {
+    // 2026-12-06T02:00Z = 5 de diciembre, 23:00 en Argentina.
+    expect(casilleroDeHoy(new Date("2026-12-06T02:00:00Z"))).toBe(5)
+    expect(casilleroDeHoy(new Date("2026-12-06T03:30:00Z"))).toBe(6)
+  })
+})
+
+describe("el árbol", () => {
+  it("tiene los 24 casilleros, una sola vez cada uno", () => {
+    const todos = [...FILAS_DEL_ARBOL.flat(), ...REGALOS_DEL_ARBOL].sort((a, b) => a - b)
+    expect(todos).toEqual(Array.from({ length: 24 }, (_, i) => i + 1))
+  })
+  it("las filas crecen de a una esfera, como un árbol", () => {
+    expect(FILAS_DEL_ARBOL.map((f) => f.length)).toEqual([1, 2, 3, 4, 5, 6])
   })
 })

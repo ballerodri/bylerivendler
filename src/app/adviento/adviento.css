@@ -208,35 +208,73 @@
   color: #fff;
 }
 
-/* ── Los 24 casilleros ────────────────────────────────────────────────── */
-.adv__grid {
+/* ── El árbol ─────────────────────────────────────────────────────────── */
+.adv__arbol {
+  position: relative;
   width: 100%;
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
 }
 
-@media (min-width: 420px) {
-  .adv__grid {
-    grid-template-columns: repeat(6, 1fr);
-  }
+/* La silueta del pino, apenas insinuada detrás de las esferas. */
+.adv__arbol::before {
+  content: "";
+  position: absolute;
+  top: 44px;
+  bottom: 66px;
+  left: 50%;
+  width: min(94%, 400px);
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, transparent, var(--paper-deep));
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  z-index: 0;
+  opacity: 0.9;
+}
+
+.adv__estrella {
+  width: 36px;
+  height: 36px;
+  color: var(--gold);
+  position: relative;
+  z-index: 1;
+}
+
+.adv__fila,
+.adv__regalos {
+  display: flex;
+  gap: clamp(6px, 2.4vw, 12px);
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}
+
+.adv__regalos {
+  align-items: flex-end;
+  gap: 14px;
+  margin-top: 8px;
 }
 
 .adv__door {
+  --c1: var(--nude-soft);
+  --c2: var(--nude);
   position: relative;
+  width: clamp(44px, 12.5vw, 56px);
   aspect-ratio: 1;
   border: 0;
   padding: 0;
-  margin-top: 7px;
+  margin-top: 8px;
   border-radius: 50%;
   cursor: pointer;
   background:
-    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.75) 0 9%, transparent 10%),
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.7) 0 9%, transparent 10%),
     radial-gradient(circle at 40% 35%, var(--c1), var(--c2));
   box-shadow: 0 6px 12px var(--shadow);
   font-family: var(--serif);
   font-weight: 600;
-  font-size: clamp(17px, 5vw, 20px);
+  font-size: clamp(16px, 4.6vw, 20px);
   color: #fff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 0.18s ease;
@@ -256,20 +294,83 @@
 }
 
 /* Los tonos claros llevan tinta oscura: con blanco, el número quedaba en
-   1.5:1 de contraste — ilegible en la calle, con sol, que es justo donde se va
-   a usar. El tono b (rosa) sí tiene fondo suficiente para el blanco. */
+   1.5:1 de contraste — ilegible en la calle, con sol. */
 .adv__door--a { --c1: #e3cdb8; --c2: #c9a78e; color: #4a3b2e; text-shadow: none; }
 .adv__door--b { --c1: #d98d97; --c2: #a85a66; }
 .adv__door--c { --c1: #ecd3a8; --c2: #b68a5f; color: #4a3b2e; text-shadow: none; }
 .adv__door--d { --c1: #ffffff; --c2: #e6dbd0; color: #6f5c4c; text-shadow: none; }
 
-.adv__door:hover:not(:disabled) {
+/* Los tres regalos del pie del árbol. */
+.adv__gift {
+  position: relative;
+  width: clamp(58px, 17vw, 74px);
+  height: clamp(50px, 14vw, 62px);
+  border: 0;
+  padding: 10px 0 0;
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--nude);
+  box-shadow: 0 6px 12px var(--shadow);
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(18px, 5vw, 24px);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease;
+}
+
+/* El moño. */
+.adv__gift::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 10px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.adv__gift span {
+  position: relative;
+}
+
+.adv__door:hover:not(:disabled),
+.adv__gift:hover:not(:disabled) {
   transform: translateY(-3px) rotate(-3deg);
 }
 
-.adv__door:disabled {
-  cursor: progress;
-  filter: grayscale(0.5) opacity(0.6);
+.adv__door:focus-visible,
+.adv__gift:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
+}
+
+/* La del día: late, para que no haya que buscarla. */
+.adv__door--hoy,
+.adv__gift.adv__door--hoy {
+  animation: adv-latido 2.2s ease-in-out infinite;
+}
+
+@keyframes adv-latido {
+  0%,
+  100% {
+    box-shadow: 0 6px 12px var(--shadow), 0 0 0 0 rgba(182, 138, 95, 0.55);
+  }
+  50% {
+    box-shadow: 0 6px 12px var(--shadow), 0 0 0 9px rgba(182, 138, 95, 0);
+  }
+}
+
+/* Las que no son de hoy no se pueden tocar: las de atrás ya pasaron y las de
+   adelante todavía no. */
+.adv__door:disabled,
+.adv__gift:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.5) opacity(0.5);
+}
+
+.adv__door--paso:disabled,
+.adv__gift.adv__door--paso:disabled {
+  filter: grayscale(0.8) opacity(0.35);
 }
 
 /* ── La sorpresa ──────────────────────────────────────────────────────── */

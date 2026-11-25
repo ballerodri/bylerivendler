@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { CASILLEROS, ULTIMO_DIA_CANJE } from "@/lib/servicios/adviento"
+import { FILAS_DEL_ARBOL, REGALOS_DEL_ARBOL, ULTIMO_DIA_CANJE } from "@/lib/servicios/adviento"
 import { entrar, jugar, type Sorpresa } from "./actions"
 
 /**
@@ -20,7 +20,16 @@ type Paso =
 
 const TONOS = ["adv__door--a", "adv__door--b", "adv__door--c", "adv__door--d"]
 
-export default function AdvientoClient({ puedeElegir }: { puedeElegir: boolean }) {
+export default function AdvientoClient({
+  puedeElegir,
+  casilleroHoy,
+}: {
+  puedeElegir: boolean
+  /** El casillero que se abre hoy. En null (fuera de diciembre, probando) se
+   *  puede abrir cualquiera. Viene del SERVIDOR: el reloj del visitante no
+   *  decide qué día es. */
+  casilleroHoy: number | null
+}) {
   const [paso, setPaso] = useState<Paso>({ tipo: "datos" })
   // El "atrás" del teléfono tiene que retroceder UN paso, no sacarte de la
   // página (mismo criterio que el asistente de reserva). Cada paso deja una
@@ -97,7 +106,7 @@ export default function AdvientoClient({ puedeElegir }: { puedeElegir: boolean }
     return (
       <div className="adv__card">
         <div className="adv__prize">
-          <span className="adv__kicker">{paso.yaLaTenia ? "Tu sorpresa" : "Abriste el número"}</span>
+          <span className="adv__kicker">{paso.yaLaTenia ? "Tu sorpresa" : "Abriste la esfera"}</span>
           <span className="adv__prize-num">{s.casillero}</span>
           <p className="adv__prize-text">{s.premio}</p>
         </div>
@@ -118,7 +127,7 @@ export default function AdvientoClient({ puedeElegir }: { puedeElegir: boolean }
 
         {otroNumero && (
           <p className="adv__fine">
-            Tocaste el {paso.tocado}, pero ya habías abierto el {s.casillero}: esa es tu sorpresa.
+            Ya habías abierto la {s.casillero}: esa es tu sorpresa.
           </p>
         )}
 
@@ -132,29 +141,63 @@ export default function AdvientoClient({ puedeElegir }: { puedeElegir: boolean }
 
   // ── Paso 2b: elegir el casillero ───────────────────────────────────────
   if (paso.tipo === "elegir") {
+    const libre = casilleroHoy === null // probando: se puede abrir cualquiera
+    const esferas = (n: number, regalo: boolean) => {
+      const esDeHoy = libre || n === casilleroHoy
+      const yaPaso = casilleroHoy !== null && n < casilleroHoy
+      return (
+        <button
+          key={n}
+          type="button"
+          className={
+            (regalo ? "adv__gift" : `adv__door ${TONOS[n % TONOS.length]}`) +
+            (esDeHoy ? " adv__door--hoy" : "") +
+            (yaPaso ? " adv__door--paso" : "")
+          }
+          onClick={() => elegir(n)}
+          disabled={cargando || !esDeHoy}
+          aria-label={
+            esDeHoy
+              ? `Abrir la esfera de hoy, la ${n}`
+              : yaPaso
+                ? `La ${n} se abrió el ${n} de diciembre`
+                : `La ${n} se abre el ${n} de diciembre`
+          }
+          title={esDeHoy ? undefined : `Se abre el ${n} de diciembre`}
+        >
+          <span>{n}</span>
+        </button>
+      )
+    }
+
     return (
       <>
         <p className="adv__sub" style={{ textAlign: "center" }}>
-          {cargando ? "Abriendo tu sorpresa…" : "Elegí un número. Uno solo, y no sabés qué hay detrás."}
+          {cargando
+            ? "Abriendo tu sorpresa…"
+            : libre
+              ? "Estás probando: tocá la esfera que quieras."
+              : `Hoy se abre la ${casilleroHoy}. Tocala y mirá qué te tocó.`}
         </p>
         {error && (
           <p className="adv__error" role="alert">
             {error}
           </p>
         )}
-        <div className="adv__grid">
-          {Array.from({ length: CASILLEROS }, (_, i) => i + 1).map((n) => (
-            <button
-              key={n}
-              type="button"
-              className={`adv__door ${TONOS[n % TONOS.length]}`}
-              onClick={() => elegir(n)}
-              disabled={cargando}
-              aria-label={`Abrir el número ${n}`}
-            >
-              {n}
-            </button>
+
+        <div className="adv__arbol">
+          <svg className="adv__estrella" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M12 2.5l2.7 6.1 6.6.6-5 4.4 1.5 6.5L12 16.7l-5.8 3.4 1.5-6.5-5-4.4 6.6-.6z"
+            />
+          </svg>
+          {FILAS_DEL_ARBOL.map((fila, i) => (
+            <div className="adv__fila" key={i}>
+              {fila.map((n) => esferas(n, false))}
+            </div>
           ))}
+          <div className="adv__regalos">{REGALOS_DEL_ARBOL.map((n) => esferas(n, true))}</div>
         </div>
       </>
     )
@@ -243,7 +286,7 @@ export default function AdvientoClient({ puedeElegir }: { puedeElegir: boolean }
       )}
 
       <button className="adv__btn" type="submit" disabled={cargando}>
-        {cargando ? "Un segundo…" : puedeElegir ? "Elegir mi número" : "Ver mi sorpresa"}
+        {cargando ? "Un segundo…" : puedeElegir ? "Abrir la esfera de hoy" : "Ver mi sorpresa"}
       </button>
 
       <p className="adv__fine">

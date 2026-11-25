@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { createClient as createAdminClient } from "@supabase/supabase-js"
 import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { getStaffProfile } from "@/lib/staff"
+import { guardarFlag, ADVIENTO_PRUEBA } from "@/lib/app-settings"
 
 /**
  * Las acciones del panel del Calendario de Adviento.
@@ -79,5 +80,24 @@ export async function borrarJugada(id: string): Promise<{ ok: boolean; error?: s
     return { ok: false, error: "No se pudo borrar." }
   }
   revalidatePath("/admin/adviento")
+  return { ok: true }
+}
+
+/**
+ * Abre o cierra el calendario a mano, para probarlo fuera de diciembre.
+ *
+ * Sólo admin: prenderlo deja el calendario jugable para CUALQUIERA que tenga
+ * el link, y las jugadas que entren son de verdad.
+ */
+export async function cambiarPrueba(prendido: boolean): Promise<{ ok: boolean; error?: string }> {
+  const perfil = await quienLlama()
+  if (!perfil || perfil.role !== "admin") return { ok: false, error: "Esto lo puede hacer sólo un admin." }
+  try {
+    await guardarFlag(ADVIENTO_PRUEBA, prendido, perfil.id)
+  } catch {
+    return { ok: false, error: "No se pudo guardar." }
+  }
+  revalidatePath("/admin/adviento")
+  revalidatePath("/adviento")
   return { ok: true }
 }

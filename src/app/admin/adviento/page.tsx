@@ -3,6 +3,9 @@ import { createClient as createSsrClient } from "@/lib/supabase/server"
 import { requireAdmin, getStaffProfile } from "@/lib/staff"
 import { CAMPANA, PRIMER_DIA, premioPorId, telefonoLindo, clavePorTelefono } from "@/lib/servicios/adviento"
 import JugadaRow from "./jugada-row"
+import PruebaSwitch from "./prueba-switch"
+import { flagPrendido, ADVIENTO_PRUEBA } from "@/lib/app-settings"
+import { estadoCalendario } from "@/lib/servicios/adviento"
 
 /**
  * Quién jugó al Calendario de Adviento, qué le tocó y si ya lo usó.
@@ -51,6 +54,9 @@ export default async function AdminAdvientoPage({
   if (user) await requireAdmin(user.id)
   const perfil = user ? await getStaffProfile(user.id) : null
   const esAdmin = perfil?.role === "admin"
+
+  const enPrueba = await flagPrendido(ADVIENTO_PRUEBA)
+  const enDiciembre = estadoCalendario() !== "antes" && estadoCalendario() !== "terminado"
 
   const sp = await searchParams
   const busqueda = (sp.q ?? "").trim()
@@ -159,6 +165,8 @@ export default async function AdminAdvientoPage({
               nuevas === 1 ? "es nueva" : "son nuevas"
             } · ${jugaron - nuevas} ya ${jugaron - nuevas === 1 ? "era clienta" : "eran clientas"}`}
       </p>
+
+      {esAdmin && <PruebaSwitch prendido={enPrueba} enDiciembre={enDiciembre} />}
 
       <form className="adm-card" method="get" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <input

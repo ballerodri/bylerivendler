@@ -3,9 +3,11 @@
 import { headers } from "next/headers"
 import { createClient } from "@supabase/supabase-js"
 import { isActiveStaffSession } from "@/lib/staff"
+import { flagPrendido, ADVIENTO_PRUEBA } from "@/lib/app-settings"
 import {
   CAMPANA,
   CASILLEROS,
+  casilleroDeHoy,
   estadoCalendario,
   generarCodigo,
   linkParaLeri,
@@ -31,6 +33,12 @@ function db() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false, autoRefreshToken: false } }
   )
+}
+
+/** ¿Se puede jugar fuera de diciembre? Sólo en prueba. */
+async function enPrueba(): Promise<boolean> {
+  if (await flagPrendido(ADVIENTO_PRUEBA)) return true
+  return isActiveStaffSession()
 }
 
 export type Sorpresa = {
@@ -134,9 +142,10 @@ async function buscarPorTelefono(clave: string): Promise<Fila | null> {
  * celular ya jugó, se le muestra su sorpresa en vez de dejarla elegir otra vez.
  */
 export async function entrar(input: { nombre: string; telefono: string }): Promise<Entrada> {
-  // Fuera de diciembre sólo juega el salón, para probar cómo quedó.
+  // Fuera de diciembre se juega sólo en prueba: con el interruptor del panel
+  // prendido, o con sesión del panel.
   const real = estadoCalendario()
-  const estado = real === "abierto" || !(await isActiveStaffSession()) ? real : "abierto"
+  const estado = real === "abierto" || (await enPrueba()) ? "abierto" : real
   if (estado === "antes") return { ok: false, error: "El calendario arranca el 1 de diciembre." }
   if (estado === "terminado") return { ok: false, error: "El calendario terminó el 31 de diciembre." }
 
@@ -169,7 +178,7 @@ export async function jugar(input: {
   casillero: number
   novedades: boolean
 }): Promise<Jugada> {
-  if (estadoCalendario() !== "abierto" && !(await isActiveStaffSession()))
+  if (estadoCalendario() !== "abierto" && !(await enPrueba()))
     return { ok: false, error: "El calendario no está abierto en este momento." }
 
   const quien = partirNombre(String(input?.nombre ?? ""))
@@ -180,7 +189,13 @@ export async function jugar(input: {
 
   const casillero = Math.trunc(Number(input?.casillero))
   if (!Number.isFinite(casillero) || casillero < 1 || casillero > CASILLEROS)
-    return { ok: false, error: "Elegí un número del 1 al 24." }
+    return { ok: false, error: "Ese casillero no existe." }
+
+  // La regla del calendario: se abre el del DÍA. Fuera de diciembre (o sea, en
+  // prueba) no hay casillero del día y vale cualquiera, para poder recorrerlo.
+  const delDia = casilleroDeHoy()
+  if (delDia !== null && casillero !== delDia)
+    return { ok: false, error: `Hoy se abre el ${delDia}. Los demás no se pueden tocar.` }
 
   if (await demasiados("guardar"))
     return { ok: false, error: "Estamos recibiendo muchas jugadas desde tu conexión. Probá en unos minutos." }

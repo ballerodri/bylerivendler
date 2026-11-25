@@ -86,6 +86,35 @@ export function estadoCalendario(ahora: Date = new Date()): EstadoCalendario {
   return "terminado"
 }
 
+/**
+ * El casillero que se puede abrir HOY: el 5 de diciembre, el 5. Fuera del 1 al
+ * 24 de diciembre devuelve null (no hay casillero del día).
+ *
+ * Esta es la regla del calendario de adviento de verdad: no se elige un
+ * número, se abre el del día. Los de atrás ya pasaron y los de adelante
+ * todavía no.
+ */
+export function casilleroDeHoy(ahora: Date = new Date()): number | null {
+  const hoy = arPartsFromUtc(ahora).dateStr
+  if (hoy < PRIMER_DIA || hoy > ULTIMO_DIA_ELECCION) return null
+  return Number(hoy.slice(8, 10))
+}
+
+/**
+ * El árbol: en qué orden se dibujan las esferas (filas de 1, 2, 3, 4, 5 y 6)
+ * y los tres regalos del pie. El desorden es a propósito, para que parezca un
+ * árbol y no una tabla; la regla de qué se puede abrir no mira esto para nada.
+ */
+export const FILAS_DEL_ARBOL: readonly (readonly number[])[] = [
+  [1],
+  [12, 5],
+  [17, 8, 3],
+  [14, 20, 10, 6],
+  [2, 19, 9, 15, 11],
+  [7, 21, 4, 16, 13, 18],
+]
+export const REGALOS_DEL_ARBOL: readonly number[] = [22, 24, 23]
+
 /** Sortea una sorpresa. Todas las promos tienen la misma chance. */
 export function sortearPremio(azar: () => number = Math.random): Premio {
   const i = Math.floor(azar() * PREMIOS.length)
